@@ -391,6 +391,7 @@ private:
         if (!at(Tok::Lt)) return out;
         advance();
         skip_newlines();
+        if (at_gt()) error_expected("E0100", "generic parameter name");  // `<>` is not a valid list
         while (!at_gt() && !at(Tok::Eof)) {
             GenericParam g{};
             g.name = expect_name("generic parameter name");
@@ -743,6 +744,7 @@ private:
                 } else if (at(Tok::Lt)) {
                     advance();
                     skip_newlines();
+                    if (at_gt()) error_expected("E0102", "type");  // `List<>` is not a valid type
                     std::vector<TypeExpr*> args;
                     while (!at_gt() && !at(Tok::Eof)) {
                         args.push_back(parse_type());

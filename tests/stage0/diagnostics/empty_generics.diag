@@ -1,0 +1,9 @@
+empty_generics.phs:19:7: error[E0100]: expected generic parameter name, found '>'
+   19 | fun f<>() {}
+      |       ^
+empty_generics.phs:20:9: error[E0100]: expected generic parameter name, found '>'
+   20 | class C<> {}
+      |         ^
+empty_generics.phs:21:15: error[E0102]: expected type, found '>'
+   21 | type T = List<>
+      |               ^

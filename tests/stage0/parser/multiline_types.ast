@@ -1,0 +1,26 @@
+File
+  Class Table
+    Generic K: Hashable
+    Generic V
+    Super Container<K, V>
+    Let size: Int
+      Int 0
+  TypeAlias Nested = Box<Box<Int>>
+  TypeAlias Alias = Map<String, Int>
+  TypeAlias Callback = fun(Int) -> Bool
+  Fun make
+    Returns Map<String, Int>
+    Body
+      Block
+        Let empty
+          Call
+            GenericInst <String, Int>
+              Name Map
+        Let cmp
+          Binary Lt
+            Name a
+            Name b
+        Let next
+          Name c
+        Return
+          Name empty

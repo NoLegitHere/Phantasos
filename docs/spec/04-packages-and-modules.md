@@ -24,11 +24,16 @@ defaults to the Apache-2.0 header.
 - **Every `.phs` file under `src/` belongs to the package.** Nothing needs to
   be listed by hand.
 - A file's **module path** is its directory path relative to `src/`, with
-  `/` replaced by `.`. Files in the same directory form one module and share
-  `file`-or-wider visibility within it.
+  `/` replaced by `.`. All files in the same directory form one module and
+  share its namespace.
   - `src/shapes/circle.phs` is module `geometry.shapes`.
   - `src/lib.phs` and other files directly in `src/` form the root module
     `geometry`.
+- Being in the same module does **not** widen visibility (3.8). A `file`
+  declaration is visible only in its own source file, and a `private` one
+  only in its enclosing type, even to other files of the same module.
+  `internal` declarations (the default) are visible to every module of the
+  package.
 - `import geometry.shapes` imports a module, and `import geometry.shapes as s`
   imports it under an alias.
 - The entry point of a `bin` package is `fun main()` in the root module. It

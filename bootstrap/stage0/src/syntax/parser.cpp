@@ -199,6 +199,12 @@ private:
         pos_ = s.pos;
     }
 
+    // True if the current token begins with '>' (eat_gt can consume it).
+    bool at_gt() const {
+        Tok k = cur().kind;
+        return k == Tok::Gt || k == Tok::Shr || k == Tok::GtEq || k == Tok::ShrEq;
+    }
+
     // Consumes one '>' — splitting '>>', '>=' and '>>=' when necessary.
     bool eat_gt() {
         Tok k = cur().kind;
@@ -354,12 +360,15 @@ private:
         std::vector<GenericParam> out;
         if (!at(Tok::Lt)) return out;
         advance();
-        while (!at(Tok::Gt) && !at(Tok::Eof)) {
+        skip_newlines();
+        while (!at_gt() && !at(Tok::Eof)) {
             GenericParam g{};
             g.name = expect_name("generic parameter name");
             if (eat(Tok::Colon)) g.bounds = parse_bounds();
             out.push_back(g);
+            skip_newlines();
             if (!eat(Tok::Comma)) break;
+            skip_newlines();
         }
         if (!eat_gt()) error_expected("E0100", "'>'");
         return out;
@@ -623,7 +632,10 @@ private:
         return t;
     }
 
+    // Every caller requires a type here, so a type may continue on the next
+    // line after ':', '=', '->', '&', ',' or a keyword such as `is` (spec 1.3).
     TypeExpr* parse_type() {
+        skip_newlines();
         Span start = cur().span;
         TypeExpr* t = parse_prefix_type();
         while (at(Tok::Question)) {
@@ -700,11 +712,15 @@ private:
                     if (try_generic_args(args, false)) t->args = args;
                 } else if (at(Tok::Lt)) {
                     advance();
+                    skip_newlines();
                     std::vector<TypeExpr*> args;
-                    while (!at(Tok::Gt) && !at(Tok::Eof)) {
+                    while (!at_gt() && !at(Tok::Eof)) {
                         args.push_back(parse_type());
+                        skip_newlines();
                         if (spec_failed_ || !eat(Tok::Comma)) break;
+                        skip_newlines();
                     }
+                    skip_newlines();
                     if (!eat_gt()) error_expected("E0100", "'>'");
                     t->args = arena_.copy(args);
                 }
@@ -1116,12 +1132,15 @@ private:
         spec_failed_ = false;
         ++spec_depth_;
         advance();  // '<'
+        skip_newlines();
         std::vector<TypeExpr*> args;
-        while (!spec_failed_) {
+        while (!spec_failed_ && !at_gt()) {
             args.push_back(parse_type());
+            skip_newlines();
             if (spec_failed_ || !eat(Tok::Comma)) break;
+            skip_newlines();
         }
-        bool ok = !spec_failed_ && eat_gt() && (!check_follow || generic_follow(cur().kind));
+        bool ok = !spec_failed_ && !args.empty() && eat_gt() && (!check_follow || generic_follow(cur().kind));
         --spec_depth_;
         spec_failed_ = saved_failed;
         if (!ok) {

@@ -61,6 +61,8 @@ def run_case(exe: Path, suite: str, src: Path, update: bool) -> list[str]:
         expected_files.append((diag_file, stderr))
 
     if update:
+        if proc.returncode not in (0, 1):
+            return [f"abnormal exit code {proc.returncode}; expected files not updated"]
         for path, actual in expected_files:
             path.write_text(actual, encoding="utf-8", newline="\n")
         return failures
@@ -73,7 +75,11 @@ def run_case(exe: Path, suite: str, src: Path, update: bool) -> list[str]:
         if expected != actual:
             failures.append(f"{path.name} differs:\n{diff(expected, actual)}")
 
-    if suite == "diagnostics":
+    # 0 (success) and 1 (diagnostics reported) are the only normal statuses;
+    # anything else is a crash or infrastructure failure.
+    if proc.returncode not in (0, 1):
+        failures.append(f"abnormal exit code {proc.returncode}")
+    elif suite == "diagnostics":
         if proc.returncode != 1:
             failures.append(f"expected exit code 1, got {proc.returncode}")
     else:

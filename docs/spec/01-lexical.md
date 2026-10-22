@@ -18,13 +18,16 @@
 ## 1.3 Newlines
 Newlines terminate statements, items, and match arms. The lexer emits a
 `Newline` token (consecutive blank lines collapse into one) **only when the
-innermost open delimiter is `{` or there is none**. Inside `(...)`, `[...]`,
-and generic `<...>` argument lists, newlines are ignored.
+innermost open delimiter is `{` or there is none**, so the lexer drops
+newlines inside `(...)` and `[...]`. Inside generic `<...>` parameter and
+argument lists, the **parser** ignores them, because only the parser can
+tell a generic list from a comparison.
 
 The parser also skips newlines:
 - after any binary operator, `,`, `=`, `->`, `:`, `.`, `?.`, and after an
   opening delimiter (so a line ending in an operator continues the
   expression);
+- before any required type, e.g. after `:`, `=`, `->`, `&`, `is`, or `as`;
 - before `.` and `?.` (leading-dot member chains), **except** directly at
   the top level of a `match` arm body, where a line starting with `.`
   begins a new arm;

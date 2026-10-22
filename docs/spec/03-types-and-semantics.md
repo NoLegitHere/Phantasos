@@ -44,14 +44,25 @@ There are **no implicit numeric conversions**. Widening is written
 ## 3.3 Mutability [Core]
 - `let` creates an immutable binding and `var` a mutable one. Fields follow
   the same rule.
-- A method can only mutate `self` if it is declared `mut fun`. Calling it
-  requires a mutable place: a `var` binding, an `inout` parameter, or `self`
-  inside another `mut fun`.
+- A method can only mutate `self` if it is declared `mut fun`. Which
+  receivers may call it depends on the kind of type:
+  - **Value types** (`struct`, `enum`): the receiver must be a mutable place,
+    i.e. a `var` binding, a `var` field of a mutable place, an `inout`
+    parameter, or `self` inside another `mut fun`. A `let`-bound value can
+    never be mutated.
+  - **Class instances**: the binding's `let`/`var` only controls whether the
+    binding can be reassigned. A `mut` method may be called through any
+    reference that is not read-only: an owning binding (`let` or `var`), a
+    `shared` handle, an `inout` or `own` parameter, or `self` inside another
+    `mut fun`. It may **not** be called through a `borrow` parameter
+    (`borrow` is the default when a parameter has no convention) or through
+    `self` inside a non-`mut` method, because a borrow grants read-only
+    access (3.4).
 - Immutability is **deep for value types**. For class references it is
   shallow: a `let` binding holding a class reference cannot be reassigned,
-  but the object can be mutated through its `mut` methods if its fields are
-  `var`. A class whose fields are all `let` is **deeply immutable** and is
-  automatically `Sendable`.
+  but the object can still be mutated through its `mut` methods (by the rule
+  above) if its fields are `var`. A class whose fields are all `let` is
+  **deeply immutable** and is automatically `Sendable`.
 
 ## 3.4 Ownership, borrowing, and destruction
 - **Ownership.**

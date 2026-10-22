@@ -81,6 +81,8 @@ SKIP_DIRS = {".git", "build", "out", ".phantasos", "__pycache__", ".vs", ".vscod
 
 YEAR_RE = r"\d{4}(?:-\d{4})?"
 
+UTF8_BOM = b"\xef\xbb\xbf"
+
 
 def comment_style(path: Path) -> str | None:
     if path.name in BY_NAME:
@@ -144,7 +146,10 @@ def main(argv: list[str]) -> int:
         checked += 1
         prefix = comment_style(path)
         assert prefix is not None
-        text = path.read_bytes().decode("utf-8", errors="surrogateescape")
+        raw = path.read_bytes()
+        # A UTF-8 BOM must stay at the very start of the file, before the header.
+        bom = raw.startswith(UTF8_BOM)
+        text = raw[len(UTF8_BOM) if bom else 0 :].decode("utf-8", errors="surrogateescape")
         newline = "\r\n" if "\r\n" in text else "\n"
         lines = text.splitlines()
         if has_header(lines, prefix):
@@ -156,7 +161,8 @@ def main(argv: list[str]) -> int:
         body = lines[pre:]
         sep = [""] if body and body[0].strip() else []
         new_lines = lines[:pre] + render_header(prefix, args.year) + sep + body
-        path.write_bytes((newline.join(new_lines) + newline).encode("utf-8", errors="surrogateescape"))
+        out = (newline.join(new_lines) + newline).encode("utf-8", errors="surrogateescape")
+        path.write_bytes((UTF8_BOM if bom else b"") + out)
         print(f"fixed: {path.relative_to(root).as_posix()}")
 
     if missing:

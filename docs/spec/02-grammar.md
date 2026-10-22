@@ -44,7 +44,8 @@ CaseField     = [ Ident ':' ] Type
 InitDecl      = 'init' [ '(' [ ParamList ] ')' [ Throws ] ] Block
 DeinitDecl    = 'deinit' Block
 VarDecl       = ( 'let' | 'var' | 'const' ) Ident [ ':' Type ] [ '=' Expr ]
-ExternBlock   = 'extern' StringLit '{' { { Attribute } [ Visibility ] FunDecl Terms } '}'
+ExternBlock   = 'extern' StringLit '{' { ExternFun Terms } '}'
+ExternFun     = { Attribute } [ Visibility ] { Modifier } FunDecl   (* e.g. public unsafe fun ... *)
 TypeAlias     = 'type' Ident [ GenericParams ] '=' Type
 
 GenericParams = '<' GenericParam { ',' GenericParam } [ ',' ] '>'

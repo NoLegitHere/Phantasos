@@ -1,0 +1,9 @@
+unclosed.phs:16:12: error[E0010]: unclosed delimiter '{'
+   16 | fun main() {
+      |            ^
+unclosed.phs:17:13: error[E0010]: unclosed delimiter '('
+   17 |     let a = (1 + 2
+      |             ^
+unclosed.phs:18:5: error[E0100]: expected ')', found keyword 'let'
+   18 |     let b = 3
+      |     ^^^

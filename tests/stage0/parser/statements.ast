@@ -1,0 +1,132 @@
+File
+  Fun statements
+    Param items: [Int]
+    Body
+      Block
+        Var total
+          Int 0
+        Var count
+          Int 0
+        For item
+          Name items
+          Block
+            If
+              Cond
+                Binary Lt
+                  Name item
+                  Int 0
+              Block
+                Continue
+            Assign +=
+              Name total
+              Name item
+            Assign +=
+              Name count
+              Int 1
+        While
+          IfLet next
+            Call
+              Member .next
+                Name iterator
+          Block
+            Call
+              Name process
+              Name next
+        Loop
+          Block
+            If
+              Cond
+                Call
+                  Name done
+              Block
+                Break
+        Defer
+          Block
+            Call
+              Name cleanup
+        If
+          IfLet user: User
+            Call
+              Name lookup
+              Name id
+          Block
+            Call
+              Name greet
+              Name user
+          Else
+            If
+              Cond
+                Binary Eq
+                  Name id
+                  Int 0
+              Block
+                Return
+              Else
+                Block
+                  Return
+                    Unary Neg
+                      Int 1
+        Assign |=
+          Name flags
+          Int 16
+        Assign <<=
+          Name bits
+          Int 2
+        Assign >>=
+          Name shifted
+          Int 1
+        Assign =
+          Member .field
+            Name obj
+          Int 3
+        Assign =
+          Index
+            Name arr
+            Int 0
+          Index
+            Name arr
+            Int 1
+        Return
+          Binary Div
+            Name total
+            Name count
+  Fun patterns
+    Param e: Expr
+    ExprBody
+      Match
+        Name e
+        Arm .Int(0) | .Int(1)
+          String "small"
+        Arm .Int(n)
+          Guard
+            Binary Lt
+              Name n
+              Int 0
+          String "negative"
+        Arm Expr.Binary(lhs, _, rhs)
+          String "binary"
+        Arm Some(x)
+          String "some"
+        Arm is Literal as lit
+          Member .text
+            Name lit
+        Arm -1
+          String "minus one"
+        Arm "s" | U+0063 | 2.5 | true | none
+          String "literal"
+        Arm other
+          Block
+            Call
+              Name log
+              Name other
+            String "unknown"
+  Fun unsafeStuff
+    Body
+      Block
+        Let p
+          Unsafe
+            Block
+              Call
+                Member .offset
+                  Name raw
+                Int 4

@@ -1,0 +1,47 @@
+16:1 KwFun (sp)
+16:5 Ident f (sp)
+16:6 LParen
+16:7 RParen
+16:9 LBrace (sp)
+16:10 Newline
+19:5 KwLet (sp)
+19:9 Ident a (sp)
+19:11 Eq (sp)
+19:13 Ident call (sp)
+19:17 LParen
+19:18 IntLit 1
+19:19 Comma
+20:9 IntLit 2 (sp)
+20:10 RParen
+20:11 Newline
+21:5 KwLet (sp)
+21:9 Ident b (sp)
+21:11 Eq (sp)
+21:13 LBracket (sp)
+22:9 IntLit 3 (sp)
+22:10 Comma
+23:5 RBracket (sp)
+23:6 Newline
+24:5 KwLet (sp)
+24:9 Ident c (sp)
+24:11 Eq (sp)
+24:13 Ident g (sp)
+24:14 LParen
+24:15 KwIf
+24:18 Ident x (sp)
+24:20 LBrace (sp)
+24:21 Newline
+25:9 IntLit 1 (sp)
+25:10 Newline
+26:5 RBrace (sp)
+26:7 KwElse (sp)
+26:12 LBrace (sp)
+26:13 Newline
+27:9 IntLit 2 (sp)
+27:10 Newline
+28:5 RBrace (sp)
+28:6 RParen
+28:7 Newline
+29:1 RBrace (sp)
+29:2 Newline
+30:1 Eof

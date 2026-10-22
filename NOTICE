@@ -1,0 +1,10 @@
+Phantasos
+Copyright 2026 The Phantasos Authors
+
+This product is developed by The Phantasos Authors and is licensed under the
+Apache License, Version 2.0 (see the LICENSE file).
+
+Phantasos is implemented from scratch. It does not contain code from LLVM,
+glibc, musl, the Microsoft C runtime, the Windows SDK, or the Linux kernel
+headers. Platform declarations under platform/ are independently authored
+descriptions of publicly documented interfaces.

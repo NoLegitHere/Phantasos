@@ -1435,9 +1435,15 @@ private:
             case Tok::Underscore: advance(); return mk<WildcardPat>(start);
             case Tok::Minus:
                 if (peek().kind == Tok::IntLit || peek().kind == Tok::FloatLit) {
-                    LiteralPat* p = mk<LiteralPat>(start);
-                    p->literal = parse_unary();
-                    p->span = from(start);
+                    // Only a numeric literal may follow '-' in a pattern; anything
+                    // after it (calls, members, ...) is left for the caller to reject.
+                    advance();  // '-'
+                    Expr* lit = parse_primary();
+                    UnaryExpr* neg = mk<UnaryExpr>(Span::join(start, lit->span));
+                    neg->op = UnOp::Neg;
+                    neg->operand = lit;
+                    LiteralPat* p = mk<LiteralPat>(neg->span);
+                    p->literal = neg;
                     return p;
                 }
                 break;

@@ -1,0 +1,9 @@
+negative_literal_pattern.phs:20:7: error[E0100]: expected '->', found '.'
+   20 |     -1.foo() -> 0
+      |       ^
+negative_literal_pattern.phs:21:7: error[E0100]: expected '->', found '['
+   21 |     -2[0] -> 1
+      |       ^
+negative_literal_pattern.phs:22:7: error[E0100]: expected '->', found '!'
+   22 |     -3! -> 2
+      |       ^

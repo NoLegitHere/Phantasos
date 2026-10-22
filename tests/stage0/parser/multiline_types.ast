@@ -1,4 +1,15 @@
 File
+  Import std.collections.map as m
+  TypeAlias Qualified = geometry.shapes.Point
+  Fun qualifiedPattern
+    Param e: Expr
+    ExprBody
+      Match
+        Name e
+        Arm Expr.Int(0)
+          Int 1
+        Arm _
+          Int 0
   Class Table
     Generic K: Hashable
     Generic V

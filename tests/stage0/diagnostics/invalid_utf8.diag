@@ -1,0 +1,21 @@
+invalid_utf8.phs:19:13: error[E0011]: invalid UTF-8 in source file
+   19 | let str = "x�y"
+      |             ^
+invalid_utf8.phs:20:14: error[E0011]: invalid UTF-8 in source file
+   20 | // overlong: ��
+      |              ^^
+invalid_utf8.phs:21:13: error[E0011]: invalid UTF-8 in source file
+   21 | let lone = '�'
+      |             ^
+invalid_utf8.phs:22:18: error[E0011]: invalid UTF-8 in source file
+   22 | let surrogate = '���'
+      |                  ^^^
+invalid_utf8.phs:23:18: error[E0011]: invalid UTF-8 in source file
+   23 | let truncated = "��"
+      |                  ^^
+invalid_utf8.phs:24:14: error[E0011]: invalid UTF-8 in source file
+   24 | let above = "����"
+      |              ^^^^
+invalid_utf8.phs:25:12: error[E0011]: invalid UTF-8 in source file
+   25 | let bare = �
+      |            ^

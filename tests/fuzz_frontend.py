@@ -15,8 +15,10 @@
 # limitations under the License.
 """Mutation fuzzer for the stage0 frontend (lexer + parser).
 
-Mutates the golden test inputs and checks that `phantasos-stage0 parse` never
-crashes, hangs, or trips a sanitizer. Failing inputs are saved to --out.
+Mutates the golden test inputs at the byte level (including invalid UTF-8)
+and checks that `phantasos-stage0 parse` never crashes, hangs, trips a
+sanitizer, or writes output that is not valid UTF-8. Failing inputs are saved
+to --out.
 
 Usage: python tests/fuzz_frontend.py --stage0 <exe> [--cases N] [--seed S] [--out DIR]
 """
@@ -33,28 +35,43 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent / "stage0"
 
 FRAGMENTS = [
-    "(", ")", "{", "}", "[", "]", "<", ">", ">>", ">>=", '"', "\\(", "'", ".", "?.", "\n", ",", ";",
-    "match", "if", "else", "fun", "class", "enum", "extern", "->", "=", "@", "|", "is", "as?", "try?",
-    "!", "/*", "*/", "0x", "1e", "_", "let", ":", "&", "..<", "\u00e9",
+    s.encode("utf-8")
+    for s in [
+        "(", ")", "{", "}", "[", "]", "<", ">", ">>", ">>=", '"', "\\(", "'", ".", "?.", "\n", ",", ";",
+        "match", "if", "else", "fun", "class", "enum", "extern", "->", "=", "@", "|", "is", "as?", "try?",
+        "!", "/*", "*/", "0x", "1e", "1e9999", "_", "let", ":", "&", "..<", "\u00e9", "\u2028",
+    ]
+] + [
+    # Invalid UTF-8: stray continuation, overlong, surrogate, truncated, too large, bad lead byte.
+    b"\x80", b"\xc0\xaf", b"\xed\xa0\x80", b"\xe2\x82", b"\xf4\x90\x80\x80", b"\xff", b"\xfe",
 ]
 
 SANITIZER_MARKERS = (b"AddressSanitizer", b"runtime error:", b"LeakSanitizer")
 
 
-def mutate(rng: random.Random, seeds: list[str]) -> str:
-    s = list(rng.choice(seeds))
+def mutate(rng: random.Random, seeds: list[bytes]) -> bytes:
+    # Byte-level mutation, so multi-byte characters can also be split.
+    s = bytearray(rng.choice(seeds))
     for _ in range(rng.randint(1, 12)):
         pos = rng.randrange(len(s) + 1)
         op = rng.random()
         if op < 0.4:
-            s.insert(pos, rng.choice(FRAGMENTS))
+            s[pos:pos] = rng.choice(FRAGMENTS)
         elif op < 0.8 and s:
             del s[pos : pos + rng.randint(1, 8)]
         else:
             donor = rng.choice(seeds)
             start = rng.randrange(len(donor))
-            s[pos:pos] = list(donor[start : start + rng.randint(1, 40)])
-    return "".join(s)
+            s[pos:pos] = donor[start : start + rng.randint(1, 40)]
+    return bytes(s)
+
+
+def is_utf8(data: bytes) -> bool:
+    try:
+        data.decode("utf-8")
+        return True
+    except UnicodeDecodeError:
+        return False
 
 
 def main(argv: list[str]) -> int:
@@ -69,7 +86,7 @@ def main(argv: list[str]) -> int:
     exe = args.stage0.resolve()
     if not exe.exists() and exe.with_suffix(".exe").exists():
         exe = exe.with_suffix(".exe")
-    seeds = [p.read_text(encoding="utf-8") for p in sorted(ROOT.rglob("*.phs"))]
+    seeds = [p.read_bytes() for p in sorted(ROOT.rglob("*.phs"))]
     if not seeds:
         print("error: no seed inputs found", file=sys.stderr)
         return 2
@@ -81,7 +98,7 @@ def main(argv: list[str]) -> int:
     failures = 0
     for i in range(args.cases):
         text = mutate(rng, seeds)
-        work.write_text(text, encoding="utf-8")
+        work.write_bytes(text)
         reason = None
         try:
             r = subprocess.run([str(exe), "parse", str(work)], capture_output=True, timeout=args.timeout)
@@ -89,12 +106,14 @@ def main(argv: list[str]) -> int:
                 reason = f"exit code {r.returncode}"
             elif any(m in r.stderr for m in SANITIZER_MARKERS):
                 reason = "sanitizer report"
+            elif not is_utf8(r.stdout) or not is_utf8(r.stderr):
+                reason = "output is not valid UTF-8"
         except subprocess.TimeoutExpired:
             reason = "timeout"
         if reason:
             failures += 1
             saved = out_dir / f"failure-{i}.phs"
-            saved.write_text(text, encoding="utf-8")
+            saved.write_bytes(text)
             print(f"FAIL case {i}: {reason} -> {saved}")
     work.unlink(missing_ok=True)
     print(f"fuzz: {args.cases} cases, {failures} failure(s), seed {args.seed}")

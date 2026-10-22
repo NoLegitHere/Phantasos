@@ -15,8 +15,17 @@
   - Its `var` state can never be borrowed across an `await`.
 - **`Sendable`** is a marker interface that the compiler infers. A value is
   `Sendable` when it can be safely transferred between tasks or actors.
-  - Sendable: value types whose fields are all `Sendable`, deeply immutable
-    classes, actors, and `shared T` where `T: Sendable`.
+  - Sendable, recursively:
+    - deeply immutable types (3.3);
+    - value types whose fields are all `Sendable`;
+    - classes that are not `open` whose stored fields, including inherited
+      ones, are all `let` with `Sendable` types (so such a class may hold an
+      actor reference);
+    - actors;
+    - `shared T` where `T: Sendable`.
+  - A `let` field is not enough by itself: a class with
+    `let cell: shared MutableCell` is not `Sendable`, because the cell it
+    refers to can still be mutated.
   - Passing a non-`Sendable` value across an isolation boundary is a
     compile-time error, unless the value is **moved** (uniquely owned
     transfer).

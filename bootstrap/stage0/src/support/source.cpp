@@ -18,6 +18,8 @@
 #include <algorithm>
 #include <cstdio>
 
+#include "support/utf8.hpp"
+
 namespace phs {
 
 bool SourceManager::load(const std::string& path, FileId& out) {
@@ -66,8 +68,8 @@ LineCol SourceManager::line_col(FileId id, u32 offset) const {
     u32 line = static_cast<u32>(it - f.line_starts.begin());
     u32 start = f.line_starts[line - 1];
     u32 col = 1;
-    for (u32 k = start; k < offset && k < f.text.size(); ++k)
-        if (((u8)f.text[k] & 0xC0) != 0x80) ++col;
+    u32 end = offset < f.text.size() ? offset : static_cast<u32>(f.text.size());
+    for (u32 k = start; k < end; k += utf8_step(f.text.data() + k, f.text.size() - k)) ++col;
     return {line, col};
 }
 

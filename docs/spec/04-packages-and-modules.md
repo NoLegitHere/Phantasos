@@ -74,8 +74,19 @@ build/<target>/<profile>/bin/<name>[.exe]  executables
 `<profile>` is `debug` or `release`.
 
 ## 4.5 Stage0 support
-Stage0 implements: manifest parsing for the TOML subset (strings, integers,
-booleans, string arrays, inline tables, and tables), auto-discovery,
-workspaces, the package DAG, `.phsi`, and linking libs into a bin. Stage0
-does not implement: the incremental cache, the lockfile, git dependencies,
-parallel builds, or cross-compilation.
+**Current status:** stage0 is frontend-only. It provides the `lex`, `parse`,
+and `check` commands on single files, and none of the package or workspace
+features in this chapter work yet.
+
+**Planned scope** (milestone P2, required before the compiler is ported to
+Phantasos):
+- Manifest parsing for the TOML subset (strings, integers, booleans, string
+  arrays, inline tables, and tables).
+- Auto-discovery and workspaces.
+- The package DAG.
+- `.phsi` interface files.
+- Linking libs into a bin.
+
+Stage0 will never implement: the incremental cache, the lockfile, git
+dependencies, parallel builds, or cross-compilation. These belong to the
+self-hosted build tool.

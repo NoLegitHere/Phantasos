@@ -13,8 +13,21 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Spec 1.3: newlines inside generic lists and after ':' / '=' / '->' continue
-// the declaration.
+// Spec 1.3: newlines inside generic lists and after ':' / '=' / '->' / '.'
+// continue the declaration.
+
+import std.
+    collections.
+    map as m
+
+type Qualified = geometry.
+    shapes.Point
+
+fun qualifiedPattern(e: Expr) = match e {
+    Expr.
+        Int(0) -> 1
+    _ -> 0
+}
 
 class Table<
     K: Hashable,

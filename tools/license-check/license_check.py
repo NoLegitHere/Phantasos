@@ -83,6 +83,10 @@ YEAR_RE = r"\d{4}(?:-\d{4})?"
 
 UTF8_BOM = b"\xef\xbb\xbf"
 
+# One source line including its terminator (CRLF, LF or lone CR), or a final
+# unterminated line.
+LINE_RE = re.compile(r"[^\r\n]*(?:\r\n|\r|\n)|[^\r\n]+\Z")
+
 
 def comment_style(path: Path) -> str | None:
     if path.name in BY_NAME:
@@ -151,17 +155,23 @@ def main(argv: list[str]) -> int:
         bom = raw.startswith(UTF8_BOM)
         text = raw[len(UTF8_BOM) if bom else 0 :].decode("utf-8", errors="surrogateescape")
         newline = "\r\n" if "\r\n" in text else "\n"
-        lines = text.splitlines()
+        # Split on source line endings only. str.splitlines() would also split
+        # on U+2028, U+0085, form feed, etc., which may appear inside literals.
+        chunks = LINE_RE.findall(text)
+        lines = [c.rstrip("\r\n") for c in chunks]
         if has_header(lines, prefix):
             continue
         if not args.fix:
             missing.append(path)
             continue
         pre = preamble_len(lines)
-        body = lines[pre:]
-        sep = [""] if body and body[0].strip() else []
-        new_lines = lines[:pre] + render_header(prefix, args.year) + sep + body
-        out = (newline.join(new_lines) + newline).encode("utf-8", errors="surrogateescape")
+        head = "".join(chunks[:pre])
+        if head and not head.endswith(("\n", "\r")):
+            head += newline
+        body = "".join(chunks[pre:])
+        header = newline.join(render_header(prefix, args.year)) + newline
+        sep = newline if body and lines[pre].strip() else ""
+        out = (head + header + sep + body).encode("utf-8", errors="surrogateescape")
         path.write_bytes((UTF8_BOM if bom else b"") + out)
         print(f"fixed: {path.relative_to(root).as_posix()}")
 

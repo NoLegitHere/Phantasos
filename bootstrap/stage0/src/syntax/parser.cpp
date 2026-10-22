@@ -15,6 +15,7 @@
 
 #include "syntax/parser.hpp"
 
+#include <algorithm>
 #include <optional>
 #include <string>
 #include <utility>
@@ -35,7 +36,11 @@ public:
         for (const Diagnostic& d : diag_.all()) {
             std::string_view code = d.code;
             if (code == "E0010" || code == "E0003") lexer_reported_unclosed_ = true;
+            // Errors for characters the lexer dropped without producing a token.
+            bool dropped = code == "E0001" || code == "E0008" || code == "E0011";
+            if (dropped && d.span.file == file_) lexer_error_offsets_.push_back(d.span.lo);
         }
+        std::sort(lexer_error_offsets_.begin(), lexer_error_offsets_.end());
     }
 
     File* run() {
@@ -118,12 +123,27 @@ private:
         // An unexpected end of file is already explained by the lexer's
         // "unclosed delimiter" / "unterminated string" error.
         if (at(Tok::Eof) && lexer_reported_unclosed_) return;
+        // Likewise when the lexer dropped an invalid character just before
+        // this token (e.g. `let x = $`): its error already explains this one.
+        if (lexer_error_in_gap()) return;
         last_error_pos_ = pos_;
         diag_.error(code, span, std::move(msg));
     }
 
     void error_expected(const char* code, const std::string& what) {
         error(code, cur().span, "expected " + what + ", found " + describe(cur()));
+    }
+
+    // True if a lexer error starts between the last non-newline token and the
+    // current token, i.e. the lexer skipped something right here.
+    bool lexer_error_in_gap() const {
+        if (lexer_error_offsets_.empty()) return false;
+        usize k = pos_;
+        while (k > 0 && toks_[k - 1].kind == Tok::Newline) --k;
+        u32 lo = k > 0 ? toks_[k - 1].span.hi : 0;
+        u32 hi = cur().span.lo;
+        auto it = std::lower_bound(lexer_error_offsets_.begin(), lexer_error_offsets_.end(), lo);
+        return it != lexer_error_offsets_.end() && *it < hi;
     }
 
     bool expect(Tok k) {
@@ -235,12 +255,22 @@ private:
         return imp;
     }
 
+    // True if the current token is '.' followed by an identifier, possibly on
+    // a later line (spec 1.3: newlines after '.' continue the line).
+    bool at_dot_then_ident() const {
+        if (!at(Tok::Dot)) return false;
+        usize k = 1;
+        while (peek(k).kind == Tok::Newline) ++k;
+        return peek(k).kind == Tok::Ident;
+    }
+
     Path parse_path(const char* what) {
         Span start = cur().span;
         std::vector<Name> parts;
         parts.push_back(expect_name(what));
-        while (at(Tok::Dot) && peek().kind == Tok::Ident) {
+        while (at_dot_then_ident()) {
             advance();
+            skip_newlines();
             parts.push_back(expect_name(what));
         }
         return Path{arena_.copy(parts), from(start)};
@@ -1490,6 +1520,7 @@ private:
                 std::vector<Name> path{expect_name("enum case name")};
                 while (at(Tok::Dot)) {
                     advance();
+                    skip_newlines();
                     path.push_back(expect_name("enum case name"));
                 }
                 p->path = arena_.copy(path);
@@ -1519,6 +1550,7 @@ private:
     bool no_leading_dot_ = false;
     bool cast_type_ = false;
     bool lexer_reported_unclosed_ = false;
+    std::vector<u32> lexer_error_offsets_;
     std::vector<std::pair<usize, Token>> split_log_;
 };
 

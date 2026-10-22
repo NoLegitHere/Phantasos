@@ -46,7 +46,10 @@ DeinitDecl    = 'deinit' Block
 VarDecl       = ( 'let' | 'var' | 'const' ) Ident [ ':' Type ] [ '=' Expr ]
 ExternBlock   = 'extern' StringLit '{' { ExternFun Terms } '}'
 ExternFun     = { Attribute } [ Visibility ] { Modifier } FunDecl   (* e.g. public unsafe fun ... *)
-TypeAlias     = 'type' Ident [ GenericParams ] '=' Type
+TypeAlias     = 'type' Ident [ GenericParams ] [ ':' Bounds ] [ '=' Type ]
+                (* Outside interfaces: '= Type' is required and ': Bounds' is not allowed.
+                   Inside an interface body this declares an associated type:
+                   `type Item`, `type Item: Equatable`, or with a default `type Index = Int`. *)
 
 GenericParams = '<' GenericParam { ',' GenericParam } [ ',' ] '>'
 GenericParam  = Ident [ ':' Bounds ]

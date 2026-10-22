@@ -61,8 +61,21 @@ There are **no implicit numeric conversions**. Widening is written
 - Immutability is **deep for value types**. For class references it is
   shallow: a `let` binding holding a class reference cannot be reassigned,
   but the object can still be mutated through its `mut` methods (by the rule
-  above) if its fields are `var`. A class whose fields are all `let` is
-  **deeply immutable** and is automatically `Sendable`.
+  above) if its fields are `var`.
+- A type is **deeply immutable** when no state reachable from it can ever
+  change. The definition is recursive:
+  - primitive types, `String`, `()`, and `Never`;
+  - `T?` and `[T]` when `T` is deeply immutable;
+  - value types whose fields all have deeply immutable types;
+  - `shared T` when `T` is deeply immutable;
+  - classes that are **not `open`**, whose stored fields, including
+    inherited ones, are all `let` and all have deeply immutable types.
+
+  `var` fields, `weak T`, raw pointers, and `open` classes are never deeply
+  immutable; an `open` class is excluded because a subclass could add mutable
+  state. Recursive types are checked coinductively, so a class may refer to
+  itself through a `let` field, for example `let next: shared Node?`.
+  Deeply immutable types are automatically `Sendable` (ch. 5).
 
 ## 3.4 Ownership, borrowing, and destruction
 - **Ownership.**

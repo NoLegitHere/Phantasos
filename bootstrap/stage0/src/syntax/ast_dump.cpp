@@ -17,6 +17,8 @@
 
 #include <charconv>
 
+#include "support/utf8.hpp"
+
 namespace phs {
 
 using namespace ast;
@@ -25,7 +27,25 @@ namespace {
 
 std::string quote(std::string_view s) {
     std::string out = "\"";
-    for (char c : s) {
+    for (usize i = 0; i < s.size();) {
+        char c = s[i];
+        if (static_cast<u8>(c) >= 0x80) {
+            // Valid UTF-8 is copied through; invalid bytes are escaped so dumps
+            // are always valid UTF-8.
+            u32 cp;
+            u32 len = utf8_decode(s.data() + i, s.size() - i, &cp);
+            if (len) {
+                out.append(s.data() + i, len);
+                i += len;
+            } else {
+                char buf[16];
+                std::snprintf(buf, sizeof buf, "\\x{%02X}", static_cast<unsigned>(static_cast<u8>(c)));
+                out += buf;
+                ++i;
+            }
+            continue;
+        }
+        ++i;
         switch (c) {
             case '\n': out += "\\n"; break;
             case '\r': out += "\\r"; break;
@@ -34,7 +54,7 @@ std::string quote(std::string_view s) {
             case '"': out += "\\\""; break;
             case '\\': out += "\\\\"; break;
             default:
-                if (static_cast<u8>(c) < 0x20) {
+                if (static_cast<u8>(c) < 0x20 || c == 0x7F) {
                     char buf[16];
                     std::snprintf(buf, sizeof buf, "\\u{%x}", static_cast<unsigned>(c));
                     out += buf;

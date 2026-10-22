@@ -40,7 +40,7 @@ The language is specified in [`docs/spec`](docs/spec).
 |---|---|
 | `docs/spec/` | Language and ABI specification |
 | `docs/adr/` | Architecture decision records |
-| `bootstrap/stage0/` | Minimal C++23 bootstrap compiler with a workspace-aware build driver |
+| `bootstrap/stage0/` | Minimal C++23 bootstrap compiler: frontend (lexer, parser) today; workspace-aware build driver planned |
 | `compiler/` | Self-hosted compiler (a Phantasos workspace), planned |
 | `runtime/` | `rt`, the privileged runtime, planned |
 | `std/` | Standard library (privileged), planned |

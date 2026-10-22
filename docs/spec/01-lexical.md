@@ -2,7 +2,10 @@
 
 ## 1.1 Source text
 - Source files use the `.phs` extension and are encoded in UTF-8. A leading
-  BOM is ignored.
+  BOM is ignored. Invalid UTF-8 anywhere in a file, including inside
+  comments and literals, is an error (`E0011`). Invalid UTF-8 means truncated
+  or overlong sequences, encoded surrogates, values above U+10FFFF, or stray
+  continuation bytes.
 - `CRLF` and lone `CR` are both treated as a single line terminator.
 - Non-ASCII characters are allowed only in comments, string literals, and
   character literals. Unicode identifiers (UAX #31 XID) are planned for the
@@ -61,7 +64,9 @@ Reserved for future use, and lexed as keywords: `comptime macro yield spawn`.
   (default `Int`).
 - **Float**: `1.5`, `1e9`, `2.5e-3`. The `.` must have a digit on both sides
   (`1.` and `.5` are not floats), so `1..2` lexes as `1` `..` `2`. Defaults to
-  `Float64`.
+  `Float64`. The value is rounded to the nearest `Float64`; a literal whose
+  value overflows to infinity, or a non-zero literal that underflows to zero,
+  is an error (`E0005`). Subnormal results are allowed.
 - **Character**: `'a'`, `'\n'`, `'\u{1F600}'`. Its value is one Unicode
   scalar value, of type `Char`.
 - **String**: `"text"`. Escapes are `\n \r \t \0 \\ \" \' \u{H..H}`

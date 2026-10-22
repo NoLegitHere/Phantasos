@@ -17,6 +17,8 @@
 
 #include <algorithm>
 
+#include "support/utf8.hpp"
+
 namespace phs {
 
 Diagnostic& DiagEngine::error(const char* code, Span span, std::string message) {
@@ -59,19 +61,32 @@ void DiagEngine::render_one(std::FILE* out, const Diagnostic& d) const {
 void DiagEngine::render_snippet(std::FILE* out, Span span) const {
     LineCol lc = sm_.line_col(span.file, span.lo);
     std::string_view line = sm_.line_text(span.file, lc.line);
-    std::fprintf(out, "%5u | %.*s\n      | ", lc.line, (int)line.size(), line.data());
+
+    // Echo the line with invalid UTF-8 bytes replaced by U+FFFD so that the
+    // output stays valid UTF-8; each replacement is one column, matching
+    // utf8_step() used for caret placement and SourceManager::line_col().
+    std::fprintf(out, "%5u | ", lc.line);
+    for (usize k = 0; k < line.size();) {
+        u32 cp;
+        u32 len = utf8_decode(line.data() + k, line.size() - k, &cp);
+        if (len) {
+            std::fwrite(line.data() + k, 1, len, out);
+            k += len;
+        } else {
+            std::fputs("\xEF\xBF\xBD", out);
+            ++k;
+        }
+    }
+    std::fputs("\n      | ", out);
 
     const std::string& text = sm_.file(span.file).text;
     u32 line_start = static_cast<u32>(line.data() - text.data());
     u32 line_end = line_start + static_cast<u32>(line.size());
-    for (u32 k = line_start; k < span.lo && k < line_end; ++k) {
-        if (((u8)text[k] & 0xC0) == 0x80) continue;
+    for (u32 k = line_start; k < span.lo && k < line_end; k += utf8_step(text.data() + k, line_end - k))
         std::fputc(text[k] == '\t' ? '\t' : ' ', out);
-    }
     u32 hi = span.hi < line_end ? span.hi : line_end;
     u32 width = 0;
-    for (u32 k = span.lo; k < hi; ++k)
-        if (((u8)text[k] & 0xC0) != 0x80) ++width;
+    for (u32 k = span.lo; k < hi; k += utf8_step(text.data() + k, hi - k)) ++width;
     if (width == 0) width = 1;
     for (u32 k = 0; k < width; ++k) std::fputc('^', out);
     std::fputc('\n', out);

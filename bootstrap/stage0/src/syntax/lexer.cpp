@@ -16,7 +16,11 @@
 #include "syntax/lexer.hpp"
 
 #include <charconv>
+#include <cmath>
 #include <string>
+#include <system_error>
+
+#include "support/utf8.hpp"
 
 namespace phs {
 
@@ -57,6 +61,7 @@ public:
         : src_(sm.file(file).text), file_(file), in_(in), diag_(diag) {}
 
     std::vector<Token> run() {
+        validate_utf8();
         while (true) {
             skip_trivia();
             if (pos_ >= src_.size()) break;
@@ -86,6 +91,28 @@ private:
     Span span(u32 lo, u32 hi) const { return {file_, lo, hi}; }
     char peek(u32 off = 0) const { return pos_ + off < src_.size() ? src_[pos_ + off] : '\0'; }
     bool newline_significant() const { return stack_.empty() || stack_.back().ch == '{'; }
+
+    // Source files must be UTF-8 (spec 1.1). Each run of invalid bytes is
+    // reported once here; later stages treat such bytes as opaque.
+    void validate_utf8() {
+        u32 n = static_cast<u32>(src_.size());
+        u32 i = 0;
+        while (i < n) {
+            if (static_cast<u8>(src_[i]) < 0x80) {
+                ++i;
+                continue;
+            }
+            u32 cp;
+            u32 len = utf8_decode(src_.data() + i, n - i, &cp);
+            if (len) {
+                i += len;
+                continue;
+            }
+            u32 start = i++;
+            while (i < n && static_cast<u8>(src_[i]) >= 0x80 && !utf8_decode(src_.data() + i, n - i, &cp)) ++i;
+            diag_.error("E0011", span(start, i), "invalid UTF-8 in source file");
+        }
+    }
 
     Token& push(Tok kind, u32 lo) {
         Token t;
@@ -153,9 +180,11 @@ private:
         }
         if (c == '\'') return lex_char();
         if (static_cast<u8>(c) >= 0x80) {
-            ++pos_;
-            while (pos_ < src_.size() && (static_cast<u8>(src_[pos_]) & 0xC0) == 0x80) ++pos_;
-            diag_.error("E0008", span(start, pos_), "non-ASCII character outside of a literal or comment");
+            u32 cp;
+            u32 len = utf8_decode(src_.data() + pos_, src_.size() - pos_, &cp);
+            pos_ += len ? len : 1;
+            // Invalid bytes were already reported by validate_utf8().
+            if (len) diag_.error("E0008", span(start, pos_), "non-ASCII character outside of a literal or comment");
             space_ = true;
             return;
         }
@@ -247,9 +276,19 @@ private:
 
         if (is_float) {
             double v = 0;
-            std::from_chars(clean.data(), clean.data() + clean.size(), v);
+            auto [ptr, ec] = std::from_chars(clean.data(), clean.data() + clean.size(), v);
+            // Out-of-range results differ between C++ libraries (inf, 0, or the
+            // input left untouched), so reject them all explicitly.
+            bool nonzero_digits = false;
+            for (char d : clean) {
+                if (d == 'e' || d == 'E') break;
+                if (d >= '1' && d <= '9') nonzero_digits = true;
+            }
+            bool bad = ec != std::errc{} || ptr != clean.data() + clean.size() || std::isinf(v) ||
+                       (v == 0.0 && nonzero_digits);
+            if (bad) diag_.error("E0005", span(start, end), "float literal is out of range for Float64");
             Token& t = push(Tok::FloatLit, start);
-            t.float_value = v;
+            t.float_value = bad ? 0.0 : v;
             return;
         }
         u64 value = 0;
@@ -364,17 +403,27 @@ private:
             return;
         }
         ++pos_;
-        // Decode exactly one UTF-8 scalar value from buf.
+        // Decode exactly one UTF-8 scalar value from buf. Invalid bytes were
+        // already reported by validate_utf8(), so they only yield value 0.
         u32 cp = 0;
-        usize len = 0;
-        if (!buf.empty()) {
-            u8 b0 = static_cast<u8>(buf[0]);
-            len = b0 < 0x80 ? 1 : (b0 >> 5) == 0x6 ? 2 : (b0 >> 4) == 0xE ? 3 : 4;
-            cp = len == 1 ? b0 : len == 2 ? (b0 & 0x1F) : len == 3 ? (b0 & 0x0F) : (b0 & 0x07);
-            for (usize i = 1; i < len && i < buf.size(); ++i) cp = (cp << 6) | (static_cast<u8>(buf[i]) & 0x3F);
+        u32 count = 0;
+        bool valid = true;
+        for (usize i = 0; i < buf.size();) {
+            u32 c = 0;
+            u32 len = utf8_decode(buf.data() + i, buf.size() - i, &c);
+            if (!len) {
+                valid = false;
+                break;
+            }
+            if (count == 0) cp = c;
+            ++count;
+            i += len;
         }
-        if (buf.size() != len)
+        if (!valid) {
+            cp = 0;
+        } else if (count != 1) {
             diag_.error("E0007", span(start, pos_), "character literal must contain exactly one character");
+        }
         push(Tok::CharLit, start).char_value = cp;
     }
 

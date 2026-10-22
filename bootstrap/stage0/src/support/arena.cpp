@@ -15,6 +15,7 @@
 
 #include "support/arena.hpp"
 
+#include <cstdint>
 #include <cstdlib>
 
 namespace phs {
@@ -34,23 +35,33 @@ Arena::~Arena() {
 
 void* Arena::alloc(usize size, usize align) {
     PHS_ASSERT(align != 0 && (align & (align - 1)) == 0);
-    auto aligned = [&](char* p) {
+    // Padding needed to align p, computed on integers so that no pointer is
+    // ever formed outside the current chunk.
+    auto padding_for = [&](const char* p) -> usize {
         auto v = reinterpret_cast<std::uintptr_t>(p);
-        return reinterpret_cast<char*>((v + align - 1) & ~(std::uintptr_t)(align - 1));
+        return static_cast<usize>((align - (v & (align - 1))) & (align - 1));
     };
-    char* p = cur_ ? aligned(cur_) : nullptr;
-    if (!p || p + size > end_) {
-        usize need = size + align + sizeof(Chunk);
-        usize chunk = need > kChunkSize ? need : kChunkSize;
-        auto* c = static_cast<Chunk*>(std::malloc(chunk));
-        if (!c) fatal(__FILE__, __LINE__, "out of memory");
-        c->prev = head_;
-        c->size = chunk;
-        head_ = c;
-        cur_ = reinterpret_cast<char*>(c + 1);
-        end_ = reinterpret_cast<char*>(c) + chunk;
-        p = aligned(cur_);
+    if (cur_) {
+        usize avail = static_cast<usize>(end_ - cur_);
+        usize pad = padding_for(cur_);
+        if (pad <= avail && size <= avail - pad) {
+            char* p = cur_ + pad;
+            cur_ = p + size;
+            used_ += size;
+            return p;
+        }
     }
+    if (size > SIZE_MAX - align - sizeof(Chunk)) fatal(__FILE__, __LINE__, "allocation too large");
+    usize need = sizeof(Chunk) + align + size;
+    usize chunk = need > kChunkSize ? need : kChunkSize;
+    auto* c = static_cast<Chunk*>(std::malloc(chunk));
+    if (!c) fatal(__FILE__, __LINE__, "out of memory");
+    c->prev = head_;
+    c->size = chunk;
+    head_ = c;
+    char* base = reinterpret_cast<char*>(c + 1);
+    end_ = reinterpret_cast<char*>(c) + chunk;
+    char* p = base + padding_for(base);  // pad < align, so p + size <= end_ by construction
     cur_ = p + size;
     used_ += size;
     return p;

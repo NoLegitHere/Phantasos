@@ -15,22 +15,35 @@
 
 #pragma once
 
+#include <algorithm>
+#include <compare>
+#include <deque>
+#include <expected>
+#include <filesystem>
+#include <limits>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <vector>
 
 #include "support/common.hpp"
 
 namespace phs {
 
-using FileId = u32;
+struct FileId {
+    u32 value = 0;
+    friend auto operator<=>(FileId, FileId) = default;
+};
 
 struct Span {
-    FileId file = 0;
+    FileId file;
     u32 lo = 0;
     u32 hi = 0;
 
-    static Span join(Span a, Span b) { return {a.file, a.lo, b.hi > a.hi ? b.hi : a.hi}; }
+    static Span join(Span a, Span b) {
+        PHS_ASSERT(a.file == b.file && a.lo <= a.hi && b.lo <= b.hi);
+        return {a.file, std::min(a.lo, b.lo), std::max(a.hi, b.hi)};
+    }
 };
 
 struct LineCol {
@@ -44,18 +57,47 @@ struct SourceFile {
     std::vector<u32> line_starts;
 };
 
+enum class SourceErrorKind : u8 { Metadata, NotRegularFile, Open, Read, ChangedDuringRead, TooLarge, TooManyFiles };
+
+struct SourceError {
+    SourceErrorKind kind;
+    std::error_code cause;
+    u32 limit = 0;  // bytes for TooLarge, file count for TooManyFiles
+
+    std::string message() const;
+};
+
+struct SourceLimits {
+    // Leave room for the EOF position and 1-based line/column numbers.
+    static constexpr u32 kMaxFileBytes = std::numeric_limits<u32>::max() - 1;
+    u32 max_file_bytes = 64 * 1024 * 1024;
+    u32 max_files = std::numeric_limits<u32>::max();
+};
+
 class SourceManager {
 public:
-    // Returns false if the file cannot be read.
-    bool load(const std::string& path, FileId& out);
-    FileId add(std::string path, std::string text);
+    explicit SourceManager(SourceLimits limits = {}) : limits_(limits) {
+        PHS_ASSERT(limits.max_file_bytes <= SourceLimits::kMaxFileBytes);
+    }
 
-    const SourceFile& file(FileId id) const { return files_[id]; }
+    // Limits apply to raw bytes before BOM/line-ending normalization. Failure
+    // leaves the manager unchanged; IDs are assigned only on success.
+    [[nodiscard]] std::expected<FileId, SourceError> load(const std::filesystem::path& path);
+    [[nodiscard]] std::expected<FileId, SourceError> add(std::string path, std::string_view text);
+
+    // References and text views survive subsequent load/add calls.
+    const SourceFile& file(FileId id) const {
+        PHS_ASSERT(id.value < files_.size());
+        return files_[id.value];
+    }
     LineCol line_col(FileId id, u32 offset) const;
     std::string_view line_text(FileId id, u32 line) const;
 
 private:
-    std::vector<SourceFile> files_;
+    std::expected<void, SourceError> check_limits(std::uintmax_t bytes) const;
+
+    SourceLimits limits_;
+    std::deque<SourceFile> files_;
 };
 
 }  // namespace phs

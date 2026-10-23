@@ -16,6 +16,7 @@
 #pragma once
 
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 #include "support/arena.hpp"
@@ -26,21 +27,28 @@ namespace phs {
 struct Symbol {
     u32 id = 0;
     bool empty() const { return id == 0; }
-    friend bool operator==(Symbol a, Symbol b) { return a.id == b.id; }
+    friend bool operator==(Symbol, Symbol) = default;
 };
 
 class Interner {
 public:
-    Interner();
-    Symbol intern(std::string_view s);
+    Symbol intern(std::string_view s) {
+        if (s.empty()) return {};
+        if (auto it = ids_.find(s); it != ids_.end()) return {it->second};
+        const auto id = static_cast<u32>(strings_.size());
+        const std::string_view stored = arena_.copy_str(s);  // stable storage for the map key
+        strings_.push_back(stored);
+        ids_.emplace(stored, id);
+        return {id};
+    }
+
     std::string_view str(Symbol s) const { return strings_[s.id]; }
     usize size() const { return strings_.size(); }
 
 private:
-    void grow();
     Arena arena_;
-    std::vector<std::string_view> strings_;
-    std::vector<u32> table_;  // open addressing; stores id+1, 0 = empty slot
+    std::vector<std::string_view> strings_{std::string_view{}};  // id 0 = ""
+    std::unordered_map<std::string_view, u32> ids_;
 };
 
 }  // namespace phs

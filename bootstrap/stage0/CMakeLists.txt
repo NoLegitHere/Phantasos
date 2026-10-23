@@ -27,13 +27,23 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+# Stage0 uses headers, so it does not need the separate clang-scan-deps tool.
+set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
+
+include(cmake/CheckStandardLibrary.cmake)
 
 option(PHS_WERROR "Treat warnings as errors" OFF)
 
-add_executable(phantasos-stage0
-    src/main.cpp
-    src/support/arena.cpp
-    src/support/interner.cpp
+# Warnings belong to our targets; language/ABI requirements follow the library
+# into consumers, including the CLI and the focused tests.
+function(phs_warnings target)
+    target_compile_options(${target} PRIVATE
+        -Wall -Wextra -Wpedantic -Wshadow -Wno-missing-field-initializers
+        $<$<BOOL:${PHS_WERROR}>:-Werror>
+    )
+endfunction()
+
+add_library(phantasos_frontend STATIC
     src/support/source.cpp
     src/support/diag.cpp
     src/syntax/token.cpp
@@ -41,15 +51,27 @@ add_executable(phantasos-stage0
     src/syntax/parser.cpp
     src/syntax/ast_dump.cpp
 )
+add_library(Phantasos::Frontend ALIAS phantasos_frontend)
+target_include_directories(phantasos_frontend PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_compile_features(phantasos_frontend PUBLIC cxx_std_23)
+target_compile_definitions(phantasos_frontend PUBLIC
+    # Tell the MSVC STL (used by clang on Windows) that exceptions are disabled.
+    $<$<PLATFORM_ID:Windows>:_HAS_EXCEPTIONS=0>
+)
+target_compile_options(phantasos_frontend PUBLIC -fno-exceptions -fno-rtti)
+phs_warnings(phantasos_frontend)
 
-target_include_directories(phantasos-stage0 PRIVATE src)
-target_compile_definitions(phantasos-stage0 PRIVATE
-    PHS_VERSION="${PROJECT_VERSION}"
-    _HAS_EXCEPTIONS=0
-    _CRT_SECURE_NO_WARNINGS
-)
-target_compile_options(phantasos-stage0 PRIVATE
-    -fno-exceptions -fno-rtti
-    -Wall -Wextra -Wpedantic -Wshadow -Wno-missing-field-initializers
-    $<$<BOOL:${PHS_WERROR}>:-Werror>
-)
+add_executable(phantasos-stage0 src/main.cpp)
+target_link_libraries(phantasos-stage0 PRIVATE Phantasos::Frontend)
+target_compile_definitions(phantasos-stage0 PRIVATE PHS_VERSION="${PROJECT_VERSION}")
+phs_warnings(phantasos-stage0)
+
+include(CTest)
+if(BUILD_TESTING)
+    foreach(suite IN ITEMS support frontend)
+        add_executable(phantasos-${suite}-tests tests/${suite}_tests.cpp)
+        target_link_libraries(phantasos-${suite}-tests PRIVATE Phantasos::Frontend)
+        phs_warnings(phantasos-${suite}-tests)
+        add_test(NAME ${suite} COMMAND phantasos-${suite}-tests)
+    endforeach()
+endif()

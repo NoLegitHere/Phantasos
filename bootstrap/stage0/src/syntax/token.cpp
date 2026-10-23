@@ -15,55 +15,59 @@
 
 #include "syntax/token.hpp"
 
+#include <array>
+#include <utility>
+
 namespace phs {
 
 namespace {
 
-const char* const kNames[] = {
+constexpr auto kNames = std::to_array<std::string_view>({
 #define PHS_X(name, spelling) #name,
     PHS_TOKENS(PHS_X)
 #undef PHS_X
 #define PHS_K(name, text) "Kw" #name,
     PHS_KEYWORDS(PHS_K)
 #undef PHS_K
-};
+});
 
-const char* const kSpellings[] = {
+constexpr auto kSpellings = std::to_array<std::string_view>({
 #define PHS_X(name, spelling) spelling,
     PHS_TOKENS(PHS_X)
 #undef PHS_X
 #define PHS_K(name, text) "'" text "'",
     PHS_KEYWORDS(PHS_K)
 #undef PHS_K
-};
+});
 
-const char* const kKeywordTexts[] = {
+constexpr auto kKeywordTexts = std::to_array<std::string_view>({
 #define PHS_K(name, text) text,
     PHS_KEYWORDS(PHS_K)
 #undef PHS_K
-};
+});
 
-constexpr u32 kKeywordCount = sizeof(kKeywordTexts) / sizeof(kKeywordTexts[0]);
-constexpr u32 kFirstKeyword = static_cast<u32>(Tok::KwAbstract);
-
-static_assert(sizeof(kNames) / sizeof(kNames[0]) == static_cast<usize>(Tok::Count_));
+constexpr auto kFirstKeyword = std::to_underlying(Tok::KwAbstract);
+static_assert(kSpellings.size() == kNames.size());
+static_assert(kFirstKeyword + kKeywordTexts.size() == kNames.size());
 
 }  // namespace
 
-const char* tok_name(Tok k) { return kNames[static_cast<usize>(k)]; }
-const char* tok_spelling(Tok k) { return kSpellings[static_cast<usize>(k)]; }
-bool tok_is_keyword(Tok k) { return static_cast<u32>(k) >= kFirstKeyword && k != Tok::Count_; }
+std::string_view tok_name(Tok k) { return kNames[std::to_underlying(k)]; }
+std::string_view tok_spelling(Tok k) { return kSpellings[std::to_underlying(k)]; }
+bool tok_is_keyword(Tok k) { return std::to_underlying(k) >= kFirstKeyword; }
 
+// Keyword i is interned first, so its Symbol id is i + 1 and keyword lookup in
+// the lexer is a range check instead of a second hash lookup.
 void seed_keywords(Interner& in) {
     PHS_ASSERT(in.size() == 1);
-    for (u32 i = 0; i < kKeywordCount; ++i) {
-        Symbol s = in.intern(kKeywordTexts[i]);
+    for (u32 i = 0; i < kKeywordTexts.size(); ++i) {
+        const Symbol s = in.intern(kKeywordTexts[i]);
         PHS_ASSERT(s.id == i + 1);
     }
 }
 
 Tok keyword_kind(Symbol s) {
-    if (s.id >= 1 && s.id <= kKeywordCount) return static_cast<Tok>(kFirstKeyword + s.id - 1);
+    if (s.id >= 1 && s.id <= kKeywordTexts.size()) return static_cast<Tok>(kFirstKeyword + s.id - 1);
     return Tok::Ident;
 }
 

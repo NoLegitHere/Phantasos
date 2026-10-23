@@ -16,80 +16,78 @@
 #include "support/diag.hpp"
 
 #include <algorithm>
+#include <print>
+#include <utility>
 
 #include "support/utf8.hpp"
 
 namespace phs {
 
-Diagnostic& DiagEngine::error(const char* code, Span span, std::string message) {
-    ++errors_;
-    diags_.push_back({Severity::Error, code, span, std::move(message), {}});
-    return diags_.back();
+namespace {
+
+constexpr std::string_view severity_name(Severity s) {
+    switch (s) {
+        case Severity::Error: return "error";
+        case Severity::Warning: return "warning";
+        case Severity::Note: return "note";
+    }
+    unreachable();
 }
 
-Diagnostic& DiagEngine::warning(const char* code, Span span, std::string message) {
-    diags_.push_back({Severity::Warning, code, span, std::move(message), {}});
-    return diags_.back();
+// Invalid UTF-8 bytes become U+FFFD so the output is always valid UTF-8. Each
+// replacement is one column, matching utf8_step() used for caret placement.
+std::string sanitize_utf8(std::string_view s) {
+    std::string out;
+    out.reserve(s.size());
+    while (!s.empty()) {
+        const auto c = utf8_decode(s);
+        const u32 len = c ? c->len : 1;
+        out += c ? s.substr(0, len) : "\uFFFD";
+        s.remove_prefix(len);
+    }
+    return out;
 }
+
+}  // namespace
 
 void DiagEngine::render(std::FILE* out) const {
     // Present diagnostics in source order regardless of which phase found them.
     std::vector<const Diagnostic*> sorted;
     sorted.reserve(diags_.size());
     for (const Diagnostic& d : diags_) sorted.push_back(&d);
-    std::stable_sort(sorted.begin(), sorted.end(), [](const Diagnostic* a, const Diagnostic* b) {
-        if (a->span.file != b->span.file) return a->span.file < b->span.file;
-        return a->span.lo < b->span.lo;
-    });
+    std::ranges::stable_sort(sorted, {}, [](const Diagnostic* d) { return std::pair{d->span.file, d->span.lo}; });
     for (const Diagnostic* d : sorted) render_one(out, *d);
 }
 
 void DiagEngine::render_one(std::FILE* out, const Diagnostic& d) const {
-    const char* sev = d.severity == Severity::Error ? "error" : d.severity == Severity::Warning ? "warning" : "note";
-    LineCol lc = sm_.line_col(d.span.file, d.span.lo);
-    std::fprintf(out, "%s:%u:%u: %s[%s]: %s\n", sm_.file(d.span.file).path.c_str(), lc.line, lc.col, sev, d.code,
-                 d.message.c_str());
+    const LineCol lc = sm_.line_col(d.span.file, d.span.lo);
+    std::println(out, "{}:{}:{}: {}[{}]: {}", sm_.file(d.span.file).path, lc.line, lc.col, severity_name(d.severity),
+                 diag_code(d.code), d.message);
     render_snippet(out, d.span);
     for (const DiagNote& n : d.notes) {
-        LineCol nlc = sm_.line_col(n.span.file, n.span.lo);
-        std::fprintf(out, "%s:%u:%u: note: %s\n", sm_.file(n.span.file).path.c_str(), nlc.line, nlc.col,
-                     n.message.c_str());
+        const LineCol nlc = sm_.line_col(n.span.file, n.span.lo);
+        std::println(out, "{}:{}:{}: note: {}", sm_.file(n.span.file).path, nlc.line, nlc.col, n.message);
         render_snippet(out, n.span);
     }
 }
 
 void DiagEngine::render_snippet(std::FILE* out, Span span) const {
-    LineCol lc = sm_.line_col(span.file, span.lo);
-    std::string_view line = sm_.line_text(span.file, lc.line);
+    const LineCol lc = sm_.line_col(span.file, span.lo);
+    const std::string_view line = sm_.line_text(span.file, lc.line);
+    const std::string_view text = sm_.file(span.file).text;
+    const auto line_start = static_cast<u32>(line.data() - text.data());
+    const auto line_end = line_start + static_cast<u32>(line.size());
 
-    // Echo the line with invalid UTF-8 bytes replaced by U+FFFD so that the
-    // output stays valid UTF-8; each replacement is one column, matching
-    // utf8_step() used for caret placement and SourceManager::line_col().
-    std::fprintf(out, "%5u | ", lc.line);
-    for (usize k = 0; k < line.size();) {
-        u32 cp;
-        u32 len = utf8_decode(line.data() + k, line.size() - k, &cp);
-        if (len) {
-            std::fwrite(line.data() + k, 1, len, out);
-            k += len;
-        } else {
-            std::fputs("\xEF\xBF\xBD", out);
-            ++k;
-        }
-    }
-    std::fputs("\n      | ", out);
+    // Keep tabs so the carets line up under the echoed source.
+    std::string indent;
+    for (u32 k = line_start; k < std::min(span.lo, line_end); k += utf8_step(text.substr(k, line_end - k)))
+        indent += text[k] == '\t' ? '\t' : ' ';
+    const u32 hi = std::min(span.hi, line_end);
+    usize width = 0;
+    for (u32 k = span.lo; k < hi; k += utf8_step(text.substr(k, hi - k))) ++width;
 
-    const std::string& text = sm_.file(span.file).text;
-    u32 line_start = static_cast<u32>(line.data() - text.data());
-    u32 line_end = line_start + static_cast<u32>(line.size());
-    for (u32 k = line_start; k < span.lo && k < line_end; k += utf8_step(text.data() + k, line_end - k))
-        std::fputc(text[k] == '\t' ? '\t' : ' ', out);
-    u32 hi = span.hi < line_end ? span.hi : line_end;
-    u32 width = 0;
-    for (u32 k = span.lo; k < hi; k += utf8_step(text.data() + k, hi - k)) ++width;
-    if (width == 0) width = 1;
-    for (u32 k = 0; k < width; ++k) std::fputc('^', out);
-    std::fputc('\n', out);
+    std::println(out, "{:5} | {}", lc.line, sanitize_utf8(line));
+    std::println(out, "      | {}{}", indent, std::string(std::max<usize>(width, 1), '^'));
 }
 
 }  // namespace phs

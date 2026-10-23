@@ -16,9 +16,13 @@
 #include "syntax/parser.hpp"
 
 #include <algorithm>
+#include <format>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
+
+#include "support/scoped_value.hpp"
 
 namespace phs {
 
@@ -34,13 +38,15 @@ public:
         : file_(file), toks_(std::move(toks)), arena_(arena), in_(in), diag_(diag) {
         PHS_ASSERT(!toks_.empty() && toks_.back().kind == Tok::Eof);
         for (const Diagnostic& d : diag_.all()) {
-            std::string_view code = d.code;
-            if (code == "E0010" || code == "E0003") lexer_reported_unclosed_ = true;
+            if (d.span.file != file_) continue;
+            if (d.code == DiagCode::UnclosedDelimiter || d.code == DiagCode::UnterminatedString)
+                lexer_reported_unclosed_ = true;
             // Errors for characters the lexer dropped without producing a token.
-            bool dropped = code == "E0001" || code == "E0008" || code == "E0011";
-            if (dropped && d.span.file == file_) lexer_error_offsets_.push_back(d.span.lo);
+            const bool dropped = d.code == DiagCode::UnexpectedCharacter || d.code == DiagCode::NonAsciiCharacter ||
+                                 d.code == DiagCode::InvalidUtf8;
+            if (dropped) lexer_error_offsets_.push_back(d.span.lo);
         }
-        std::sort(lexer_error_offsets_.begin(), lexer_error_offsets_.end());
+        std::ranges::sort(lexer_error_offsets_);
     }
 
     File* run() {
@@ -54,10 +60,10 @@ public:
                 continue;
             }
             usize start = pos_;
-            u32 errs = diag_.error_count();
+            const usize errs = diag_.error_count();
             if (at(Tok::KwImport)) {
                 Import imp = parse_import();
-                if (!items.empty()) error("E0110", imp.span, "imports must come before all declarations");
+                if (!items.empty()) error(DiagCode::ImportOrder, imp.span, "imports must come before all declarations");
                 imports.push_back(imp);
             } else if (Item* it = parse_item(Ctx::Top)) {
                 items.push_back(it);
@@ -72,6 +78,22 @@ public:
     }
 
 private:
+    // Count recursive grammar entries rather than precedence levels. The
+    // budget is shared by expressions, types, patterns and declarations.
+    static constexpr u32 kMaxDepth = 128;
+
+    bool check_depth() {
+        if (depth_exceeded_) return false;
+        if (depth_ <= kMaxDepth) return true;
+        // A resource limit is fatal to this file, including during speculation.
+        // Go straight to EOF so recovery cannot retry the same deep input.
+        diag_.error(DiagCode::NestingLimit, cur().span, "parser nesting limit ({}) exceeded", kMaxDepth);
+        depth_exceeded_ = true;
+        spec_failed_ = true;
+        pos_ = toks_.size() - 1;
+        return false;
+    }
+
     // ------------------------------------------------------------ token access
 
     const Token& cur() const { return toks_[pos_]; }
@@ -108,12 +130,16 @@ private:
     // ------------------------------------------------------------ diagnostics
 
     std::string describe(const Token& t) const {
-        if (t.kind == Tok::Ident) return "identifier '" + std::string(in_.str(t.symbol())) + "'";
-        if (tok_is_keyword(t.kind)) return "keyword '" + std::string(in_.str(t.symbol())) + "'";
-        return tok_spelling(t.kind);
+        if (t.kind == Tok::Ident) return std::format("identifier '{}'", in_.str(t.symbol()));
+        if (tok_is_keyword(t.kind)) return std::format("keyword '{}'", in_.str(t.symbol()));
+        return std::string(tok_spelling(t.kind));
     }
 
-    void error(const char* code, Span span, std::string msg) {
+    // Reports a syntax error unless it is suppressed; the message is only
+    // formatted when it is actually reported.
+    template <typename... Args>
+    void error(DiagCode code, Span span, std::format_string<Args...> fmt, Args&&... args) {
+        if (depth_exceeded_) return;  // the nesting diagnostic already explains the incomplete tree
         if (spec_depth_ > 0) {
             spec_failed_ = true;
             return;
@@ -127,11 +153,11 @@ private:
         // this token (e.g. `let x = $`): its error already explains this one.
         if (lexer_error_in_gap()) return;
         last_error_pos_ = pos_;
-        diag_.error(code, span, std::move(msg));
+        diag_.error(code, span, fmt, std::forward<Args>(args)...);
     }
 
-    void error_expected(const char* code, const std::string& what) {
-        error(code, cur().span, "expected " + what + ", found " + describe(cur()));
+    void error_expected(DiagCode code, std::string_view what) {
+        error(code, cur().span, "expected {}, found {}", what, describe(cur()));
     }
 
     // True if a lexer error starts between the last non-newline token and the
@@ -140,25 +166,25 @@ private:
         if (lexer_error_offsets_.empty()) return false;
         usize k = pos_;
         while (k > 0 && toks_[k - 1].kind == Tok::Newline) --k;
-        u32 lo = k > 0 ? toks_[k - 1].span.hi : 0;
-        u32 hi = cur().span.lo;
-        auto it = std::lower_bound(lexer_error_offsets_.begin(), lexer_error_offsets_.end(), lo);
+        const u32 lo = k > 0 ? toks_[k - 1].span.hi : 0;
+        const u32 hi = cur().span.lo;
+        const auto it = std::ranges::lower_bound(lexer_error_offsets_, lo);
         return it != lexer_error_offsets_.end() && *it < hi;
     }
 
     bool expect(Tok k) {
         if (eat(k)) return true;
-        error_expected("E0100", tok_spelling(k));
+        error_expected(DiagCode::ExpectedToken, tok_spelling(k));
         return false;
     }
 
-    Name expect_name(const char* what) {
+    Name expect_name(std::string_view what) {
         if (at(Tok::Ident)) {
-            Name n{cur().symbol(), cur().span};
+            const Name n{cur().symbol(), cur().span};
             advance();
             return n;
         }
-        error_expected("E0100", what);
+        error_expected(DiagCode::ExpectedToken, what);
         return Name{{}, cur().span};
     }
 
@@ -193,11 +219,12 @@ private:
 
     // After a declaration/statement/arm: require a terminator, recover from
     // errors, and guarantee forward progress.
-    void finish_entry(u32 errs_before, usize start, const char* what, bool allow_comma) {
+    void finish_entry(usize errs_before, usize start, std::string_view what, bool allow_comma) {
         if (diag_.error_count() > errs_before) {
             sync();
         } else if (!at_terminator() && !(allow_comma && at(Tok::Comma))) {
-            error("E0106", cur().span, std::string("expected newline or ';' after ") + what + ", found " + describe(cur()));
+            error(DiagCode::ExpectedTerminator, cur().span, "expected newline or ';' after {}, found {}", what,
+                  describe(cur()));
             sync();
         }
         while (at(Tok::Newline) || at(Tok::Semi) || (allow_comma && at(Tok::Comma))) advance();
@@ -209,15 +236,37 @@ private:
     struct Snapshot {
         usize pos;
         usize log;
+        bool cast_type;
     };
-    Snapshot snapshot() const { return {pos_, split_log_.size()}; }
+    Snapshot snapshot() const { return {pos_, split_log_.size(), cast_type_}; }
     void restore(Snapshot s) {
         while (split_log_.size() > s.log) {
             toks_[split_log_.back().first] = split_log_.back().second;
             split_log_.pop_back();
         }
-        pos_ = s.pos;
+        cast_type_ = s.cast_type;
+        if (!depth_exceeded_) pos_ = s.pos;
     }
+
+    class Speculation {
+    public:
+        explicit Speculation(Parser& parser)
+            : parser_(parser), saved_(parser.snapshot()),
+              depth_(parser.spec_depth_, parser.spec_depth_ + 1), failed_(parser.spec_failed_, false) {}
+        ~Speculation() {
+            if (!committed_) parser_.restore(saved_);
+        }
+        Speculation(const Speculation&) = delete;
+        Speculation& operator=(const Speculation&) = delete;
+        void commit() { committed_ = true; }
+
+    private:
+        Parser& parser_;
+        Snapshot saved_;
+        ScopedValue<u32> depth_;
+        ScopedValue<bool> failed_;
+        bool committed_ = false;
+    };
 
     // True if the current token begins with '>' (eat_gt can consume it).
     bool at_gt() const {
@@ -237,7 +286,7 @@ private:
             Token& t = toks_[pos_];
             t.kind = k == Tok::Shr ? Tok::Gt : k == Tok::GtEq ? Tok::Eq : Tok::GtEq;
             t.span.lo += 1;
-            t.flags = 0;
+            t.space_before = false;
             return true;
         }
         return false;
@@ -264,7 +313,7 @@ private:
         return peek(k).kind == Tok::Ident;
     }
 
-    Path parse_path(const char* what) {
+    Path parse_path(std::string_view what) {
         Span start = cur().span;
         std::vector<Name> parts;
         parts.push_back(expect_name(what));
@@ -288,10 +337,10 @@ private:
             a.name = expect_name("attribute name");
         }
         std::vector<AttrArg> args;
-        if (at(Tok::LParen) && !cur().space_before()) {
+        if (at(Tok::LParen) && !cur().space_before) {
             advance();
             a.has_parens = true;
-            u32 errs = diag_.error_count();
+            const usize errs = diag_.error_count();
             while (!at(Tok::RParen) && !at(Tok::Eof)) {
                 AttrArg arg{};
                 if (at(Tok::Ident) && peek().kind == Tok::Eq) {
@@ -309,7 +358,7 @@ private:
         return a;
     }
 
-    void close_list(u32 errs_before, Tok open, Tok close) {
+    void close_list(usize errs_before, Tok open, Tok close) {
         if (diag_.error_count() > errs_before) {
             skip_to_close(open, close);
         } else {
@@ -327,29 +376,32 @@ private:
         }
     }
 
-    u16 parse_modifiers() {
-        u16 mods = 0;
+    Modifier parse_modifiers() {
+        Modifier mods = Modifier::None;
         while (true) {
-            u16 m = 0;
+            Modifier m = Modifier::None;
             switch (cur().kind) {
-                case Tok::KwOpen: m = kModOpen; break;
-                case Tok::KwFinal: m = kModFinal; break;
-                case Tok::KwAbstract: m = kModAbstract; break;
-                case Tok::KwSealed: m = kModSealed; break;
-                case Tok::KwOverride: m = kModOverride; break;
-                case Tok::KwStatic: m = kModStatic; break;
-                case Tok::KwMut: m = kModMut; break;
-                case Tok::KwAsync: m = kModAsync; break;
-                case Tok::KwUnsafe: m = kModUnsafe; break;
+                case Tok::KwOpen: m = Modifier::Open; break;
+                case Tok::KwFinal: m = Modifier::Final; break;
+                case Tok::KwAbstract: m = Modifier::Abstract; break;
+                case Tok::KwSealed: m = Modifier::Sealed; break;
+                case Tok::KwOverride: m = Modifier::Override; break;
+                case Tok::KwStatic: m = Modifier::Static; break;
+                case Tok::KwMut: m = Modifier::Mut; break;
+                case Tok::KwAsync: m = Modifier::Async; break;
+                case Tok::KwUnsafe: m = Modifier::Unsafe; break;
                 default: return mods;
             }
-            if (mods & m) error("E0111", cur().span, "duplicate modifier " + describe(cur()));
+            if (has_modifier(mods, m))
+                error(DiagCode::DuplicateModifier, cur().span, "duplicate modifier {}", describe(cur()));
             mods |= m;
             advance();
         }
     }
 
     Item* parse_item(Ctx ctx) {
+        const ScopedValue depth(depth_, depth_ + 1);
+        if (!check_depth()) return nullptr;
         Span start = cur().span;
         std::vector<Attribute> attrs;
         while (at(Tok::At)) {
@@ -357,7 +409,7 @@ private:
             skip_newlines();
         }
         Visibility vis = parse_visibility();
-        u16 mods = parse_modifiers();
+        const Modifier mods = parse_modifiers();
         Item* item = nullptr;
         switch (cur().kind) {
             case Tok::KwFun: item = parse_fun(); break;
@@ -374,7 +426,7 @@ private:
             case Tok::KwInit: item = parse_init(); break;
             case Tok::KwDeinit: item = parse_deinit(); break;
             default:
-                error_expected("E0104", ctx == Ctx::Extern ? "function declaration" : "declaration");
+                error_expected(DiagCode::ExpectedDeclaration, ctx == Ctx::Extern ? "function declaration" : "declaration");
                 return nullptr;
         }
         item->attrs = arena_.copy(attrs);
@@ -382,7 +434,7 @@ private:
         item->mods = mods;
         item->span = from(start);
         if (ctx == Ctx::Extern && item->kind != ItemKind::Fun)
-            error("E0109", item->span, "only function declarations are allowed in extern blocks");
+            error(DiagCode::ExternDeclaration, item->span, "only function declarations are allowed in extern blocks");
         return item;
     }
 
@@ -391,7 +443,7 @@ private:
         if (!at(Tok::Lt)) return out;
         advance();
         skip_newlines();
-        if (at_gt()) error_expected("E0100", "generic parameter name");  // `<>` is not a valid list
+        if (at_gt()) error_expected(DiagCode::ExpectedToken, "generic parameter name");  // `<>` is not a valid list
         while (!at_gt() && !at(Tok::Eof)) {
             GenericParam g{};
             g.name = expect_name("generic parameter name");
@@ -401,7 +453,7 @@ private:
             if (!eat(Tok::Comma)) break;
             skip_newlines();
         }
-        if (!eat_gt()) error_expected("E0100", "'>'");
+        if (!eat_gt()) error_expected(DiagCode::ExpectedToken, "'>'");
         return out;
     }
 
@@ -428,7 +480,7 @@ private:
     // Called after '('; consumes the closing ')'.
     List<Param> parse_params() {
         std::vector<Param> out;
-        u32 errs = diag_.error_count();
+        const usize errs = diag_.error_count();
         while (!at(Tok::RParen) && !at(Tok::Eof)) {
             Span start = cur().span;
             Param p{};
@@ -495,8 +547,7 @@ private:
 
     TypeDeclItem* parse_type_decl(ItemKind kind) {
         advance();  // class / struct / actor / interface
-        TypeDeclItem* d = arena_.make<TypeDeclItem>();
-        d->kind = kind;
+        TypeDeclItem* d = arena_.make<TypeDeclItem>(kind);
         d->name = expect_name("type name");
         d->generics = arena_.copy(parse_generic_params());
         if (kind != ItemKind::Interface && at(Tok::LParen)) {
@@ -510,7 +561,7 @@ private:
             d->has_body = true;
             d->members = parse_member_block();
         } else if (kind == ItemKind::Interface) {
-            error_expected("E0100", "'{'");
+            error_expected(DiagCode::ExpectedToken, "'{'");
         }
         return d;
     }
@@ -518,24 +569,21 @@ private:
     List<Item*> parse_member_block() {
         std::vector<Item*> out;
         expect(Tok::LBrace);
-        bool saved = no_leading_dot_;
-        no_leading_dot_ = false;
+        const ScopedValue leading_dot(no_leading_dot_, false);
         skip_terms();
         while (!at(Tok::RBrace) && !at(Tok::Eof)) {
             usize start = pos_;
-            u32 errs = diag_.error_count();
+            const usize errs = diag_.error_count();
             if (Item* it = parse_item(Ctx::Member)) out.push_back(it);
             finish_entry(errs, start, "declaration", false);
         }
-        no_leading_dot_ = saved;
         expect(Tok::RBrace);
         return arena_.copy(out);
     }
 
     TypeDeclItem* parse_enum() {
         advance();  // enum
-        TypeDeclItem* d = arena_.make<TypeDeclItem>();
-        d->kind = ItemKind::Enum;
+        TypeDeclItem* d = arena_.make<TypeDeclItem>(ItemKind::Enum);
         d->name = expect_name("enum name");
         d->generics = arena_.copy(parse_generic_params());
         if (eat(Tok::Colon)) d->supers = parse_supers();
@@ -543,12 +591,11 @@ private:
         d->has_body = true;
         std::vector<Item*> members;
         expect(Tok::LBrace);
-        bool saved = no_leading_dot_;
-        no_leading_dot_ = false;
+        const ScopedValue leading_dot(no_leading_dot_, false);
         while (at(Tok::Newline) || at(Tok::Semi) || at(Tok::Comma)) advance();
         while (!at(Tok::RBrace) && !at(Tok::Eof)) {
             usize start = pos_;
-            u32 errs = diag_.error_count();
+            const usize errs = diag_.error_count();
             if (at(Tok::Ident)) {
                 members.push_back(parse_enum_case());
             } else if (Item* it = parse_item(Ctx::Member)) {
@@ -556,7 +603,6 @@ private:
             }
             finish_entry(errs, start, "enum case", true);
         }
-        no_leading_dot_ = saved;
         expect(Tok::RBrace);
         d->members = arena_.copy(members);
         return d;
@@ -570,7 +616,7 @@ private:
             advance();
             c->has_fields = true;
             std::vector<CaseField> fields;
-            u32 errs = diag_.error_count();
+            const usize errs = diag_.error_count();
             while (!at(Tok::RParen) && !at(Tok::Eof)) {
                 CaseField f{};
                 if (at(Tok::Ident) && peek().kind == Tok::Colon) {
@@ -608,14 +654,14 @@ private:
             e->abi = cur().symbol();
             advance();
         } else {
-            error_expected("E0100", "ABI string such as \"C\"");
+            error_expected(DiagCode::ExpectedToken, "ABI string such as \"C\"");
         }
         std::vector<Item*> items;
         expect(Tok::LBrace);
         skip_terms();
         while (!at(Tok::RBrace) && !at(Tok::Eof)) {
             usize start = pos_;
-            u32 errs = diag_.error_count();
+            const usize errs = diag_.error_count();
             if (Item* it = parse_item(Ctx::Extern)) items.push_back(it);
             finish_entry(errs, start, "declaration", false);
         }
@@ -679,6 +725,8 @@ private:
     }
 
     TypeExpr* parse_prefix_type() {
+        const ScopedValue depth(depth_, depth_ + 1);
+        if (!check_depth()) return new_type(TypeKind::Error, cur().span);
         Span start = cur().span;
         switch (cur().kind) {
             case Tok::KwShared:
@@ -735,16 +783,14 @@ private:
             case Tok::Ident: {
                 TypeExpr* t = new_type(TypeKind::Path, start);
                 t->path = parse_path("type name");
-                bool in_cast = cast_type_;
-                cast_type_ = false;
+                const bool in_cast = std::exchange(cast_type_, false);
                 if (at(Tok::Lt) && in_cast) {
                     // After `is`/`as`, `<` may be a comparison: `x as Int < y`.
-                    List<TypeExpr*> args;
-                    if (try_generic_args(args, false)) t->args = args;
+                    if (auto args = try_generic_args(false)) t->args = *args;
                 } else if (at(Tok::Lt)) {
                     advance();
                     skip_newlines();
-                    if (at_gt()) error_expected("E0102", "type");  // `List<>` is not a valid type
+                    if (at_gt()) error_expected(DiagCode::ExpectedType, "type");  // `List<>` is not a valid type
                     std::vector<TypeExpr*> args;
                     while (!at_gt() && !at(Tok::Eof)) {
                         args.push_back(parse_type());
@@ -753,14 +799,14 @@ private:
                         skip_newlines();
                     }
                     skip_newlines();
-                    if (!eat_gt()) error_expected("E0100", "'>'");
+                    if (!eat_gt()) error_expected(DiagCode::ExpectedToken, "'>'");
                     t->args = arena_.copy(args);
                 }
                 t->span = from(start);
                 return t;
             }
             default:
-                error_expected("E0102", "type");
+                error_expected(DiagCode::ExpectedType, "type");
                 return new_type(TypeKind::Error, cur().span);
         }
     }
@@ -768,20 +814,20 @@ private:
     // ------------------------------------------------------------ statements
 
     BlockExpr* parse_block() {
+        const ScopedValue depth(depth_, depth_ + 1);
+        if (!check_depth()) return mk<BlockExpr>(cur().span);
         Span start = cur().span;
         BlockExpr* b = mk<BlockExpr>(start);
         if (!expect(Tok::LBrace)) return b;
-        bool saved = no_leading_dot_;
-        no_leading_dot_ = false;
+        const ScopedValue leading_dot(no_leading_dot_, false);
         std::vector<Stmt*> stmts;
         skip_terms();
         while (!at(Tok::RBrace) && !at(Tok::Eof)) {
             usize s = pos_;
-            u32 errs = diag_.error_count();
+            const usize errs = diag_.error_count();
             if (Stmt* st = parse_stmt()) stmts.push_back(st);
             finish_entry(errs, s, "statement", false);
         }
-        no_leading_dot_ = saved;
         expect(Tok::RBrace);
         b->stmts = arena_.copy(stmts);
         b->span = from(start);
@@ -895,7 +941,8 @@ private:
             case Tok::KwExtern:
             case Tok::KwImport:
             case Tok::KwType:
-                error("E0108", cur().span, "declarations are not allowed inside function bodies in Phantasos-Core");
+                error(DiagCode::LocalDeclaration, cur().span,
+                      "declarations are not allowed inside function bodies in Phantasos-Core");
                 return nullptr;
             default:
                 break;
@@ -930,6 +977,8 @@ private:
     Expr* parse_expr() { return parse_coalesce(); }
 
     Expr* parse_coalesce() {
+        const ScopedValue depth(depth_, depth_ + 1);
+        if (!check_depth()) return mk<ErrorExpr>(cur().span);
         Expr* l = parse_or();
         if (!at(Tok::QuestionQuestion)) return l;
         advance();
@@ -977,7 +1026,8 @@ private:
         skip_newlines();
         l = binary(*op, l, parse_cast());
         while (auto again = cmp_op(cur().kind)) {
-            error("E0105", cur().span, "comparison operators cannot be chained; combine them with '&&'");
+            error(DiagCode::ChainedComparison, cur().span,
+                  "comparison operators cannot be chained; combine them with '&&'");
             advance();
             skip_newlines();
             l = binary(*again, l, parse_cast());
@@ -989,9 +1039,8 @@ private:
         Expr* l = parse_range();
         while (at(Tok::KwIs)) {
             advance();
-            cast_type_ = true;
+            const ScopedValue cast_context(cast_type_, true);
             TypeExpr* t = parse_type();
-            cast_type_ = false;
             CastExpr* c = mk<CastExpr>(Span::join(l->span, t->span));
             c->op = CastOp::Is;
             c->operand = l;
@@ -1007,13 +1056,12 @@ private:
         while (at(Tok::KwAs)) {
             advance();
             CastOp op = CastOp::As;
-            if (at(Tok::Question) && !cur().space_before()) {
+            if (at(Tok::Question) && !cur().space_before) {
                 advance();
                 op = CastOp::AsOpt;
             }
-            cast_type_ = true;
+            const ScopedValue cast_context(cast_type_, true);
             TypeExpr* t = parse_type();
-            cast_type_ = false;
             CastExpr* c = mk<CastExpr>(Span::join(l->span, t->span));
             c->op = op;
             c->operand = l;
@@ -1030,7 +1078,8 @@ private:
         advance();
         skip_newlines();
         l = binary(op, l, parse_add());
-        if (at(Tok::DotDot) || at(Tok::DotDotLt)) error("E0107", cur().span, "range operators cannot be chained");
+        if (at(Tok::DotDot) || at(Tok::DotDotLt))
+            error(DiagCode::ChainedRange, cur().span, "range operators cannot be chained");
         return l;
     }
 
@@ -1094,6 +1143,8 @@ private:
     }
 
     Expr* parse_unary() {
+        const ScopedValue depth(depth_, depth_ + 1);
+        if (!check_depth()) return mk<ErrorExpr>(cur().span);
         Span start = cur().span;
         UnOp op;
         switch (cur().kind) {
@@ -1106,7 +1157,7 @@ private:
             default: return parse_postfix();
         }
         advance();
-        if (op == UnOp::Try && at(Tok::Question) && !cur().space_before()) {
+        if (op == UnOp::Try && at(Tok::Question) && !cur().space_before) {
             advance();
             op = UnOp::TryOpt;
         }
@@ -1120,7 +1171,7 @@ private:
     // Called after '('; consumes the closing ')'.
     List<Arg> parse_args() {
         std::vector<Arg> out;
-        u32 errs = diag_.error_count();
+        const usize errs = diag_.error_count();
         while (!at(Tok::RParen) && !at(Tok::Eof)) {
             Arg a{};
             if (at(Tok::Ident) && peek().kind == Tok::Colon) {
@@ -1158,11 +1209,8 @@ private:
 
     // Spec 2.6 rule 1: speculatively parse `<Types>` after a name. With
     // check_follow, the token after '>' must also be in the follow set.
-    bool try_generic_args(List<TypeExpr*>& out, bool check_follow) {
-        Snapshot snap = snapshot();
-        bool saved_failed = spec_failed_;
-        spec_failed_ = false;
-        ++spec_depth_;
+    [[nodiscard]] std::optional<List<TypeExpr*>> try_generic_args(bool check_follow) {
+        Speculation speculation(*this);
         advance();  // '<'
         skip_newlines();
         std::vector<TypeExpr*> args;
@@ -1172,15 +1220,10 @@ private:
             if (spec_failed_ || !eat(Tok::Comma)) break;
             skip_newlines();
         }
-        bool ok = !spec_failed_ && !args.empty() && eat_gt() && (!check_follow || generic_follow(cur().kind));
-        --spec_depth_;
-        spec_failed_ = saved_failed;
-        if (!ok) {
-            restore(snap);
-            return false;
-        }
-        out = arena_.copy(args);
-        return true;
+        if (depth_exceeded_ || spec_failed_ || args.empty() || !eat_gt() ||
+            (check_follow && !generic_follow(cur().kind))) return std::nullopt;
+        speculation.commit();
+        return arena_.copy(args);
     }
 
     Expr* parse_postfix() {
@@ -1221,7 +1264,7 @@ private:
                     advance();
                     IndexExpr* ix = mk<IndexExpr>(start);
                     ix->base = e;
-                    u32 errs = diag_.error_count();
+                    const usize errs = diag_.error_count();
                     ix->index = parse_expr();
                     close_list(errs, Tok::LBracket, Tok::RBracket);
                     ix->span = from(start);
@@ -1229,7 +1272,7 @@ private:
                     continue;
                 }
                 case Tok::Bang:
-                    if (cur().space_before()) return e;
+                    if (cur().space_before) return e;
                     advance();
                     {
                         UnwrapExpr* u = mk<UnwrapExpr>(from(start));
@@ -1239,11 +1282,11 @@ private:
                     continue;
                 case Tok::Lt: {
                     if (e->kind != ExprKind::Name && e->kind != ExprKind::Member) return e;
-                    List<TypeExpr*> args;
-                    if (!try_generic_args(args, true)) return e;
+                    const auto args = try_generic_args(true);
+                    if (!args) return e;
                     GenericInstExpr* g = mk<GenericInstExpr>(from(start));
                     g->base = e;
-                    g->args = args;
+                    g->args = *args;
                     e = g;
                     continue;
                 }
@@ -1265,19 +1308,19 @@ private:
         switch (t.kind) {
             case Tok::IntLit: {
                 IntExpr* e = mk<IntExpr>(start);
-                e->value = t.int_value;
+                e->value = t.int_value();
                 advance();
                 return e;
             }
             case Tok::FloatLit: {
                 FloatExpr* e = mk<FloatExpr>(start);
-                e->value = t.float_value;
+                e->value = t.float_value();
                 advance();
                 return e;
             }
             case Tok::CharLit: {
                 CharExpr* e = mk<CharExpr>(start);
-                e->value = t.char_value;
+                e->value = t.char_value();
                 advance();
                 return e;
             }
@@ -1316,7 +1359,7 @@ private:
                 advance();
                 if (eat(Tok::RParen)) return mk<UnitExpr>(from(start));
                 ParenExpr* p = mk<ParenExpr>(start);
-                u32 errs = diag_.error_count();
+                const usize errs = diag_.error_count();
                 p->inner = parse_expr();
                 close_list(errs, Tok::LParen, Tok::RParen);
                 p->span = from(start);
@@ -1326,7 +1369,7 @@ private:
                 advance();
                 ArrayExpr* a = mk<ArrayExpr>(start);
                 std::vector<Expr*> elems;
-                u32 errs = diag_.error_count();
+                const usize errs = diag_.error_count();
                 while (!at(Tok::RBracket) && !at(Tok::Eof)) {
                     elems.push_back(parse_expr());
                     if (diag_.error_count() > errs || !eat(Tok::Comma)) break;
@@ -1346,7 +1389,7 @@ private:
                 return u;
             }
             default:
-                error_expected("E0101", "expression");
+                error_expected(DiagCode::ExpectedExpression, "expression");
                 return mk<ErrorExpr>(start);
         }
     }
@@ -1370,7 +1413,7 @@ private:
                 advance();
                 break;
             }
-            error_expected("E0100", "')' to close the string interpolation");
+            error_expected(DiagCode::ExpectedToken, "')' to close the string interpolation");
             texts.push_back({});
             break;
         }
@@ -1381,6 +1424,8 @@ private:
     }
 
     Expr* parse_if() {
+        const ScopedValue depth(depth_, depth_ + 1);
+        if (!check_depth()) return mk<ErrorExpr>(cur().span);
         Span start = cur().span;
         advance();  // if
         IfExpr* e = mk<IfExpr>(start);
@@ -1407,7 +1452,7 @@ private:
             while (at(Tok::Newline) || at(Tok::Semi) || at(Tok::Comma)) advance();
             while (!at(Tok::RBrace) && !at(Tok::Eof)) {
                 usize s = pos_;
-                u32 errs = diag_.error_count();
+                const usize errs = diag_.error_count();
                 Span arm_start = cur().span;
                 MatchArm arm{};
                 arm.pattern = parse_pattern();
@@ -1417,10 +1462,8 @@ private:
                     if (at(Tok::LBrace)) {
                         arm.body = parse_block();
                     } else {
-                        bool saved = no_leading_dot_;
-                        no_leading_dot_ = true;
+                        const ScopedValue leading_dot(no_leading_dot_, true);
                         arm.body = parse_expr();
-                        no_leading_dot_ = saved;
                     }
                 } else {
                     arm.body = mk<ErrorExpr>(cur().span);
@@ -1439,6 +1482,8 @@ private:
     // ------------------------------------------------------------ patterns
 
     Pattern* parse_pattern() {
+        const ScopedValue depth(depth_, depth_ + 1);
+        if (!check_depth()) return mk<ErrorPat>(cur().span);
         Span start = cur().span;
         Pattern* first = parse_simple_pattern();
         if (!at(Tok::Pipe)) return first;
@@ -1452,7 +1497,7 @@ private:
     List<Pattern*> parse_pattern_args() {
         std::vector<Pattern*> out;
         advance();  // '('
-        u32 errs = diag_.error_count();
+        const usize errs = diag_.error_count();
         while (!at(Tok::RParen) && !at(Tok::Eof)) {
             out.push_back(parse_pattern());
             if (diag_.error_count() > errs || !eat(Tok::Comma)) break;
@@ -1536,7 +1581,7 @@ private:
             default:
                 break;
         }
-        error_expected("E0103", "pattern");
+        error_expected(DiagCode::ExpectedPattern, "pattern");
         return mk<ErrorPat>(start);
     }
 
@@ -1547,6 +1592,8 @@ private:
     DiagEngine& diag_;
     usize pos_ = 0;
     usize last_error_pos_ = ~usize{0};
+    u32 depth_ = 0;
+    bool depth_exceeded_ = false;
     u32 spec_depth_ = 0;
     bool spec_failed_ = false;
     bool no_leading_dot_ = false;

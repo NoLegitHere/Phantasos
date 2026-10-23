@@ -15,63 +15,60 @@
 
 #pragma once
 
-#include <cstring>
-#include <new>
+#include <concepts>
+#include <memory>
+#include <memory_resource>
+#include <ranges>
 #include <span>
 #include <string_view>
 #include <type_traits>
 #include <utility>
-#include <vector>
 
 #include "support/common.hpp"
 
 namespace phs {
 
-// Bump allocator. Objects allocated here are never destroyed individually, so
-// only trivially destructible types may be placed in it.
+// Bump allocator for AST nodes, interned strings and other data that lives as
+// long as the compilation. A thin typed facade over the standard monotonic
+// resource. Objects are never destroyed individually, so only trivially
+// destructible types may be placed here.
 class Arena {
 public:
     Arena() = default;
     Arena(const Arena&) = delete;
     Arena& operator=(const Arena&) = delete;
-    ~Arena();
-
-    void* alloc(usize size, usize align);
 
     template <typename T, typename... Args>
-    T* make(Args&&... args) {
-        static_assert(std::is_trivially_destructible_v<T>, "arena objects must be trivially destructible");
-        void* p = alloc(sizeof(T), alignof(T));
-        return new (p) T(std::forward<Args>(args)...);
+        requires (std::is_trivially_destructible_v<T> && std::constructible_from<T, Args...> &&
+                  !std::is_const_v<T> && !std::is_volatile_v<T> && !std::is_array_v<T>)
+    [[nodiscard]] T* make(Args&&... args) {
+        return alloc_.new_object<T>(std::forward<Args>(args)...);
     }
 
-    template <typename T>
-    std::span<T> copy(const std::vector<T>& v) {
-        static_assert(std::is_trivially_destructible_v<T>);
-        if (v.empty()) return {};
-        T* p = static_cast<T*>(alloc(sizeof(T) * v.size(), alignof(T)));
-        for (usize i = 0; i < v.size(); ++i) new (p + i) T(v[i]);
-        return {p, v.size()};
+    // Copies a contiguous range (e.g. a std::vector being built by the parser)
+    // into arena storage.
+    template <typename R>
+        requires (std::ranges::contiguous_range<const R> && std::ranges::sized_range<const R> &&
+                  std::is_trivially_destructible_v<std::ranges::range_value_t<const R>> &&
+                  std::constructible_from<std::ranges::range_value_t<const R>,
+                                          std::ranges::range_reference_t<const R>>)
+    [[nodiscard]] std::span<std::ranges::range_value_t<const R>> copy(const R& range) {
+        using T = std::ranges::range_value_t<const R>;
+        const auto n = std::ranges::size(range);
+        if (n == 0) return {};
+        std::span<T> out{alloc_.allocate_object<T>(n), n};
+        std::ranges::uninitialized_copy(range, out);
+        return out;
     }
 
-    std::string_view copy_str(std::string_view s) {
+    [[nodiscard]] std::string_view copy_str(std::string_view s) {
         if (s.empty()) return {};
-        char* p = static_cast<char*>(alloc(s.size(), 1));
-        std::memcpy(p, s.data(), s.size());
-        return {p, s.size()};
+        return {copy(s).data(), s.size()};
     }
-
-    usize bytes_used() const { return used_; }
 
 private:
-    struct Chunk {
-        Chunk* prev;
-        usize size;
-    };
-    Chunk* head_ = nullptr;
-    char* cur_ = nullptr;
-    char* end_ = nullptr;
-    usize used_ = 0;
+    std::pmr::monotonic_buffer_resource resource_;
+    std::pmr::polymorphic_allocator<> alloc_{&resource_};
 };
 
 }  // namespace phs

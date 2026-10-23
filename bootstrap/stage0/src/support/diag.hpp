@@ -16,7 +16,11 @@
 #pragma once
 
 #include <cstdio>
+#include <format>
+#include <span>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 
 #include "support/source.hpp"
@@ -25,6 +29,64 @@ namespace phs {
 
 enum class Severity : u8 { Error, Warning, Note };
 
+// Names are internal; the rendered codes remain stable across releases.
+enum class DiagCode : u16 {
+    UnexpectedCharacter = 1,
+    UnterminatedComment = 2,
+    UnterminatedString = 3,
+    InvalidEscape = 4,
+    NumberOutOfRange = 5,
+    InvalidNumber = 6,
+    InvalidCharacterLiteral = 7,
+    NonAsciiCharacter = 8,
+    UnexpectedClosingDelimiter = 9,
+    UnclosedDelimiter = 10,
+    InvalidUtf8 = 11,
+    ExpectedToken = 100,
+    ExpectedExpression = 101,
+    ExpectedType = 102,
+    ExpectedPattern = 103,
+    ExpectedDeclaration = 104,
+    ChainedComparison = 105,
+    ExpectedTerminator = 106,
+    ChainedRange = 107,
+    LocalDeclaration = 108,
+    ExternDeclaration = 109,
+    ImportOrder = 110,
+    DuplicateModifier = 111,
+    NestingLimit = 112,
+};
+
+constexpr std::string_view diag_code(DiagCode code) {
+    switch (code) {
+        case DiagCode::UnexpectedCharacter: return "E0001";
+        case DiagCode::UnterminatedComment: return "E0002";
+        case DiagCode::UnterminatedString: return "E0003";
+        case DiagCode::InvalidEscape: return "E0004";
+        case DiagCode::NumberOutOfRange: return "E0005";
+        case DiagCode::InvalidNumber: return "E0006";
+        case DiagCode::InvalidCharacterLiteral: return "E0007";
+        case DiagCode::NonAsciiCharacter: return "E0008";
+        case DiagCode::UnexpectedClosingDelimiter: return "E0009";
+        case DiagCode::UnclosedDelimiter: return "E0010";
+        case DiagCode::InvalidUtf8: return "E0011";
+        case DiagCode::ExpectedToken: return "E0100";
+        case DiagCode::ExpectedExpression: return "E0101";
+        case DiagCode::ExpectedType: return "E0102";
+        case DiagCode::ExpectedPattern: return "E0103";
+        case DiagCode::ExpectedDeclaration: return "E0104";
+        case DiagCode::ChainedComparison: return "E0105";
+        case DiagCode::ExpectedTerminator: return "E0106";
+        case DiagCode::ChainedRange: return "E0107";
+        case DiagCode::LocalDeclaration: return "E0108";
+        case DiagCode::ExternDeclaration: return "E0109";
+        case DiagCode::ImportOrder: return "E0110";
+        case DiagCode::DuplicateModifier: return "E0111";
+        case DiagCode::NestingLimit: return "E0112";
+    }
+    unreachable();
+}
+
 struct DiagNote {
     Span span;
     std::string message;
@@ -32,7 +94,7 @@ struct DiagNote {
 
 struct Diagnostic {
     Severity severity;
-    const char* code;  // e.g. "E0101"; stable across releases
+    DiagCode code;
     Span span;
     std::string message;
     std::vector<DiagNote> notes;
@@ -42,11 +104,20 @@ class DiagEngine {
 public:
     explicit DiagEngine(const SourceManager& sm) : sm_(sm) {}
 
-    Diagnostic& error(const char* code, Span span, std::string message);
-    Diagnostic& warning(const char* code, Span span, std::string message);
+    // Returned references and all() views are invalidated by the next emission.
+    template <typename... Args>
+    Diagnostic& error(DiagCode code, Span span, std::format_string<Args...> fmt, Args&&... args) {
+        ++errors_;
+        return diags_.emplace_back(Severity::Error, code, span, std::format(fmt, std::forward<Args>(args)...));
+    }
 
-    u32 error_count() const { return errors_; }
-    const std::vector<Diagnostic>& all() const { return diags_; }
+    template <typename... Args>
+    Diagnostic& warning(DiagCode code, Span span, std::format_string<Args...> fmt, Args&&... args) {
+        return diags_.emplace_back(Severity::Warning, code, span, std::format(fmt, std::forward<Args>(args)...));
+    }
+
+    usize error_count() const { return errors_; }
+    std::span<const Diagnostic> all() const { return diags_; }
 
     void render(std::FILE* out) const;
     void render_one(std::FILE* out, const Diagnostic& d) const;
@@ -56,7 +127,7 @@ private:
 
     const SourceManager& sm_;
     std::vector<Diagnostic> diags_;
-    u32 errors_ = 0;
+    usize errors_ = 0;
 };
 
 }  // namespace phs

@@ -15,9 +15,14 @@
 
 #include "syntax/lexer.hpp"
 
+#include <algorithm>
+#include <cctype>
 #include <charconv>
 #include <cmath>
+#include <optional>
+#include <ranges>
 #include <string>
+#include <string_view>
 #include <system_error>
 
 #include "support/utf8.hpp"
@@ -26,32 +31,35 @@ namespace phs {
 
 namespace {
 
-bool is_ident_start(char c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_'; }
-bool is_digit(char c) { return c >= '0' && c <= '9'; }
-bool is_ident_cont(char c) { return is_ident_start(c) || is_digit(c); }
-
-int hex_value(char c) {
-    if (c >= '0' && c <= '9') return c - '0';
-    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-    return -1;
+// Parses digits (underscores allowed) in the given base; nullopt if the value
+// does not fit in 64 bits. Callers validate the digits beforehand.
+std::optional<u64> parse_u64(std::string_view digits, int base) {
+    const std::string clean = digits | std::views::filter([](char c) { return c != '_'; }) | std::ranges::to<std::string>();
+    u64 value = 0;
+    const auto [ptr, ec] = std::from_chars(clean.data(), clean.data() + clean.size(), value, base);
+    if (ec != std::errc{} || ptr != clean.data() + clean.size()) return std::nullopt;
+    return value;
 }
 
-void append_utf8(std::string& out, u32 cp) {
-    if (cp < 0x80) {
-        out.push_back(static_cast<char>(cp));
-    } else if (cp < 0x800) {
-        out.push_back(static_cast<char>(0xC0 | (cp >> 6)));
-        out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
-    } else if (cp < 0x10000) {
-        out.push_back(static_cast<char>(0xE0 | (cp >> 12)));
-        out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
-        out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
-    } else {
-        out.push_back(static_cast<char>(0xF0 | (cp >> 18)));
-        out.push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F)));
-        out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
-        out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+// Parses a float literal; nullopt if it is not a finite Float64 or a non-zero
+// literal underflows to zero. Out-of-range handling differs between C++
+// libraries (inf, 0, or untouched output), so every case is checked here.
+std::optional<double> parse_f64(std::string_view literal) {
+    const std::string clean = literal | std::views::filter([](char c) { return c != '_'; }) | std::ranges::to<std::string>();
+    double value = 0;
+    const auto [ptr, ec] = std::from_chars(clean.data(), clean.data() + clean.size(), value);
+    if (ec != std::errc{} || ptr != clean.data() + clean.size() || std::isinf(value)) return std::nullopt;
+    const std::string_view mantissa = std::string_view(clean).substr(0, clean.find_first_of("eE"));
+    if (value == 0.0 && std::ranges::any_of(mantissa, [](char d) { return d >= '1' && d <= '9'; }))
+        return std::nullopt;
+    return value;
+}
+
+constexpr std::string_view base_name(int base) {
+    switch (base) {
+        case 16: return "hexadecimal";
+        case 8: return "octal";
+        default: return "binary";
     }
 }
 
@@ -67,364 +75,319 @@ public:
             if (pos_ >= src_.size()) break;
             lex_token();
         }
-        for (usize i = stack_.size(); i-- > 0;) {
-            const Open& o = stack_[i];
-            if (o.ch == 'I')
-                diag_.error("E0003", o.span, "unterminated string interpolation");
+        for (const Open& o : stack_ | std::views::reverse) {
+            if (o.is_interp())
+                diag_.error(DiagCode::UnterminatedString, o.span, "unterminated string interpolation");
             else
-                diag_.error("E0010", o.span, std::string("unclosed delimiter '") + o.ch + "'");
+                diag_.error(DiagCode::UnclosedDelimiter, o.span, "unclosed delimiter '{}'", o.ch);
         }
-        Token eof;
-        eof.kind = Tok::Eof;
-        eof.flags = kTokFlagSpaceBefore;
-        eof.span = span(static_cast<u32>(src_.size()), static_cast<u32>(src_.size()));
-        out_.push_back(eof);
+        const auto end = static_cast<u32>(src_.size());
+        out_.push_back({.kind = Tok::Eof, .space_before = true, .span = span(end, end)});
         return std::move(out_);
     }
 
 private:
+    static constexpr char kInterp = 'I';
+
     struct Open {
-        char ch;  // '(' '[' '{' or 'I' for a string interpolation
+        char ch;  // '(' '[' '{' or kInterp for a string interpolation "\("
         Span span;
+        bool is_interp() const { return ch == kInterp; }
+        char opener() const { return is_interp() ? '(' : ch; }
     };
 
     Span span(u32 lo, u32 hi) const { return {file_, lo, hi}; }
     char peek(u32 off = 0) const { return pos_ + off < src_.size() ? src_[pos_ + off] : '\0'; }
     bool newline_significant() const { return stack_.empty() || stack_.back().ch == '{'; }
+    std::string_view rest() const { return src_.substr(pos_); }
+
+    // Advances over [pos_, end) while `pred` holds for the current character.
+    template <typename Pred>
+    void skip_while(Pred pred) {
+        while (pos_ < src_.size() && pred(src_[pos_])) ++pos_;
+    }
 
     // Source files must be UTF-8 (spec 1.1). Each run of invalid bytes is
     // reported once here; later stages treat such bytes as opaque.
     void validate_utf8() {
-        u32 n = static_cast<u32>(src_.size());
-        u32 i = 0;
-        while (i < n) {
-            if (static_cast<u8>(src_[i]) < 0x80) {
-                ++i;
+        std::string_view s = src_;
+        while (!s.empty()) {
+            if (const auto c = utf8_decode(s)) {
+                s.remove_prefix(c->len);
                 continue;
             }
-            u32 cp;
-            u32 len = utf8_decode(src_.data() + i, n - i, &cp);
-            if (len) {
-                i += len;
-                continue;
-            }
-            u32 start = i++;
-            while (i < n && static_cast<u8>(src_[i]) >= 0x80 && !utf8_decode(src_.data() + i, n - i, &cp)) ++i;
-            diag_.error("E0011", span(start, i), "invalid UTF-8 in source file");
+            const auto start = static_cast<u32>(src_.size() - s.size());
+            do s.remove_prefix(1);
+            while (!s.empty() && static_cast<u8>(s.front()) >= 0x80 && !utf8_decode(s));
+            diag_.error(DiagCode::InvalidUtf8, span(start, static_cast<u32>(src_.size() - s.size())), "invalid UTF-8 in source file");
         }
     }
 
-    Token& push(Tok kind, u32 lo) {
-        Token t;
-        t.kind = kind;
-        t.span = span(lo, pos_);
-        if (space_) t.flags |= kTokFlagSpaceBefore;
+    Token& push(Tok kind, u32 lo, decltype(Token::value) value = {}) {
+        Token& t = out_.emplace_back(kind, space_, span(lo, pos_), value);
         space_ = false;
-        out_.push_back(t);
-        return out_.back();
+        return t;
     }
 
     void skip_trivia() {
         while (pos_ < src_.size()) {
-            char c = src_[pos_];
+            const char c = src_[pos_];
             if (c == ' ' || c == '\t' || c == '\f' || c == '\v') {
                 ++pos_;
-                space_ = true;
             } else if (c == '\n') {
-                if (newline_significant() && !out_.empty() && out_.back().kind != Tok::Newline) {
-                    Token t;
-                    t.kind = Tok::Newline;
-                    t.span = span(pos_, pos_ + 1);
-                    out_.push_back(t);
-                }
+                if (newline_significant() && !out_.empty() && out_.back().kind != Tok::Newline)
+                    out_.push_back({.kind = Tok::Newline, .span = span(pos_, pos_ + 1)});
                 ++pos_;
-                space_ = true;
-            } else if (c == '/' && peek(1) == '/') {
-                while (pos_ < src_.size() && src_[pos_] != '\n') ++pos_;
-                space_ = true;
-            } else if (c == '/' && peek(1) == '*') {
+            } else if (rest().starts_with("//")) {
+                skip_while([](char ch) { return ch != '\n'; });
+            } else if (rest().starts_with("/*")) {
                 skip_block_comment();
-                space_ = true;
             } else {
-                break;
+                return;
             }
+            space_ = true;
         }
     }
 
     void skip_block_comment() {
-        u32 start = pos_;
+        const u32 start = pos_;
         pos_ += 2;
         u32 depth = 1;
         while (pos_ < src_.size() && depth > 0) {
-            if (src_[pos_] == '/' && peek(1) == '*') {
+            if (rest().starts_with("/*")) {
                 ++depth;
                 pos_ += 2;
-            } else if (src_[pos_] == '*' && peek(1) == '/') {
+            } else if (rest().starts_with("*/")) {
                 --depth;
                 pos_ += 2;
             } else {
                 ++pos_;
             }
         }
-        if (depth > 0) diag_.error("E0002", span(start, start + 2), "unterminated block comment");
+        if (depth > 0) diag_.error(DiagCode::UnterminatedComment, span(start, start + 2), "unterminated block comment");
     }
 
     void lex_token() {
-        u32 start = pos_;
-        char c = src_[pos_];
-        if (is_ident_start(c)) return lex_ident();
-        if (is_digit(c)) return lex_number();
+        const u32 start = pos_;
+        const char c = src_[pos_];
+        if (std::isalpha(static_cast<unsigned char>(c)) || c == '_') return lex_ident();
+        if (std::isdigit(static_cast<unsigned char>(c))) return lex_number();
         if (c == '"') {
             ++pos_;
             return lex_string_segment(start, true);
         }
         if (c == '\'') return lex_char();
         if (static_cast<u8>(c) >= 0x80) {
-            u32 cp;
-            u32 len = utf8_decode(src_.data() + pos_, src_.size() - pos_, &cp);
-            pos_ += len ? len : 1;
+            const auto ch = utf8_decode(rest());
+            pos_ += ch ? ch->len : 1;
             // Invalid bytes were already reported by validate_utf8().
-            if (len) diag_.error("E0008", span(start, pos_), "non-ASCII character outside of a literal or comment");
+            if (ch) diag_.error(DiagCode::NonAsciiCharacter, span(start, pos_), "non-ASCII character outside of a literal or comment");
             space_ = true;
             return;
         }
         if (lex_punct(start)) return;
         ++pos_;
-        diag_.error("E0001", span(start, pos_), std::string("unexpected character '") + c + "'");
+        diag_.error(DiagCode::UnexpectedCharacter, span(start, pos_), "unexpected character '{}'", c);
         space_ = true;
     }
 
     void lex_ident() {
-        u32 start = pos_;
-        while (pos_ < src_.size() && is_ident_cont(src_[pos_])) ++pos_;
-        std::string_view text(src_.data() + start, pos_ - start);
+        const u32 start = pos_;
+        skip_while([](char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_'; });
+        const std::string_view text = src_.substr(start, pos_ - start);
         if (text == "_") {
             push(Tok::Underscore, start);
             return;
         }
-        Symbol sym = in_.intern(text);
-        Token& t = push(keyword_kind(sym), start);
-        t.sym = sym.id;
+        const Symbol sym = in_.intern(text);
+        push(keyword_kind(sym), start, sym);
     }
 
     void lex_number() {
-        u32 start = pos_;
-        int base = 10;
-        if (src_[pos_] == '0' && (peek(1) == 'x' || peek(1) == 'o' || peek(1) == 'b')) {
-            base = peek(1) == 'x' ? 16 : peek(1) == 'o' ? 8 : 2;
-            pos_ += 2;
-            u32 digits_start = pos_;
-            while (pos_ < src_.size() && is_ident_cont(src_[pos_])) ++pos_;
-            std::string_view digits(src_.data() + digits_start, pos_ - digits_start);
-            u64 value = 0;
-            bool ok = !digits.empty() && digits[0] != '_', overflow = false;
-            if (!ok) {
-                diag_.error("E0006", span(start, pos_), "missing digits after integer base prefix");
-            }
-            for (usize i = 0; ok && i < digits.size(); ++i) {
-                char d = digits[i];
-                if (d == '_') continue;
-                int v = hex_value(d);
-                if (v < 0 || v >= base) {
-                    const char* name = base == 16 ? "hexadecimal" : base == 8 ? "octal" : "binary";
-                    u32 at = digits_start + static_cast<u32>(i);
-                    diag_.error("E0006", span(at, at + 1),
-                                std::string("invalid digit '") + d + "' in " + name + " literal");
-                    ok = false;
-                    break;
-                }
-                if (value > (~0ull - static_cast<u64>(v)) / static_cast<u64>(base)) overflow = true;
-                value = value * static_cast<u64>(base) + static_cast<u64>(v);
-            }
-            if (ok && overflow) diag_.error("E0005", span(start, pos_), "integer literal is too large for 64 bits");
-            Token& t = push(Tok::IntLit, start);
-            t.int_value = (ok && !overflow) ? value : 0;
-            return;
-        }
+        const u32 start = pos_;
+        if (src_[pos_] == '0' && (peek(1) == 'x' || peek(1) == 'o' || peek(1) == 'b')) return lex_prefixed_int(start);
 
-        auto scan_digits = [&] {
-            while (pos_ < src_.size() && (is_digit(src_[pos_]) || src_[pos_] == '_')) ++pos_;
-        };
+        const auto scan_digits = [&] { skip_while([](char ch) { return std::isdigit(static_cast<unsigned char>(ch)) || ch == '_'; }); };
         scan_digits();
         bool is_float = false;
-        if (peek() == '.' && is_digit(peek(1))) {
+        if (peek() == '.' && std::isdigit(static_cast<unsigned char>(peek(1)))) {
             is_float = true;
             ++pos_;
             scan_digits();
         }
         if (peek() == 'e' || peek() == 'E') {
-            u32 save = pos_;
+            const u32 save = pos_;
             ++pos_;
             if (peek() == '+' || peek() == '-') ++pos_;
-            if (is_digit(peek())) {
+            if (std::isdigit(static_cast<unsigned char>(peek()))) {
                 is_float = true;
                 scan_digits();
             } else {
                 pos_ = save;
             }
         }
-        u32 end = pos_;
-        if (pos_ < src_.size() && is_ident_cont(src_[pos_])) {
-            u32 suf = pos_;
-            while (pos_ < src_.size() && is_ident_cont(src_[pos_])) ++pos_;
-            diag_.error("E0006", span(suf, pos_),
-                        "invalid suffix '" + std::string(src_.data() + suf, pos_ - suf) + "' on number literal");
+        const u32 end = pos_;
+        if (pos_ < src_.size() && (std::isalnum(static_cast<unsigned char>(src_[pos_])) || src_[pos_] == '_')) {
+            const u32 suffix = pos_;
+            skip_while([](char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_'; });
+            diag_.error(DiagCode::InvalidNumber, span(suffix, pos_), "invalid suffix '{}' on number literal",
+                        src_.substr(suffix, pos_ - suffix));
         }
-        std::string clean;
-        for (u32 k = start; k < end; ++k)
-            if (src_[k] != '_') clean.push_back(src_[k]);
+        const std::string_view literal = src_.substr(start, end - start);
 
         if (is_float) {
-            double v = 0;
-            auto [ptr, ec] = std::from_chars(clean.data(), clean.data() + clean.size(), v);
-            // Out-of-range results differ between C++ libraries (inf, 0, or the
-            // input left untouched), so reject them all explicitly.
-            bool nonzero_digits = false;
-            for (char d : clean) {
-                if (d == 'e' || d == 'E') break;
-                if (d >= '1' && d <= '9') nonzero_digits = true;
-            }
-            bool bad = ec != std::errc{} || ptr != clean.data() + clean.size() || std::isinf(v) ||
-                       (v == 0.0 && nonzero_digits);
-            if (bad) diag_.error("E0005", span(start, end), "float literal is out of range for Float64");
-            Token& t = push(Tok::FloatLit, start);
-            t.float_value = bad ? 0.0 : v;
+            const auto value = parse_f64(literal);
+            if (!value) diag_.error(DiagCode::NumberOutOfRange, span(start, end), "float literal is out of range for Float64");
+            push(Tok::FloatLit, start, value.value_or(0.0));
             return;
         }
-        u64 value = 0;
-        bool overflow = false;
-        for (char d : clean) {
-            u64 v = static_cast<u64>(d - '0');
-            if (value > (~0ull - v) / 10) overflow = true;
-            value = value * 10 + v;
+        const auto value = parse_u64(literal, 10);
+        if (!value) diag_.error(DiagCode::NumberOutOfRange, span(start, end), "integer literal is too large for 64 bits");
+        push(Tok::IntLit, start, value.value_or(0));
+    }
+
+    // 0x / 0o / 0b literals.
+    void lex_prefixed_int(u32 start) {
+        const int base = peek(1) == 'x' ? 16 : peek(1) == 'o' ? 8 : 2;
+        pos_ += 2;
+        const u32 digits_start = pos_;
+        skip_while([](char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_'; });
+        const std::string_view digits = src_.substr(digits_start, pos_ - digits_start);
+
+        if (digits.empty() || digits.front() == '_') {
+            diag_.error(DiagCode::InvalidNumber, span(start, pos_), "missing digits after integer base prefix");
+            push(Tok::IntLit, start, u64{0});
+            return;
         }
-        if (overflow) diag_.error("E0005", span(start, end), "integer literal is too large for 64 bits");
-        Token& t = push(Tok::IntLit, start);
-        t.int_value = overflow ? 0 : value;
+        const auto bad = std::ranges::find_if_not(digits, [base](char d) {
+            int value;
+            return d == '_' ||
+                std::from_chars(&d, &d + 1, value, base).ec == std::errc{};
+        });
+        if (bad != digits.end()) {
+            const auto at = digits_start + static_cast<u32>(bad - digits.begin());
+            diag_.error(DiagCode::InvalidNumber, span(at, at + 1), "invalid digit '{}' in {} literal", *bad, base_name(base));
+            push(Tok::IntLit, start, u64{0});
+            return;
+        }
+        const auto value = parse_u64(digits, base);
+        if (!value) diag_.error(DiagCode::NumberOutOfRange, span(start, pos_), "integer literal is too large for 64 bits");
+        push(Tok::IntLit, start, value.value_or(0));
     }
 
     // Parses an escape after the backslash at pos_-1. Returns false for an
     // interpolation start "\(" (which the caller handles).
     bool lex_escape(std::string& buf, bool in_char) {
-        u32 esc_start = pos_ - 1;
-        char e = peek();
+        const u32 esc_start = pos_ - 1;
+        const char e = peek();
         if (e == '(' && !in_char) return false;
         ++pos_;
         switch (e) {
-            case 'n': buf.push_back('\n'); return true;
-            case 'r': buf.push_back('\r'); return true;
-            case 't': buf.push_back('\t'); return true;
-            case '0': buf.push_back('\0'); return true;
-            case '\\': buf.push_back('\\'); return true;
-            case '"': buf.push_back('"'); return true;
-            case '\'': buf.push_back('\''); return true;
+            case 'n': buf += '\n'; return true;
+            case 'r': buf += '\r'; return true;
+            case 't': buf += '\t'; return true;
+            case '0': buf += '\0'; return true;
+            case '\\': buf += '\\'; return true;
+            case '"': buf += '"'; return true;
+            case '\'': buf += '\''; return true;
             case 'u': {
                 if (peek() != '{') break;
                 ++pos_;
-                u32 cp = 0;
-                int n = 0;
-                while (hex_value(peek()) >= 0 && n < 7) {
-                    cp = cp * 16 + static_cast<u32>(hex_value(peek()));
-                    ++pos_;
-                    ++n;
-                }
-                if (peek() != '}' || n == 0 || n > 6) break;
+                const u32 hex_start = pos_;
+                skip_while([](char c) { return std::isxdigit(static_cast<unsigned char>(c)); });
+                const std::string_view hex = src_.substr(hex_start, pos_ - hex_start);
+                if (peek() != '}' || hex.empty() || hex.size() > 6) break;
                 ++pos_;
+                u32 cp = 0;
+                std::from_chars(hex.data(), hex.data() + hex.size(), cp, 16);  // <= 6 hex digits always fit
                 if (cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)) {
-                    diag_.error("E0004", span(esc_start, pos_), "invalid Unicode scalar value in escape");
+                    diag_.error(DiagCode::InvalidEscape, span(esc_start, pos_), "invalid Unicode scalar value in escape");
                     return true;
                 }
-                append_utf8(buf, cp);
+                utf8_encode(buf, cp);
                 return true;
             }
             default:
                 break;
         }
-        diag_.error("E0004", span(esc_start, pos_ > esc_start + 1 ? pos_ : esc_start + 2), "invalid escape sequence");
+        diag_.error(DiagCode::InvalidEscape, span(esc_start, std::max(pos_, esc_start + 2)), "invalid escape sequence");
         return true;
     }
 
     // pos_ is just past the opening quote (first) or the closing ')' of an
     // interpolation; seg_start is where this token's span begins.
     void lex_string_segment(u32 seg_start, bool first) {
+        const Tok end_kind = first ? Tok::StringLit : Tok::StringTail;
         std::string buf;
         while (true) {
             if (pos_ >= src_.size() || src_[pos_] == '\n') {
-                diag_.error("E0003", span(seg_start, pos_), "unterminated string literal");
-                Token& t = push(first ? Tok::StringLit : Tok::StringTail, seg_start);
-                t.sym = in_.intern(buf).id;
+                diag_.error(DiagCode::UnterminatedString, span(seg_start, pos_), "unterminated string literal");
+                push(end_kind, seg_start, in_.intern(buf));
                 return;
             }
-            char c = src_[pos_];
+            const char c = src_[pos_];
             if (c == '"') {
                 ++pos_;
-                Token& t = push(first ? Tok::StringLit : Tok::StringTail, seg_start);
-                t.sym = in_.intern(buf).id;
+                push(end_kind, seg_start, in_.intern(buf));
                 return;
             }
             if (c == '\\') {
                 ++pos_;
                 if (!lex_escape(buf, false)) {
-                    u32 open_lo = pos_ - 1;
+                    const u32 open_lo = pos_ - 1;
                     ++pos_;  // consume '('
-                    Token& t = push(first ? Tok::StringHead : Tok::StringMiddle, seg_start);
-                    t.sym = in_.intern(buf).id;
-                    stack_.push_back({'I', span(open_lo, pos_)});
+                    push(first ? Tok::StringHead : Tok::StringMiddle, seg_start, in_.intern(buf));
+                    stack_.push_back({kInterp, span(open_lo, pos_)});
                     return;
                 }
                 continue;
             }
-            buf.push_back(c);
+            buf += c;
             ++pos_;
         }
     }
 
     void lex_char() {
-        u32 start = pos_;
+        const u32 start = pos_;
         ++pos_;
-        std::string buf;
         if (peek() == '\'') {
             ++pos_;
-            diag_.error("E0007", span(start, pos_), "empty character literal");
-            push(Tok::CharLit, start).char_value = 0;
+            diag_.error(DiagCode::InvalidCharacterLiteral, span(start, pos_), "empty character literal");
+            push(Tok::CharLit, start, char32_t{0});
             return;
         }
+        std::string buf;
         while (pos_ < src_.size() && src_[pos_] != '\'' && src_[pos_] != '\n') {
             if (src_[pos_] == '\\') {
                 ++pos_;
                 lex_escape(buf, true);
             } else {
-                buf.push_back(src_[pos_++]);
+                buf += src_[pos_++];
             }
         }
         if (peek() != '\'') {
-            diag_.error("E0007", span(start, pos_), "unterminated character literal");
-            push(Tok::CharLit, start).char_value = 0;
+            diag_.error(DiagCode::InvalidCharacterLiteral, span(start, pos_), "unterminated character literal");
+            push(Tok::CharLit, start, char32_t{0});
             return;
         }
         ++pos_;
-        // Decode exactly one UTF-8 scalar value from buf. Invalid bytes were
-        // already reported by validate_utf8(), so they only yield value 0.
-        u32 cp = 0;
+        // Exactly one scalar value is required. Invalid bytes were already
+        // reported by validate_utf8() and just yield value 0.
+        std::string_view s = buf;
+        std::optional<u32> first;
         u32 count = 0;
-        bool valid = true;
-        for (usize i = 0; i < buf.size();) {
-            u32 c = 0;
-            u32 len = utf8_decode(buf.data() + i, buf.size() - i, &c);
-            if (!len) {
-                valid = false;
-                break;
+        while (!s.empty()) {
+            const auto c = utf8_decode(s);
+            if (!c) {
+                push(Tok::CharLit, start, char32_t{0});
+                return;
             }
-            if (count == 0) cp = c;
+            if (!first) first = c->cp;
             ++count;
-            i += len;
+            s.remove_prefix(c->len);
         }
-        if (!valid) {
-            cp = 0;
-        } else if (count != 1) {
-            diag_.error("E0007", span(start, pos_), "character literal must contain exactly one character");
-        }
-        push(Tok::CharLit, start).char_value = cp;
+        if (count != 1) diag_.error(DiagCode::InvalidCharacterLiteral, span(start, pos_), "character literal must contain exactly one character");
+        push(Tok::CharLit, start, static_cast<char32_t>(first.value_or(0)));
     }
 
     void open(char ch, Tok kind, u32 start) {
@@ -435,7 +398,7 @@ private:
 
     void close(char opener, Tok kind, u32 start) {
         ++pos_;
-        if (opener == '(' && !stack_.empty() && stack_.back().ch == 'I') {
+        if (opener == '(' && !stack_.empty() && stack_.back().is_interp()) {
             stack_.pop_back();
             space_ = false;
             lex_string_segment(start, false);
@@ -444,27 +407,21 @@ private:
         if (!stack_.empty() && stack_.back().ch == opener) {
             stack_.pop_back();
         } else {
-            Diagnostic& d = diag_.error("E0009", span(start, pos_),
-                                        std::string("unexpected closing delimiter '") + src_[start] + "'");
+            Diagnostic& d = diag_.error(DiagCode::UnexpectedClosingDelimiter, span(start, pos_), "unexpected closing delimiter '{}'", src_[start]);
             if (!stack_.empty())
-                d.notes.push_back({stack_.back().span, std::string("unclosed '") +
-                                                           (stack_.back().ch == 'I' ? '(' : stack_.back().ch) +
-                                                           "' opened here"});
-            for (usize i = stack_.size(); i-- > 0;) {
-                char ch = stack_[i].ch == 'I' ? '(' : stack_[i].ch;
-                if (ch == opener) {
-                    stack_.resize(i);
-                    break;
-                }
-            }
+                d.notes.push_back(
+                    {stack_.back().span, std::format("unclosed '{}' opened here", stack_.back().opener())});
+            // Recover by closing everything up to the innermost matching opener.
+            const auto match = std::ranges::find(stack_ | std::views::reverse, opener, &Open::opener);
+            if (match.base() != stack_.begin()) stack_.erase(std::prev(match.base()), stack_.end());
         }
         push(kind, start);
     }
 
     bool lex_punct(u32 start) {
-        char c = src_[pos_];
-        char n = peek(1), n2 = peek(2);
-        auto emit = [&](Tok k, u32 len) {
+        const char c = src_[pos_];
+        const char n = peek(1), n2 = peek(2);
+        const auto emit = [&](Tok k, u32 len) {
             pos_ += len;
             push(k, start);
             return true;
@@ -529,7 +486,7 @@ private:
         }
     }
 
-    const std::string& src_;
+    std::string_view src_;
     FileId file_;
     Interner& in_;
     DiagEngine& diag_;

@@ -19,6 +19,9 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <print>
+#include <source_location>
+#include <string_view>
 
 namespace phs {
 
@@ -30,16 +33,22 @@ using i32 = std::int32_t;
 using i64 = std::int64_t;
 using usize = std::size_t;
 
-[[noreturn]] inline void fatal(const char* file, int line, const char* msg) {
-    std::fprintf(stderr, "stage0 internal error: %s (%s:%d)\n", msg, file, line);
+// Internal compiler error: report and abort (stage0 is built without exceptions).
+[[noreturn]] inline void fatal(std::string_view msg, std::source_location loc = std::source_location::current()) {
+    std::println(stderr, "stage0 internal error: {} ({}:{})", msg, loc.file_name(), loc.line());
     std::abort();
+}
+
+// Unlike std::unreachable(), reaching this is a diagnosed abort, not undefined
+// behavior: a compiler bug should fail loudly, never miscompile.
+[[noreturn]] inline void unreachable(std::source_location loc = std::source_location::current()) {
+    fatal("unreachable code reached", loc);
 }
 
 }  // namespace phs
 
-#define PHS_ASSERT(cond)                                         \
-    do {                                                         \
-        if (!(cond)) ::phs::fatal(__FILE__, __LINE__, #cond);    \
+// A macro only because C++ cannot stringify the asserted expression otherwise.
+#define PHS_ASSERT(cond)                                        \
+    do {                                                        \
+        if (!(cond)) ::phs::fatal("assertion failed: " #cond);  \
     } while (0)
-
-#define PHS_UNREACHABLE() ::phs::fatal(__FILE__, __LINE__, "unreachable")

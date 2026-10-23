@@ -15,56 +15,79 @@
 
 #pragma once
 
+#include <bit>
+#include <optional>
+#include <string>
+#include <string_view>
+
 #include "support/common.hpp"
+
+// The standard library has no supported UTF-8 codec (std::codecvt was
+// deprecated in C++17 and removed in C++26), so stage0 carries this small one.
 
 namespace phs {
 
-// Decodes one UTF-8 encoded Unicode scalar value from p[0..n). Returns its
-// length in bytes (1-4) and stores the value in *cp, or returns 0 if the bytes
-// are not a valid shortest-form encoding (truncated, overlong, surrogate,
-// above U+10FFFF, or a stray continuation byte).
-inline u32 utf8_decode(const char* p, usize n, u32* cp) {
-    if (n == 0) return 0;
-    u8 b0 = static_cast<u8>(p[0]);
-    if (b0 < 0x80) {
-        *cp = b0;
-        return 1;
-    }
-    u32 len;
-    u32 value;
-    u32 min;
-    if ((b0 & 0xE0) == 0xC0) {
-        len = 2;
-        value = b0 & 0x1F;
-        min = 0x80;
-    } else if ((b0 & 0xF0) == 0xE0) {
-        len = 3;
-        value = b0 & 0x0F;
-        min = 0x800;
-    } else if ((b0 & 0xF8) == 0xF0) {
-        len = 4;
-        value = b0 & 0x07;
-        min = 0x10000;
-    } else {
-        return 0;
-    }
-    if (n < len) return 0;
+struct Utf8Char {
+    u32 cp;   // Unicode scalar value
+    u32 len;  // encoded length in bytes (1-4)
+};
+
+// Decodes the scalar value at the start of `s`. Returns nullopt unless the
+// bytes are a valid shortest-form encoding: rejects truncated and overlong
+// sequences, surrogates, values above U+10FFFF and stray continuation bytes.
+constexpr std::optional<Utf8Char> utf8_decode(std::string_view s) {
+    if (s.empty()) return std::nullopt;
+    const auto b0 = static_cast<u8>(s[0]);
+    if (b0 < 0x80) return Utf8Char{b0, 1};
+    // The number of leading 1-bits in the lead byte is the sequence length.
+    const auto len = static_cast<u32>(std::countl_one(b0));
+    if (len < 2 || len > 4 || s.size() < len) return std::nullopt;
+    u32 cp = b0 & (0x7Fu >> len);
     for (u32 i = 1; i < len; ++i) {
-        u8 b = static_cast<u8>(p[i]);
-        if ((b & 0xC0) != 0x80) return 0;
-        value = (value << 6) | (b & 0x3F);
+        const auto b = static_cast<u8>(s[i]);
+        if ((b & 0xC0) != 0x80) return std::nullopt;
+        cp = (cp << 6) | (b & 0x3Fu);
     }
-    if (value < min || value > 0x10FFFF || (value >= 0xD800 && value <= 0xDFFF)) return 0;
-    *cp = value;
-    return len;
+    constexpr u32 kMinForLen[] = {0, 0, 0x80, 0x800, 0x10000};
+    if (cp < kMinForLen[len] || cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)) return std::nullopt;
+    return Utf8Char{cp, len};
 }
 
-// Number of bytes to advance past the character at p: the length of a valid
-// sequence, or 1 for an invalid byte. Each step counts as one display column.
-inline u32 utf8_step(const char* p, usize n) {
-    u32 cp;
-    u32 len = utf8_decode(p, n, &cp);
-    return len ? len : 1;
+// Bytes to advance past the character at the start of `s`: the length of a
+// valid sequence, or 1 for an invalid byte. Each step is one display column.
+constexpr u32 utf8_step(std::string_view s) {
+    const auto c = utf8_decode(s);
+    return c ? c->len : 1;
 }
+
+// Appends the UTF-8 encoding of a valid Unicode scalar value.
+inline void utf8_encode(std::string& out, u32 cp) {
+    if (cp < 0x80) {
+        out += static_cast<char>(cp);
+    } else if (cp < 0x800) {
+        out += static_cast<char>(0xC0 | (cp >> 6));
+        out += static_cast<char>(0x80 | (cp & 0x3F));
+    } else if (cp < 0x10000) {
+        out += static_cast<char>(0xE0 | (cp >> 12));
+        out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+        out += static_cast<char>(0x80 | (cp & 0x3F));
+    } else {
+        out += static_cast<char>(0xF0 | (cp >> 18));
+        out += static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
+        out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+        out += static_cast<char>(0x80 | (cp & 0x3F));
+    }
+}
+
+// Compile-time checks of the decoder.
+static_assert(utf8_decode("A")->cp == 'A');
+static_assert(utf8_decode("\xC3\xA9")->cp == 0xE9 && utf8_decode("\xC3\xA9")->len == 2);
+static_assert(utf8_decode("\xF0\x9F\x98\x80")->cp == 0x1F600);
+static_assert(!utf8_decode("\xC0\xAF"));          // overlong '/'
+static_assert(!utf8_decode("\xED\xA0\x80"));      // surrogate U+D800
+static_assert(!utf8_decode("\xF4\x90\x80\x80"));  // above U+10FFFF
+static_assert(!utf8_decode("\xE2\x82"));          // truncated
+static_assert(!utf8_decode("\x80"));              // stray continuation byte
+static_assert(utf8_step("\xFF") == 1);
 
 }  // namespace phs

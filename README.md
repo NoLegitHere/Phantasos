@@ -51,15 +51,54 @@ The language is specified in [`docs/spec`](docs/spec).
 
 ## Building stage0
 
-Requirements: clang++ with C++23 support, CMake 3.28+, and Ninja.
+Requirements: clang++ 18+, a compatible C++23 standard library, CMake 3.28+,
+and Ninja. CMake compiles and links a feature probe for `std::expected`,
+`std::print`, `std::format`, `std::ranges::to`, `std::views::join_with`, and
+floating-point `std::from_chars`; the Clang version alone is not sufficient.
+
+CI uses Clang 19 with libstdc++ 14 on Linux, and Clang with the MSVC STL on
+Windows. [Clang 19 enables libstdc++'s `std::expected`](https://releases.llvm.org/19.1.0/tools/clang/docs/ReleaseNotes.html#c-20-feature-support),
+and [libstdc++ 14 adds the required print and range facilities](https://gcc.gnu.org/onlinedocs/libstdc++/manual/status.html#status.iso.2023).
+On Ubuntu 24.04 x86_64, install and select the Linux pair explicitly:
+
+```sh
+sudo apt-get install clang-19 g++-14 ninja-build
+cmake -S bootstrap/stage0 -B build/stage0 -G Ninja -DCMAKE_CXX_COMPILER=clang++-19 -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_FLAGS=--gcc-install-dir=/usr/lib/gcc/x86_64-linux-gnu/14
+```
+
+For Windows, or an already configured compatible toolchain:
 
 ```sh
 cmake -S bootstrap/stage0 -B build/stage0 -G Ninja -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_BUILD_TYPE=Debug
 cmake --build build/stage0
+ctest --test-dir build/stage0 --output-on-failure                    # focused C++ library tests
 python tests/run_golden.py --stage0 build/stage0/phantasos-stage0      # golden tests
+python tests/test_frontend.py --stage0 build/stage0/phantasos-stage0   # input limits, nesting and parser state
 python tests/fuzz_frontend.py --stage0 build/stage0/phantasos-stage0   # crash/hang fuzzing
 python tools/license-check/license_check.py                            # license headers
 ```
+
+The build separates the `phantasos-stage0` CLI from the `phantasos_frontend`
+static library (CMake alias `Phantasos::Frontend`). Link the library to reuse
+source management, diagnostics, lexing, parsing, and AST dumps. Its target
+propagates the required C++23 and no-exception/no-RTTI settings. Focused C++
+tests are enabled by default; use `-DBUILD_TESTING=OFF` to omit them, following
+[CMake's CTest convention](https://cmake.org/cmake/help/v3.28/module/CTest.html).
+
+Source files are limited to **64 MiB of raw input** by default, before BOM and
+line-ending normalization. Oversized files are rejected before reading their
+contents; the CLI returns exit code 2 for source-loading failures. Library
+callers can configure `SourceLimits` (byte and file-count limits), and handle
+`SourceErrorKind` through the `std::expected` returned by both `load` and `add`.
+The hard byte ceiling is `UINT32_MAX - 1`, leaving room for EOF and 1-based
+locations. These are input limits, not a total compilation-memory budget.
+Source references and text views remain valid when more files are added.
+
+Stage0 limits recursive grammar nesting to 128 active guarded entries, shared
+across expressions, types, patterns, blocks, and declarations. Exceeding this
+implementation limit reports `E0112` and stops parsing that file. Flat operator
+and member chains are parsed iteratively; AST dumps also use explicit work
+stacks, including inline type and pattern rendering.
 
 Try it:
 

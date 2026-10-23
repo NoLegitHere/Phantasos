@@ -15,7 +15,10 @@
 
 #pragma once
 
+#include <concepts>
 #include <span>
+#include <type_traits>
+#include <utility>
 
 #include "support/interner.hpp"
 #include "support/source.hpp"
@@ -261,19 +264,35 @@ enum class ItemKind : u8 {
     Fun, Class, Struct, Actor, Interface, Enum, EnumCase, Var, Extern, TypeAlias, Init, Deinit
 };
 
+constexpr bool is_type_decl(ItemKind k) {
+    return k == ItemKind::Class || k == ItemKind::Struct || k == ItemKind::Actor || k == ItemKind::Interface ||
+           k == ItemKind::Enum;
+}
+
 enum class Visibility : u8 { Default, Public, Internal, File, Private };
 
-enum Modifier : u16 {
-    kModOpen = 1 << 0,
-    kModFinal = 1 << 1,
-    kModAbstract = 1 << 2,
-    kModSealed = 1 << 3,
-    kModOverride = 1 << 4,
-    kModStatic = 1 << 5,
-    kModMut = 1 << 6,
-    kModAsync = 1 << 7,
-    kModUnsafe = 1 << 8,
+enum class Modifier : u16 {
+    None = 0,
+    Open = 1 << 0,
+    Final = 1 << 1,
+    Abstract = 1 << 2,
+    Sealed = 1 << 3,
+    Override = 1 << 4,
+    Static = 1 << 5,
+    Mut = 1 << 6,
+    Async = 1 << 7,
+    Unsafe = 1 << 8,
 };
+
+constexpr Modifier operator|(Modifier a, Modifier b) {
+    return static_cast<Modifier>(std::to_underlying(a) | std::to_underlying(b));
+}
+
+constexpr Modifier& operator|=(Modifier& a, Modifier b) { return a = a | b; }
+
+constexpr bool has_modifier(Modifier mods, Modifier flag) {
+    return flag != Modifier::None && (std::to_underlying(mods) & std::to_underlying(flag)) == std::to_underlying(flag);
+}
 
 enum class Convention : u8 { Default, Borrow, Inout, Own };
 
@@ -319,14 +338,14 @@ struct Item {
     Span span;
     List<Attribute> attrs;
     Visibility vis = Visibility::Default;
-    u16 mods = 0;
+    Modifier mods = Modifier::None;
     Name name;  // empty for Extern/Init/Deinit
 };
 
 template <ItemKind K>
 struct ItemOf : Item {
     static constexpr ItemKind kKind = K;
-    ItemOf() : Item{K, {}, {}, Visibility::Default, 0, {}} {}
+    ItemOf() : Item{K, {}, {}, Visibility::Default, Modifier::None, {}} {}
 };
 
 struct Signature {
@@ -346,6 +365,8 @@ struct FunItem : ItemOf<ItemKind::Fun> {
 
 // Shared by class, struct, actor, interface and enum declarations.
 struct TypeDeclItem : Item {
+    explicit TypeDeclItem(ItemKind k) : Item{k} { PHS_ASSERT(is_type_decl(k)); }
+
     List<GenericParam> generics;
     bool has_ctor = false;
     List<Param> ctor_params;
@@ -406,24 +427,46 @@ struct File {
 
 // ---------------------------------------------------------------- casting
 
+// Only tagged nodes in the matching AST family can be downcast. Constness
+// comes from the source pointer; callers cannot accidentally cast it away.
+template <typename B>
+concept NodeBase = !std::is_volatile_v<B> &&
+    (std::same_as<std::remove_const_t<B>, Expr> || std::same_as<std::remove_const_t<B>, Stmt> ||
+     std::same_as<std::remove_const_t<B>, Pattern> || std::same_as<std::remove_const_t<B>, Item>);
+
 template <typename T, typename B>
-T* as(B* node) {
-    return node && node->kind == T::kKind ? static_cast<T*>(node) : nullptr;
+concept TaggedNodeFor = NodeBase<B> && std::same_as<T, std::remove_cv_t<T>> &&
+    std::derived_from<T, std::remove_const_t<B>> && requires(B* node) {
+        { node->kind == T::kKind } -> std::same_as<bool>;
+    };
+
+template <typename T, typename B>
+using NodePtr = std::conditional_t<std::is_const_v<B>, const T*, T*>;
+
+template <typename T, typename B>
+    requires TaggedNodeFor<T, B>
+[[nodiscard]] NodePtr<T, B> as(B* node) {
+    return node && node->kind == T::kKind ? static_cast<NodePtr<T, B>>(node) : nullptr;
 }
 
 template <typename T, typename B>
-T* cast(B* node) {
+    requires TaggedNodeFor<T, B>
+[[nodiscard]] NodePtr<T, B> cast(B* node) {
     PHS_ASSERT(node && node->kind == T::kKind);
-    return static_cast<T*>(node);
+    return static_cast<NodePtr<T, B>>(node);
 }
 
-inline bool is_type_decl(ItemKind k) {
-    return k == ItemKind::Class || k == ItemKind::Struct || k == ItemKind::Actor || k == ItemKind::Interface ||
-           k == ItemKind::Enum;
+template <typename B>
+    requires (std::same_as<B, Item> || std::same_as<B, const Item>)
+[[nodiscard]] NodePtr<TypeDeclItem, B> as_type_decl(B* item) {
+    return item && is_type_decl(item->kind) ? static_cast<NodePtr<TypeDeclItem, B>>(item) : nullptr;
 }
 
-inline TypeDeclItem* as_type_decl(Item* item) {
-    return item && is_type_decl(item->kind) ? static_cast<TypeDeclItem*>(item) : nullptr;
+template <typename B>
+    requires (std::same_as<B, Item> || std::same_as<B, const Item>)
+[[nodiscard]] NodePtr<TypeDeclItem, B> cast_type_decl(B* item) {
+    PHS_ASSERT(item && is_type_decl(item->kind));
+    return static_cast<NodePtr<TypeDeclItem, B>>(item);
 }
 
 }  // namespace phs::ast

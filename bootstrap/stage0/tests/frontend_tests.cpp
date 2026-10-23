@@ -1,0 +1,194 @@
+// Copyright 2026 The Phantasos Authors
+// SPDX-License-Identifier: Apache-2.0
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+#include "test_support.hpp"
+
+#include <algorithm>
+#include <array>
+#include <cstdio>
+#include <memory>
+#include <string>
+#include <type_traits>
+
+#include "support/diag.hpp"
+#include "syntax/ast_dump.hpp"
+#include "syntax/lexer.hpp"
+#include "syntax/parser.hpp"
+
+using namespace phs;
+using namespace phs::ast;
+
+namespace {
+
+template <typename T, typename B>
+concept CanCast = requires(B* node) { as<T>(node); cast<T>(node); };
+
+static_assert(CanCast<IntExpr, Expr> && CanCast<IntExpr, const Expr>);
+static_assert(!CanCast<IntExpr, Item> && !CanCast<VarStmt, Expr>);
+static_assert(!CanCast<IntExpr, volatile Expr> && !CanCast<Expr, Expr>);
+static_assert(!CanCast<TypeDeclItem, Item> && !CanCast<const IntExpr, Expr>);
+static_assert(std::same_as<decltype(as<IntExpr>(static_cast<const Expr*>(nullptr))), const IntExpr*>);
+static_assert(std::same_as<decltype(cast<IntExpr>(static_cast<Expr*>(nullptr))), IntExpr*>);
+static_assert(std::same_as<decltype(cast<VarStmt>(static_cast<const Stmt*>(nullptr))), const VarStmt*>);
+static_assert(std::same_as<decltype(as_type_decl(static_cast<const Item*>(nullptr))), const TypeDeclItem*>);
+static_assert(std::same_as<decltype(std::declval<const DiagEngine&>().all()), std::span<const Diagnostic>>);
+static_assert(!std::convertible_to<Modifier, u16>);
+static_assert(!std::default_initializable<TypeDeclItem>);
+static_assert(diag_code(DiagCode::UnexpectedCharacter) == "E0001");
+static_assert(diag_code(DiagCode::NestingLimit) == "E0112");
+
+struct Frontend {
+    SourceManager sources;
+    Interner names;
+    DiagEngine diag{sources};
+    Arena arena;
+
+    Frontend() { seed_keywords(names); }
+
+    const File* parse(std::string_view source) {
+        const auto file = sources.add("test.phs", source);
+        CHECK(file);
+        return parse_file(*file, lex_file(sources, *file, names, diag), arena, names, diag);
+    }
+};
+
+void ast_casts_and_modifiers() {
+    IntExpr value;
+    value.value = 42;
+    Expr* node = &value;
+    const Expr* constant = node;
+    CHECK(as<IntExpr>(node) == &value && cast<IntExpr>(constant)->value == 42);
+    CHECK(as<StringExpr>(constant) == nullptr && as<IntExpr>(static_cast<Expr*>(nullptr)) == nullptr);
+    for (ItemKind kind : {ItemKind::Class, ItemKind::Struct, ItemKind::Actor, ItemKind::Interface, ItemKind::Enum}) {
+        TypeDeclItem declaration(kind);
+        Item* item = &declaration;
+        const Item* constant_item = item;
+        CHECK(as_type_decl(item) == &declaration && cast_type_decl(constant_item)->kind == kind);
+        CHECK(as<FunItem>(constant_item) == nullptr);
+    }
+    FunItem function;
+    CHECK(as_type_decl(static_cast<const Item*>(&function)) == nullptr);
+    CHECK(as_type_decl(static_cast<Item*>(nullptr)) == nullptr);
+    Modifier mods = Modifier::Open | Modifier::Async;
+    mods |= Modifier::Unsafe;
+    CHECK(has_modifier(mods, Modifier::Open | Modifier::Unsafe));
+    CHECK(!has_modifier(mods, Modifier::Final) && !has_modifier(mods, Modifier::None));
+}
+
+void lexer_values_and_spans() {
+    Frontend frontend;
+    const auto file = frontend.sources.add("tokens", "name 0x2a 1.5 'x' \"hi\"");
+    CHECK(file);
+    const auto tokens = lex_file(frontend.sources, *file, frontend.names, frontend.diag);
+    CHECK(frontend.diag.error_count() == 0 && tokens.size() == 6);
+    CHECK(tokens[0].kind == Tok::Ident && frontend.names.str(tokens[0].symbol()) == "name");
+    CHECK(tokens[1].kind == Tok::IntLit && tokens[1].int_value() == 42);
+    CHECK(tokens[2].kind == Tok::FloatLit && tokens[2].float_value() == 1.5);
+    CHECK(tokens[3].kind == Tok::CharLit && tokens[3].char_value() == 'x');
+    CHECK(tokens[4].kind == Tok::StringLit && frontend.names.str(tokens[4].symbol()) == "hi");
+    CHECK(tokens.back().kind == Tok::Eof && tokens.back().span.lo == frontend.sources.file(*file).text.size());
+    for (const Token& token : tokens) CHECK(token.span.file == *file && token.span.lo <= token.span.hi);
+    // The public dump API accepts any contiguous read-only token sequence.
+    const std::array prefix{tokens[0], tokens[1]};
+    CHECK(dump_tokens(prefix, frontend.names, frontend.sources).find("IntLit 42") != std::string::npos);
+}
+
+void parser_structure_and_recovery() {
+    Frontend frontend;
+    const File* file = frontend.parse("public async fun calc() = 1 + 2 * 3\nlet broken = ;\nlet tail = 7\n");
+    CHECK(file->items.size() == 3 && frontend.diag.error_count() == 1);
+    CHECK(frontend.diag.all().front().code == DiagCode::ExpectedExpression);
+    const Item* item = file->items.front();
+    const auto* function = cast<FunItem>(item);
+    CHECK(function->vis == Visibility::Public && has_modifier(function->mods, Modifier::Async));
+    const Expr* body = function->body;
+    const auto* add = cast<BinaryExpr>(body);
+    CHECK(add->op == BinOp::Add && cast<IntExpr>(add->lhs)->value == 1);
+    const auto* multiply = cast<BinaryExpr>(add->rhs);
+    CHECK(multiply->op == BinOp::Mul && cast<IntExpr>(multiply->lhs)->value == 2);
+    CHECK(cast<IntExpr>(multiply->rhs)->value == 3);
+    CHECK(cast<IntExpr>(cast<VarItem>(file->items.back())->init)->value == 7);
+    CHECK(dump_ast(*file, frontend.names).find("Let tail\n    Int 7") != std::string::npos);
+}
+
+void diagnostics_are_file_local() {
+    Frontend frontend;
+    // The first file's unterminated delimiter must not suppress EOF errors in
+    // the second file when a compilation shares one diagnostic engine.
+    const auto first = frontend.sources.add("first.phs", "(");
+    CHECK(first);
+    const auto tokens = lex_file(frontend.sources, *first, frontend.names, frontend.diag);
+    CHECK(tokens.back().kind == Tok::Eof);
+    const usize before = frontend.diag.error_count();
+    CHECK(before == 1 && frontend.diag.all()[0].code == DiagCode::UnclosedDelimiter);
+    const File* second = frontend.parse("let x =");
+    CHECK(frontend.diag.error_count() == before + 1);
+    CHECK(frontend.diag.all().back().code == DiagCode::ExpectedExpression);
+    CHECK(frontend.diag.all().back().span.file == second->file);
+}
+
+std::string rendered(const DiagEngine& diag) {
+    test::TempDirectory temp;
+    const auto path = temp.path / "diagnostics.txt";
+    std::FILE* raw = nullptr;
+#ifdef _WIN32
+    CHECK(::_wfopen_s(&raw, path.c_str(), L"w+b") == 0);
+#else
+    raw = std::fopen(path.c_str(), "w+b");
+#endif
+    const std::unique_ptr<std::FILE, decltype(&std::fclose)> stream(raw, &std::fclose);
+    CHECK(stream);
+    diag.render(stream.get());
+    CHECK(std::fseek(stream.get(), 0, SEEK_SET) == 0);
+    std::string result;
+    std::array<char, 1024> buffer;
+    while (const auto count = std::fread(buffer.data(), 1, buffer.size(), stream.get()))
+        result.append(buffer.data(), count);
+    CHECK(!std::ferror(stream.get()));
+    std::erase(result, '\r');
+    return result;
+}
+
+void diagnostic_rendering_and_order() {
+    SourceManager sources;
+    const auto first = sources.add("first.phs", "a\t\xC3\xA9\xFF\n");
+    const auto second = sources.add("second.phs", "z");
+    CHECK(first && second);
+    DiagEngine diag(sources);
+    diag.error(DiagCode::ExpectedToken, {*second, 0, 1}, "later file");
+    auto& error = diag.error(DiagCode::ExpectedExpression, {*first, 2, 5}, "first message {}", 42);
+    error.notes.push_back({{*first, 0, 1}, "context"});
+    diag.warning(DiagCode::ExpectedExpression, {*first, 2, 5}, "same position");
+    CHECK(diag.error_count() == 2 && diag.all().size() == 3);
+    const std::string output = rendered(diag);
+    const auto a = output.find("first.phs:1:3: error[E0101]: first message 42");
+    const auto b = output.find("first.phs:1:3: warning[E0101]: same position");
+    const auto c = output.find("second.phs:1:1: error[E0100]: later file");
+    CHECK(a != std::string::npos && b != std::string::npos && c != std::string::npos && a < b && b < c);
+    CHECK(output.find("first.phs:1:1: note: context") != std::string::npos);
+    CHECK(output.find("a\t\xC3\xA9\xEF\xBF\xBD") != std::string::npos);
+    CHECK(output.find("      |  \t^^\n") != std::string::npos);
+    CHECK(diag.all().front().span.file == *second);  // Rendering does not reorder storage.
+}
+
+}  // namespace
+
+int main() {
+    ast_casts_and_modifiers();
+    lexer_values_and_spans();
+    parser_structure_and_recovery();
+    diagnostics_are_file_local();
+    diagnostic_rendering_and_order();
+}

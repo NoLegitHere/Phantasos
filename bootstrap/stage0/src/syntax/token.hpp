@@ -15,11 +15,16 @@
 
 #pragma once
 
+#include <string_view>
+#include <variant>
+
 #include "support/interner.hpp"
 #include "support/source.hpp"
 
 namespace phs {
 
+// Token and keyword lists. These are X-macros because C++23 cannot list an
+// enum's enumerators; each list expands into the enum and its name tables.
 // X(Name, spelling-used-in-diagnostics)
 #define PHS_TOKENS(X)                \
     X(Eof, "end of file")            \
@@ -157,29 +162,26 @@ enum class Tok : u8 {
 #define PHS_K(name, text) Kw##name,
     PHS_KEYWORDS(PHS_K)
 #undef PHS_K
-    Count_
 };
-
-inline constexpr u8 kTokFlagSpaceBefore = 1;  // whitespace/comment/line start precedes the token
 
 struct Token {
     Tok kind = Tok::Eof;
-    u8 flags = 0;
+    bool space_before = false;  // whitespace, a comment or a line start precedes the token
     Span span;
-    union {
-        u64 int_value;
-        double float_value;
-        u32 char_value;
-        u32 sym;  // Ident name or decoded string literal segment (Symbol id)
-    };
-    Token() : int_value(0) {}
+    // Literal value or name, depending on `kind`. A wrong access aborts instead
+    // of silently reading another member.
+    //   Ident/keywords, String*: Symbol    IntLit: u64
+    //   FloatLit: double                   CharLit: char32_t
+    std::variant<std::monostate, u64, double, char32_t, Symbol> value;
 
-    bool space_before() const { return flags & kTokFlagSpaceBefore; }
-    Symbol symbol() const { return Symbol{sym}; }
+    u64 int_value() const { return std::get<u64>(value); }
+    double float_value() const { return std::get<double>(value); }
+    u32 char_value() const { return std::get<char32_t>(value); }
+    Symbol symbol() const { return std::get<Symbol>(value); }
 };
 
-const char* tok_name(Tok k);      // enum name, e.g. "LParen" (used in dumps)
-const char* tok_spelling(Tok k);  // human spelling, e.g. "'('" (used in diagnostics)
+std::string_view tok_name(Tok k);      // enum name, e.g. "LParen" (used in dumps)
+std::string_view tok_spelling(Tok k);  // human spelling, e.g. "'('" (used in diagnostics)
 bool tok_is_keyword(Tok k);
 
 // Must be called on a fresh Interner before anything else is interned.

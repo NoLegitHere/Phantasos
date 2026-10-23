@@ -16,7 +16,7 @@
 #pragma once
 
 #include <string>
-#include <vector>
+#include <span>
 
 #include "support/interner.hpp"
 #include "syntax/ast.hpp"
@@ -26,7 +26,7 @@ namespace phs {
 
 // Stable, human-readable renderings used by `phantasos-stage0 lex|parse` and
 // the golden tests.
-std::string dump_tokens(const std::vector<Token>& tokens, const Interner& in, const SourceManager& sm);
+std::string dump_tokens(std::span<const Token> tokens, const Interner& in, const SourceManager& sm);
 std::string dump_ast(const ast::File& file, const Interner& in);
 
 }  // namespace phs

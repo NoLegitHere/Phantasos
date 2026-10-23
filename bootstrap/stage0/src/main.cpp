@@ -14,11 +14,11 @@
 // limitations under the License.
 
 // phantasos-stage0: the C++23 bootstrap compiler for Phantasos-Core.
-
 #include <cstdio>
-#include <cstring>
-#include <string>
+#include <print>
+#include <span>
 #include <string_view>
+#include <utility>
 
 #include "support/arena.hpp"
 #include "support/diag.hpp"
@@ -31,37 +31,34 @@
 
 namespace {
 
-void usage(std::FILE* out) {
-    std::fputs(
-        "usage: phantasos-stage0 <command> [args]\n"
-        "\n"
-        "commands:\n"
-        "  lex <file.phs>     print the token stream\n"
-        "  parse <file.phs>   print the syntax tree\n"
-        "  check <file.phs>   report syntax errors only\n"
-        "  version            print the version\n"
-        "  help               print this message\n",
-        out);
-}
+constexpr std::string_view kUsage =
+    "usage: phantasos-stage0 <command> [args]\n"
+    "\n"
+    "commands:\n"
+    "  lex <file.phs>     print the token stream\n"
+    "  parse <file.phs>   print the syntax tree\n"
+    "  check <file.phs>   report syntax errors only\n"
+    "  version            print the version\n"
+    "  help               print this message\n";
 
-int run_frontend(std::string_view cmd, const char* path) {
+int run_frontend(std::string_view cmd, std::string_view path) {
     phs::SourceManager sm;
-    phs::FileId file;
-    if (!sm.load(path, file)) {
-        std::fprintf(stderr, "error: cannot read '%s'\n", path);
+    const auto file = sm.load(path);
+    if (!file) {
+        std::println(stderr, "error: cannot read '{}': {}", path, file.error().message());
         return 2;
     }
     phs::Interner interner;
     phs::seed_keywords(interner);
     phs::DiagEngine diag(sm);
 
-    std::vector<phs::Token> tokens = phs::lex_file(sm, file, interner, diag);
+    std::vector<phs::Token> tokens = phs::lex_file(sm, *file, interner, diag);
     if (cmd == "lex") {
-        std::fputs(phs::dump_tokens(tokens, interner, sm).c_str(), stdout);
+        std::print("{}", phs::dump_tokens(tokens, interner, sm));
     } else {
         phs::Arena arena;
-        phs::ast::File* ast = phs::parse_file(file, std::move(tokens), arena, interner, diag);
-        if (cmd == "parse") std::fputs(phs::dump_ast(*ast, interner).c_str(), stdout);
+        const phs::ast::File* ast = phs::parse_file(*file, std::move(tokens), arena, interner, diag);
+        if (cmd == "parse") std::print("{}", phs::dump_ast(*ast, interner));
     }
     std::fflush(stdout);
     diag.render(stderr);
@@ -71,27 +68,27 @@ int run_frontend(std::string_view cmd, const char* path) {
 }  // namespace
 
 int main(int argc, char** argv) {
-    if (argc < 2) {
-        usage(stderr);
+    const std::span<char*> args(argv, static_cast<std::size_t>(argc));
+    if (args.size() < 2) {
+        std::print(stderr, "{}", kUsage);
         return 2;
     }
-    std::string_view cmd = argv[1];
+    const std::string_view cmd = args[1];
     if (cmd == "help" || cmd == "--help" || cmd == "-h") {
-        usage(stdout);
+        std::print("{}", kUsage);
         return 0;
     }
     if (cmd == "version" || cmd == "--version") {
-        std::printf("phantasos-stage0 %s\n", PHS_VERSION);
+        std::println("phantasos-stage0 {}", PHS_VERSION);
         return 0;
     }
     if (cmd == "lex" || cmd == "parse" || cmd == "check") {
-        if (argc != 3) {
-            usage(stderr);
+        if (args.size() != 3) {
+            std::print(stderr, "{}", kUsage);
             return 2;
         }
-        return run_frontend(cmd, argv[2]);
+        return run_frontend(cmd, args[2]);
     }
-    std::fprintf(stderr, "error: unknown command '%.*s'\n\n", (int)cmd.size(), cmd.data());
-    usage(stderr);
+    std::print(stderr, "error: unknown command '{}'\n\n{}", cmd, kUsage);
     return 2;
 }

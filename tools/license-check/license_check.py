@@ -87,6 +87,11 @@ UTF8_BOM = b"\xef\xbb\xbf"
 # unterminated line.
 LINE_RE = re.compile(r"[^\r\n]*(?:\r\n|\r|\n)|[^\r\n]+\Z")
 
+# Python's source-encoding declaration syntax (PEP 263):
+# https://peps.python.org/pep-0263/#defining-the-encoding
+ENCODING_COOKIE_RE = re.compile(r"^[ \t\f]*#.*?coding[:=][ \t]*([-_.a-zA-Z0-9]+)")
+COMMENT_OR_BLANK_RE = re.compile(r"^[ \t\f]*(?:#|$)")
+
 
 def comment_style(path: Path) -> str | None:
     if path.name in BY_NAME:
@@ -112,12 +117,15 @@ def header_patterns(prefix: str) -> list[re.Pattern[str]]:
 
 def preamble_len(lines: list[str]) -> int:
     """Number of lines that must stay above the header (shebang, encoding cookie)."""
-    n = 0
-    if lines and lines[0].startswith("#!"):
-        n = 1
-    if len(lines) > n and re.match(r"^#.*coding[:=]", lines[n]):
-        n += 1
-    return n
+    if not lines:
+        return 0
+    if ENCODING_COOKIE_RE.match(lines[0]):
+        return 1
+    # A second-line cookie is legal after a comment or blank line, including
+    # an ordinary module comment or whitespace-only line without a shebang.
+    if len(lines) > 1 and COMMENT_OR_BLANK_RE.match(lines[0]) and ENCODING_COOKIE_RE.match(lines[1]):
+        return 2
+    return 1 if lines[0].startswith("#!") else 0
 
 
 def has_header(lines: list[str], prefix: str) -> bool:

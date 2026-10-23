@@ -56,10 +56,12 @@
   multi-file isolation, and AST structure/recovery. These tests link the same
   frontend library as the CLI and run in both platform jobs and under sanitizers.
 
+- Run `python tests/test_license_check.py` for license-fixer regressions,
+  including encoding declarations, BOMs, line endings, and idempotence.
 - Golden tests live in `tests/`. Each `*.phs` input has expected output files
   next to it (`*.tokens`, `*.ast`, `*.diag`).
 - Regenerate them with `python tests/run_golden.py --stage0 <exe> --update`
   and review the diff before committing.
 - Run `python tests/test_frontend.py --stage0 <exe>` for deterministic nesting,
-  long AST traversal, and parser-state regression tests. These run on both
+  long AST/token traversal, and parser-state regression tests. These run on both
   platforms and in the sanitizer job, alongside the mutation fuzzer.

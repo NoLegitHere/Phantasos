@@ -24,7 +24,8 @@ Newlines terminate statements, items, and match arms. The lexer emits a
 innermost open delimiter is `{` or there is none**, so the lexer drops
 newlines inside `(...)` and `[...]`. Inside generic `<...>` parameter and
 argument lists, the **parser** ignores them, because only the parser can
-tell a generic list from a comparison.
+tell a generic list from a comparison. Newlines inside block comments follow
+the same delimiter-sensitive rule, including inside nested comments.
 
 The parser also skips newlines:
 - after any binary operator, `,`, `=`, `->`, `:`, `.`, `?.`, and after an

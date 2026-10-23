@@ -113,6 +113,19 @@ class FrontendTests(unittest.TestCase):
                 code, _, stderr = self.run_source(source, line_counts=counts)
                 self.assertEqual((code, stderr), (0, ""))
 
+    def test_long_single_line_token_dump(self) -> None:
+        # A generous process timeout catches quadratic prefix rescanning without
+        # relying on timing ratios or a machine-specific microbenchmark budget.
+        count = 100000
+        prefix = "/* \u03b2 */"
+        code, stdout, stderr = self.run_source(prefix + "x " * count, "lex")
+        self.assertEqual((code, stderr), (0, ""))
+        lines = stdout.splitlines()
+        self.assertEqual(len(lines), count + 1)
+        for i, line in enumerate(lines[:-1]):
+            self.assertEqual(line, f"1:{len(prefix) + 1 + 2 * i} Ident x (sp)")
+        self.assertEqual(lines[-1], f"1:{len(prefix) + 1 + 2 * count} Eof")
+
     def test_long_optional_type(self) -> None:
         code, stdout, stderr = self.run_source("type T = Int" + " ?" * 10000)
         self.assertEqual((code, stderr), (0, ""))

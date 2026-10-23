@@ -129,15 +129,21 @@ private:
         return t;
     }
 
+    // Newlines in comments obey the same delimiter and collapsing rules as
+    // other trivia. The comment's contents never change the delimiter stack.
+    void consume_newline() {
+        if (newline_significant() && !out_.empty() && out_.back().kind != Tok::Newline)
+            out_.push_back({.kind = Tok::Newline, .span = span(pos_, pos_ + 1)});
+        ++pos_;
+    }
+
     void skip_trivia() {
         while (pos_ < src_.size()) {
             const char c = src_[pos_];
             if (c == ' ' || c == '\t' || c == '\f' || c == '\v') {
                 ++pos_;
             } else if (c == '\n') {
-                if (newline_significant() && !out_.empty() && out_.back().kind != Tok::Newline)
-                    out_.push_back({.kind = Tok::Newline, .span = span(pos_, pos_ + 1)});
-                ++pos_;
+                consume_newline();
             } else if (rest().starts_with("//")) {
                 skip_while([](char ch) { return ch != '\n'; });
             } else if (rest().starts_with("/*")) {
@@ -160,6 +166,8 @@ private:
             } else if (rest().starts_with("*/")) {
                 --depth;
                 pos_ += 2;
+            } else if (src_[pos_] == '\n') {
+                consume_newline();
             } else {
                 ++pos_;
             }

@@ -34,6 +34,39 @@ using namespace ast;
 
 namespace {
 
+// Ordered tokens visit each source character at most once. Reset for callers
+// dumping a reordered span or tokens from another file, preserving the public
+// dump API's behavior without a persistent cache in the source manager.
+class SourceCursor {
+public:
+    LineCol at(const SourceFile& source, u32 offset) {
+        const std::string_view text = source.text;
+        const u32 end = std::min(offset, static_cast<u32>(text.size()));
+        if (source_ != &source || end < offset_) {
+            source_ = &source;
+            const auto line = std::ranges::upper_bound(source.line_starts, end);
+            offset_ = *(line - 1);
+            location_ = {static_cast<u32>(line - source.line_starts.begin()), 1};
+        }
+        while (offset_ < end) {
+            if (text[offset_] == '\n') {
+                ++location_.line;
+                location_.col = 1;
+                ++offset_;
+            } else {
+                offset_ += utf8_step(text.substr(offset_));
+                ++location_.col;
+            }
+        }
+        return location_;
+    }
+
+private:
+    const SourceFile* source_ = nullptr;
+    u32 offset_ = 0;
+    LineCol location_{1, 1};
+};
+
 // Quotes a string the way the dumps show it. Valid UTF-8 is copied through and
 // invalid bytes are escaped, so dumps are always valid UTF-8.
 std::string quote(std::string_view s) {
@@ -767,8 +800,9 @@ private:
 std::string dump_tokens(std::span<const Token> tokens, const Interner& in, const SourceManager& sm) {
     std::string out;
     auto it = std::back_inserter(out);
+    SourceCursor locations;
     for (const Token& t : tokens) {
-        const LineCol lc = sm.line_col(t.span.file, t.span.lo);
+        const LineCol lc = locations.at(sm.file(t.span.file), t.span.lo);
         std::format_to(it, "{}:{} {}", lc.line, lc.col, tok_name(t.kind));
         switch (t.kind) {
             case Tok::Ident: std::format_to(it, " {}", in.str(t.symbol())); break;

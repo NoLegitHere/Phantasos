@@ -51,6 +51,7 @@ jobs:
         run: cmake -S bootstrap/stage0 -B build/stage0 -G Ninja -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_BUILD_TYPE=Debug
       - run: cmake --build build/stage0
       - run: ctest --test-dir build/stage0 --output-on-failure
+      - run: python tests/test_license_check.py
       - run: python tests/run_golden.py --stage0 build/stage0/phantasos-stage0
       - run: python tests/test_frontend.py --stage0 build/stage0/phantasos-stage0
       - run: python tests/fuzz_frontend.py --stage0 build/stage0/phantasos-stage0 --cases 300

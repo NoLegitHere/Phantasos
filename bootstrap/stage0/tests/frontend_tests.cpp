@@ -105,6 +105,87 @@ void lexer_values_and_spans() {
     CHECK(dump_tokens(prefix, frontend.names, frontend.sources).find("IntLit 42") != std::string::npos);
 }
 
+void block_comment_newlines() {
+    for (std::string_view ending : {"\n", "\r\n", "\r"}) {
+        Frontend frontend;
+        const std::string source = "let a = 1 /* outer" + std::string(ending) +
+            " /* nested" + std::string(ending) + " */" + std::string(ending) + "*/ let b = 2";
+        const auto id = frontend.sources.add("comments.phs", source);
+        CHECK(id);
+        auto tokens = lex_file(frontend.sources, *id, frontend.names, frontend.diag);
+        CHECK(std::ranges::count(tokens, Tok::Newline, &Token::kind) == 1);
+        const auto newline = std::ranges::find(tokens, Tok::Newline, &Token::kind);
+        CHECK(newline->span.lo == frontend.sources.file(*id).text.find('\n'));
+        CHECK(newline->span.hi == newline->span.lo + 1);
+        const auto* file = parse_file(*id, std::move(tokens), frontend.arena, frontend.names, frontend.diag);
+        CHECK(frontend.diag.error_count() == 0 && file->items.size() == 2);
+        CHECK(frontend.names.str(file->items[1]->name.sym) == "b");
+    }
+
+    // An inner brace restores significant newlines even inside a call. The
+    // returned value must stay on the return's physical line in both cases.
+    for (std::string_view source : {"fun f() { return /*\n*/ 42 }", "let x = f(if true { return /*\n*/ 42 })"}) {
+        Frontend frontend;
+        const auto* file = frontend.parse(source);
+        CHECK(frontend.diag.error_count() == 0 && file->items.size() == 1);
+        const Expr* body = nullptr;
+        if (const auto* fun = as<FunItem>(file->items[0])) {
+            body = fun->body;
+        } else {
+            const auto* call = cast<CallExpr>(cast<VarItem>(file->items[0])->init);
+            body = cast<IfExpr>(call->args[0].value)->then_block;
+        }
+        const auto* block = cast<BlockExpr>(body);
+        CHECK(block->stmts.size() == 2);
+        CHECK(cast<ReturnStmt>(block->stmts[0])->value == nullptr);
+        CHECK(cast<IntExpr>(cast<ExprStmt>(block->stmts[1])->expr)->value == 42);
+    }
+
+    for (std::string_view source : {
+        "let x = f(1 /*\n /* nested\n*/ */ + 2)",
+        "let x = [1 /*\n*/ + 2]",
+        "let x = \"value \\(1 /*\n*/ + 2)\"",
+        "/* leading\n*/ let x = 1 /* same line */ + 2",
+    }) {
+        Frontend frontend;
+        const auto id = frontend.sources.add("continued.phs", source);
+        CHECK(id);
+        auto tokens = lex_file(frontend.sources, *id, frontend.names, frontend.diag);
+        CHECK(std::ranges::count(tokens, Tok::Newline, &Token::kind) == 0);
+        const auto* file = parse_file(*id, std::move(tokens), frontend.arena, frontend.names, frontend.diag);
+        CHECK(frontend.diag.error_count() == 0 && file->items.size() == 1);
+    }
+
+    Frontend frontend;
+    const auto id = frontend.sources.add("unfinished.phs", "let x = 1\n/*\n /* nested */\n");
+    CHECK(id);
+    const auto tokens = lex_file(frontend.sources, *id, frontend.names, frontend.diag);
+    CHECK(std::ranges::count(tokens, Tok::Newline, &Token::kind) == 1);
+    CHECK(tokens.back().kind == Tok::Eof);
+    CHECK(frontend.diag.error_count() == 1 && frontend.diag.all()[0].code == DiagCode::UnterminatedComment);
+}
+
+void token_dump_locations() {
+    Frontend frontend;
+    const auto id = frontend.sources.add("locations.phs", "/*\xCE\xB2\xF0\x9F\x98\x80*/\t+\xFF+\r\n+");
+    CHECK(id);
+    const auto tokens = lex_file(frontend.sources, *id, frontend.names, frontend.diag);
+    CHECK(tokens.size() == 5 && frontend.diag.error_count() == 1);
+    CHECK(frontend.diag.all()[0].code == DiagCode::InvalidUtf8);
+    CHECK(dump_tokens(tokens, frontend.names, frontend.sources) ==
+          "1:8 Plus (sp)\n1:10 Plus (sp)\n1:11 Newline\n2:1 Plus (sp)\n2:2 Eof\n");
+    CHECK(dump_tokens(std::span(tokens).subspan(3), frontend.names, frontend.sources) ==
+          "2:1 Plus (sp)\n2:2 Eof\n");
+    CHECK(dump_tokens({}, frontend.names, frontend.sources).empty());
+
+    const auto other = frontend.sources.add("other.phs", "\n+");
+    CHECK(other);
+    const Token plus{.kind = Tok::Plus, .span = {*other, 1, 2}};
+    const std::array reordered{tokens[1], tokens[0], tokens[0], plus, tokens[4]};
+    CHECK(dump_tokens(reordered, frontend.names, frontend.sources) ==
+          "1:10 Plus (sp)\n1:8 Plus (sp)\n1:8 Plus (sp)\n2:1 Plus\n2:2 Eof\n");
+}
+
 void parser_structure_and_recovery() {
     Frontend frontend;
     const File* file = frontend.parse("public async fun calc() = 1 + 2 * 3\nlet broken = ;\nlet tail = 7\n");
@@ -188,6 +269,8 @@ void diagnostic_rendering_and_order() {
 int main() {
     ast_casts_and_modifiers();
     lexer_values_and_spans();
+    block_comment_newlines();
+    token_dump_locations();
     parser_structure_and_recovery();
     diagnostics_are_file_local();
     diagnostic_rendering_and_order();

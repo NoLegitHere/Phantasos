@@ -69,6 +69,9 @@ enum class DiagCode : u16 {
     ConflictingDeclaration = 302,
     InvalidReceiver = 303,
     ImportUnavailable = 304,
+    ScalarTypeMismatch = 400,
+    InvalidScalarOperand = 401,
+    ScalarLiteralRange = 402,
 };
 
 constexpr std::string_view diag_code(DiagCode code) {
@@ -110,6 +113,9 @@ constexpr std::string_view diag_code(DiagCode code) {
         case DiagCode::ConflictingDeclaration: return "E0302";
         case DiagCode::InvalidReceiver: return "E0303";
         case DiagCode::ImportUnavailable: return "E0304";
+        case DiagCode::ScalarTypeMismatch: return "E0400";
+        case DiagCode::InvalidScalarOperand: return "E0401";
+        case DiagCode::ScalarLiteralRange: return "E0402";
     }
     unreachable();
 }

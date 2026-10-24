@@ -78,7 +78,7 @@ or comments between the name and `(`. Newlines may separate attributes from
 the following attribute or declaration.
 Attribute arguments use the ordinary expression grammar, optionally preceded
 by a key and `=`. Attribute-specific value restrictions are semantic checks;
-stage0 currently validates only the expressions' structural control flow.
+stage0 validates the expressions' structure, lexical names and scalar types.
 
 ## 2.2 Types
 ```

@@ -289,3 +289,56 @@ and imported declarations belong to P2. `check` reports `E0304` for imports;
 `parse` still accepts their syntax. Attribute names, argument keys and call
 argument labels are metadata, while attribute argument values undergo the
 same expression lookup as other expressions.
+
+## 3.14 Scalar typing and bootstrap coverage [Core]
+
+Integer literals default to `Int`, and floating-point literals to `Float64`.
+An explicit scalar annotation or a concrete operator operand constrains numeric
+literals, including parenthesized expressions and trees of numeric operators.
+An integer literal takes an integer type; a floating-point literal takes a
+floating-point type. A literal's magnitude must fit its chosen type; a directly
+negated integer literal (possibly parenthesized) may use the signed minimum's
+magnitude. `Float32` literals must fit its finite range. Stage0 checks range,
+not exact floating-point representability. Arithmetic overflow remains a
+runtime trap; this pass does not fold constant expressions.
+
+Unannotated variables infer their initializer's type, then default any remaining
+numeric literals. That type is fixed before uses in other expressions: a binding
+inferred as `Int` cannot be assigned to `Int64` implicitly, even on x86_64.
+`Int`/`UInt` remain distinct from `Int64`/`UInt64`; stage0's initial Windows x64
+and Linux x86_64 targets use 64-bit ranges for them. User types that shadow
+built-in names retain their own identity.
+
+Scalar arithmetic (`+ - * /`) requires operands of the same numeric type.
+Remainder, wrapping arithmetic, shifts and bitwise operators require the same
+integer type. Unary `-` requires signed numeric operands, and `~` requires an
+integer. `!`, `&&`, `||`, ordinary `if`/`while` conditions and match guards
+require `Bool`. Scalar equality accepts matching built-in types; ordering
+accepts matching numeric types or `Char`. There are no implicit numeric
+conversions between typed operands. Compound assignment follows the same
+numeric/integer domains and requires the target's type.
+
+Scalar variable annotations, parameter defaults, assignments and explicit return
+values must match their expected type. A block-bodied function without a return
+annotation returns `Unit`; expression-bodied return inference remains pending.
+An explicit bare `return` produces `Unit`. Initializers and destructors also
+return `Unit`. This does not establish that every path returns a value.
+
+After successful validation and name resolution, stage0 checks these scalar
+rules and retains expression/binding types. `E0400` reports mismatches,
+`E0401` invalid operator domains, and `E0402` out-of-range literals. A type error
+does not alter the syntax tree, and dependent expressions avoid cascading
+diagnostics. Parsing alone performs none of these checks.
+
+The scalar API explicitly returns `Deferred` for calls, callable values,
+composite/nominal/generic types, aliases, receiver-dependent members, optional
+bindings, casts, effect operators and block/branch results. It traverses their
+children to check supported scalar subexpressions. Forward variable references
+can infer scalar types. Numeric literals in deferred contextual positions keep
+deferred types instead of defaulting prematurely (for example, an unchecked
+call argument could require `UInt64` rather than `Int`). Cyclic inference
+without an established type remains
+deferred. Function signatures/calls, conversions, initialization cycles,
+all-path returns, mutability, ownership and effects still need later passes.
+Successful `check` therefore continues to mean only that implemented checks
+found no errors, not that the program is valid or executable.

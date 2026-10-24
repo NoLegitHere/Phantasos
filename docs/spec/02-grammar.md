@@ -1,7 +1,14 @@
 # 2. Grammar [Core]
 
+The standalone [`phantasos.ebnf`](phantasos.ebnf) expands the productions in
+this chapter, including every expression precedence level and the lexical
+token categories. Keep the file and this chapter in sync. The fragments below
+omit concatenation commas and rule-ending semicolons for readability.
+
 `Terms` means one or more statement terminators: `Newline` or `;`. A
 terminator is optional right before `}` and at end of file.
+Leading and repeated terminators are allowed in files and brace-delimited
+lists. Enum members and match arms also accept commas as separators.
 
 ## 2.1 Files and items
 ```
@@ -10,8 +17,9 @@ Import        = 'import' Path [ 'as' Ident ]
 Path          = Ident { '.' Ident }
 
 Item          = { Attribute } [ Visibility ] { Modifier } ItemKind
-Attribute     = '@' ( Ident | Keyword ) [ '(' [ AttrArg { ',' AttrArg } ] ')' ]   (* e.g. @extern("C") *)
+Attribute     = '@' ( Ident | Keyword ) [ '(' [ AttrArg { ',' AttrArg } [ ',' ] ] ')' ]   (* e.g. @extern("C") *)
 AttrArg       = Ident '=' Literal | Literal | Ident
+Literal       = IntLit | FloatLit | CharLit | StringLit | 'true' | 'false' | 'none'
 Visibility    = 'public' | 'internal' | 'file' | 'private'
 Modifier      = 'open' | 'final' | 'abstract' | 'sealed' | 'override'
               | 'static' | 'mut' | 'async' | 'unsafe'
@@ -38,7 +46,7 @@ Body          = '{' { Item Terms } '}'
 
 EnumDecl      = 'enum' Ident [ GenericParams ] [ ':' SuperList ] [ WhereClause ]
                 '{' { ( EnumCase | Item ) ( Terms | ',' ) } '}'
-EnumCase      = Ident [ '(' [ CaseField { ',' CaseField } ] ')' ]   (* items start with a keyword or '@' *)
+EnumCase      = Ident [ '(' [ CaseField { ',' CaseField } [ ',' ] ] ')' ]   (* items start with a keyword or '@' *)
 CaseField     = [ Ident ':' ] Type
 
 InitDecl      = 'init' [ '(' [ ParamList ] ')' [ Throws ] ] Block
@@ -59,6 +67,10 @@ WhereClause   = 'where' Type ':' Bounds { ',' Type ':' Bounds }
 An `init` with no parameter list is the body of the **primary constructor**,
 whose parameters are written after the type name.
 
+An attribute's argument list must directly follow its name, without whitespace
+or comments between the name and `(`. Newlines may separate attributes from
+the following attribute or declaration.
+
 ## 2.2 Types
 ```
 Type          = PrefixType { '?' }
@@ -68,7 +80,7 @@ PrefixType    = 'shared' PrefixType | 'weak' PrefixType
 PrimaryType   = Path [ GenericArgs ] | 'Self'
               | '[' Type ']'                               (* array *)
               | '(' ')'                                    (* Unit *)
-              | 'fun' '(' [ Type { ',' Type } ] ')' [ '->' Type ] [ Throws ]
+              | 'fun' '(' [ Type { ',' Type } [ ',' ] ] ')' [ '->' Type ] [ Throws ]
 GenericArgs   = '<' Type { ',' Type } [ ',' ] '>'
 ```
 
@@ -85,8 +97,8 @@ Stmt          = VarDecl
 AssignOp      = '=' | '+=' | '-=' | '*=' | '/=' | '%=' | '&=' | '|=' | '^=' | '<<=' | '>>='
 Cond          = 'let' Ident [ ':' Type ] '=' Expr | Expr
 ```
-`return`, `throw`, and `break` take an operand only if one follows on the
-same line.
+The optional operand of `return` and the required operand of `throw` must
+start before a significant `Newline`. `break` and `continue` have no operand.
 
 ## 2.4 Expressions (lowest to highest precedence)
 | Level | Operators | Associativity |
@@ -110,6 +122,8 @@ same line.
   `x as Int64 + 1` means `(x as Int64) + 1`.
 - `shared expr` converts an owned value into a `shared` reference (3.4).
 - Postfix `!` must directly follow its operand, with no whitespace before it.
+- The `?` in `as?` and `try?` must directly follow the keyword, with no
+  whitespace or comments between them.
 
 ```
 Postfix       = Primary { '(' [ ArgList ] ')' | '.' Ident | '?.' Ident | '[' Expr ']' | '!' | GenericArgs }
@@ -118,12 +132,12 @@ Arg           = [ Ident ':' ] Expr
 Primary       = IntLit | FloatLit | CharLit | StringLit | InterpString
               | 'true' | 'false' | 'none' | 'self' | 'super' | 'Self' | Ident
               | '.' Ident                                  (* implicit member, e.g. .Empty *)
-              | '(' Expr ')'
+              | '(' [ Expr ] ')'                           (* empty parentheses are Unit *)
               | '[' [ Expr { ',' Expr } [ ',' ] ] ']'
               | IfExpr | MatchExpr | 'unsafe' Block
 InterpString  = StringHead Expr { StringMiddle Expr } StringTail
 IfExpr        = 'if' Cond Block [ 'else' ( IfExpr | Block ) ]
-MatchExpr     = 'match' Expr '{' { Arm Terms } '}'
+MatchExpr     = 'match' Expr '{' { Arm ( Terms | ',' ) } '}'
 Arm           = Pattern [ 'if' Expr ] '->' ( Block | Expr )
 ```
 
@@ -132,7 +146,7 @@ Arm           = Pattern [ 'if' Expr ] '->' ( Block | Expr )
 Pattern       = AltPattern
 AltPattern    = SimplePattern { '|' SimplePattern }
 SimplePattern = '_'
-              | [ '-' ] IntLit | FloatLit | CharLit | StringLit | 'true' | 'false' | 'none'
+              | [ '-' ] ( IntLit | FloatLit ) | CharLit | StringLit | 'true' | 'false' | 'none'
               | Ident                                      (* binds a new name *)
               | '.' Ident [ '(' [ PatList ] ')' ]          (* enum case, type inferred *)
               | Path '.' Ident [ '(' [ PatList ] ')' ]     (* qualified enum case *)
@@ -144,9 +158,11 @@ A bare identifier is **always** a binding. Enum cases must be written with a
 leading dot (`.Empty`) or qualified (`ParseError.Empty`).
 
 ## 2.6 Disambiguation rules
-1. **Generic arguments in expressions.** After an identifier, `<` starts a
-   generic argument list when the parser can parse `<` Types `>` speculatively
-   and the next token is one of `( ) ] } , ; : . ?.`, `Newline`, or EOF.
+1. **Generic arguments in expressions.** After a name or ordinary member
+   access, `<` starts a generic argument list when the parser can parse
+   `<` Types `>` speculatively
+   and the next token is one of `( ) ] } , ; : . ?.`, `Newline`, EOF,
+   `StringMiddle`, or `StringTail`.
    Otherwise `<` is a comparison. This is unambiguous because comparison is
    non-associative.
 2. **Brace blocks after conditions.** Phantasos has no struct literals and

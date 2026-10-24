@@ -13,10 +13,10 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Mutation fuzzer for the stage0 frontend (lexer + parser).
+"""Mutation fuzzer for the stage0 frontend (syntax and initial semantic checks).
 
 Mutates the golden test inputs at the byte level (including invalid UTF-8)
-and checks that `phantasos-stage0 parse` never crashes, hangs, trips a
+and checks that `phantasos-stage0 parse` (or `check`) never crashes, hangs, trips a
 sanitizer, or writes output that is not valid UTF-8. Failing inputs are saved
 to --out.
 
@@ -79,6 +79,7 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--stage0", required=True, type=Path)
     ap.add_argument("--cases", type=int, default=500)
     ap.add_argument("--seed", type=int, default=1234)
+    ap.add_argument("--command", choices=("parse", "check"), default="parse")
     ap.add_argument("--timeout", type=float, default=5.0)
     ap.add_argument("--out", type=Path, default=None, help="directory for failing inputs")
     args = ap.parse_args(argv)
@@ -101,7 +102,7 @@ def main(argv: list[str]) -> int:
         work.write_bytes(text)
         reason = None
         try:
-            r = subprocess.run([str(exe), "parse", str(work)], capture_output=True, timeout=args.timeout)
+            r = subprocess.run([str(exe), args.command, str(work)], capture_output=True, timeout=args.timeout)
             if r.returncode not in (0, 1):
                 reason = f"exit code {r.returncode}"
             elif any(m in r.stderr for m in SANITIZER_MARKERS):
@@ -116,7 +117,7 @@ def main(argv: list[str]) -> int:
             saved.write_bytes(text)
             print(f"FAIL case {i}: {reason} -> {saved}")
     work.unlink(missing_ok=True)
-    print(f"fuzz: {args.cases} cases, {failures} failure(s), seed {args.seed}")
+    print(f"fuzz ({args.command}): {args.cases} cases, {failures} failure(s), seed {args.seed}")
     return 1 if failures else 0
 
 

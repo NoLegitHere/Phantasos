@@ -74,9 +74,9 @@ build/<target>/<profile>/bin/<name>[.exe]  executables
 `<profile>` is `debug` or `release`.
 
 ## 4.5 Stage0 support
-**Current status:** stage0 is frontend-only. It provides the `lex`, `parse`,
-and `check` commands on single files, and none of the package or workspace
-features in this chapter work yet.
+**Current status:** stage0 is frontend-only. It provides `lex`, syntax-only
+`parse`, and `check` (syntax plus initial semantic validation) on single
+files. None of the package or workspace features in this chapter work yet.
 
 **Planned scope** (milestone P2, required before the compiler is ported to
 Phantasos):

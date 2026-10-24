@@ -104,6 +104,30 @@ class FrontendTests(unittest.TestCase):
         code, _, stderr = self.run_source(source, "check")
         self.assertEqual((code, stderr), (0, ""))
 
+    def test_check_runs_semantics_after_successful_parse(self) -> None:
+        source = "fun f() { break; let x = 1; let x = 2 }"
+        code, stdout, stderr = self.run_source(source)
+        self.assertEqual((code, stderr), (0, ""))
+        self.assertIn("Break", stdout)
+        code, stdout, stderr = self.run_source(source, "check")
+        self.assertEqual((code, stdout), (1, ""))
+        self.assertEqual(stderr.count("error["), 2, stderr)
+        self.assertIn("error[E0200]", stderr)
+        self.assertIn("error[E0203]", stderr)
+        self.assertIn("note: first declared here", stderr)
+        # A syntax error suppresses the semantic pass on the recovered tree.
+        code, stdout, stderr = self.run_source(source + "\nlet broken = ;", "check")
+        self.assertEqual((code, stdout), (1, ""))
+        self.assertIn("error[E0101]", stderr)
+        self.assertNotIn("error[E02", stderr)
+
+    def test_semantics_handles_long_flat_trees(self) -> None:
+        source = "let sum = " + "+".join(["1"] * 20000)
+        source += "\nlet chain = x" + ".member" * 20000
+        source += "\nfun f(x: E) = match x { " + " | ".join([".Case(a)"] * 2000) + " -> a }"
+        code, stdout, stderr = self.run_source(source, "check")
+        self.assertEqual((code, stdout, stderr), (0, "", ""))
+
     def test_long_flat_expressions(self) -> None:
         for name, (source, counts) in {
             "addition": ("let x = " + "+".join(["1"] * 10000), {"Int 1": 10000, "Binary Add": 9999}),

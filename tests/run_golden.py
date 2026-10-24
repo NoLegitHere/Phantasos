@@ -38,6 +38,7 @@ SUITES = {
     "lexer": ("lex", ".tokens"),
     "parser": ("parse", ".ast"),
     "diagnostics": ("check", None),
+    "semantics": ("check", None),
 }
 
 
@@ -57,7 +58,7 @@ def run_case(exe: Path, suite: str, src: Path, update: bool) -> list[str]:
     if out_ext:
         expected_files.append((src.with_suffix(out_ext), stdout))
     diag_file = src.with_suffix(".diag")
-    if suite == "diagnostics" or diag_file.exists() or (update and stderr):
+    if suite in ("diagnostics", "semantics") or diag_file.exists() or (update and stderr):
         expected_files.append((diag_file, stderr))
 
     if update:
@@ -79,9 +80,13 @@ def run_case(exe: Path, suite: str, src: Path, update: bool) -> list[str]:
     # anything else is a crash or infrastructure failure.
     if proc.returncode not in (0, 1):
         failures.append(f"abnormal exit code {proc.returncode}")
-    elif suite == "diagnostics":
-        if proc.returncode != 1:
-            failures.append(f"expected exit code 1, got {proc.returncode}")
+    elif suite in ("diagnostics", "semantics"):
+        if stdout:
+            failures.append(f"unexpected stdout:\n{stdout}")
+        if diag_file.exists():
+            expected_code = 1 if "error[" in diag_file.read_text(encoding="utf-8") else 0
+            if proc.returncode != expected_code:
+                failures.append(f"expected exit code {expected_code}, got {proc.returncode}")
     else:
         has_diag = diag_file.exists()
         if not has_diag and stderr:

@@ -45,6 +45,12 @@
   managers, interners, and arenas must outlive the views/nodes referring to
   their storage. Diagnostic references and `all()` spans must not be retained
   across subsequent diagnostic emissions.
+- After a file parses without lexer/parser errors, `validate_file` performs
+  initial semantic validation without changing the AST. Keep type-dependent
+  checks in future resolution/type passes. Use explicit work stacks for
+  traversing ASTs: flat expression chains can be much deeper than parser
+  nesting limits. Add semantic rules to `docs/spec` and update the
+  [roadmap](docs/roadmap.md) when a milestone advances.
 - Keep use of the C++ standard library minimal, because stage0 is frozen after
   self-hosting.
 
@@ -55,13 +61,20 @@
   source I/O and limits, arena alignment/lifetime, Unicode diagnostics,
   multi-file isolation, and AST structure/recovery. These tests link the same
   frontend library as the CLI and run in both platform jobs and under sanitizers.
+  The `sema` suite covers declaration and control-flow contexts, binding
+  diagnostics and notes, pattern alternatives, AST immutability, and long trees.
 
 - Run `python tests/test_license_check.py` for license-fixer regressions,
   including encoding declarations, BOMs, line endings, and idempotence.
 - Golden tests live in `tests/`. Each `*.phs` input has expected output files
   next to it (`*.tokens`, `*.ast`, `*.diag`).
+- `tests/stage0/semantics/` runs `check`; a nonempty error diagnostic file
+  expects exit code 1, and an empty `.diag` file expects success. `parse`
+  fixtures continue to exercise syntax independently of semantic validity.
 - Regenerate them with `python tests/run_golden.py --stage0 <exe> --update`
   and review the diff before committing.
 - Run `python tests/test_frontend.py --stage0 <exe>` for deterministic nesting,
   long AST/token traversal, and parser-state regression tests. These run on both
   platforms and in the sanitizer job, alongside the mutation fuzzer.
+- Run the mutation fuzzer with `--command check` as well as its default
+  `parse` mode to exercise semantic validation after successful parses.

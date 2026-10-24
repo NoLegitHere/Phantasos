@@ -28,11 +28,21 @@ Windows x64 and Linux x86_64:
   and full literal support
 - [x] Parser for Phantasos-Core, which builds an AST with error recovery and
   stable diagnostic codes
-- [ ] Semantic analysis (name resolution, types, ownership)
+- [x] Initial semantic validation: bindings, declarations and control flow
+- [ ] Name resolution, type checking and ownership analysis
 - [ ] MIR, x86_64 codegen, COFF/ELF writers, linker, runtime
 - [ ] Workspace-aware build driver
 
-The language is specified in [`docs/spec`](docs/spec).
+The language is specified in [`docs/spec`](docs/spec), with a standalone
+[Core EBNF grammar](docs/spec/phantasos.ebnf).
+See the [bootstrap roadmap](docs/roadmap.md) for milestones and the next steps.
+
+`check <file.phs>` now runs initial semantic validation after a successful
+parse. It reports duplicate bindings, invalid `init`/`deinit` placement,
+invalid type alias forms, inconsistent pattern bindings, and misplaced
+control flow, `throw`, or `await`. `parse` continues to report syntax only.
+Name resolution, type inference, overload checking and ownership analysis
+are still pending, so passing `check` does not yet establish program validity.
 
 ## Repository layout
 
@@ -40,7 +50,7 @@ The language is specified in [`docs/spec`](docs/spec).
 |---|---|
 | `docs/spec/` | Language and ABI specification |
 | `docs/adr/` | Architecture decision records |
-| `bootstrap/stage0/` | Minimal C++23 bootstrap compiler: frontend (lexer, parser) today; workspace-aware build driver planned |
+| `bootstrap/stage0/` | C++23 bootstrap compiler: lexer, parser and initial semantic validation; native code generation and build driver planned |
 | `compiler/` | Self-hosted compiler (a Phantasos workspace), planned |
 | `runtime/` | `rt`, the privileged runtime, planned |
 | `std/` | Standard library (privileged), planned |
@@ -75,12 +85,14 @@ ctest --test-dir build/stage0 --output-on-failure                    # focused C
 python tests/run_golden.py --stage0 build/stage0/phantasos-stage0      # golden tests
 python tests/test_frontend.py --stage0 build/stage0/phantasos-stage0   # input limits, nesting and parser state
 python tests/fuzz_frontend.py --stage0 build/stage0/phantasos-stage0   # crash/hang fuzzing
+python tests/fuzz_frontend.py --stage0 build/stage0/phantasos-stage0 --command check # semantic-path fuzzing
 python tools/license-check/license_check.py                            # license headers
 ```
 
 The build separates the `phantasos-stage0` CLI from the `phantasos_frontend`
 static library (CMake alias `Phantasos::Frontend`). Link the library to reuse
-source management, diagnostics, lexing, parsing, and AST dumps. Its target
+source management, diagnostics, lexing, parsing, AST dumps, and initial
+semantic validation. Its target
 propagates the required C++23 and no-exception/no-RTTI settings. Focused C++
 tests are enabled by default; use `-DBUILD_TESTING=OFF` to omit them, following
 [CMake's CTest convention](https://cmake.org/cmake/help/v3.28/module/CTest.html).

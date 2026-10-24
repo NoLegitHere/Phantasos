@@ -1,0 +1,59 @@
+// Copyright 2026 The Phantasos Authors
+// SPDX-License-Identifier: Apache-2.0
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+@extern("C")
+@link(name = "kernel32")
+extern "C" {
+    fun GetStdHandle(id: UInt32): *mut UInt8
+    public unsafe fun WriteFile(handle: *mut UInt8, buf: *UInt8, len: UInt32, written: *mut UInt32, overlapped: *mut UInt8): Int32
+}
+
+public abstract class Node<T: Comparable & Hashable>(let value: T) : Base(value), Visitable where T: Sendable {
+    private var children: [Node<T>] = []
+    static let MAX: Int = 64
+    const VERSION = 1
+
+    init(value: T, count: Int = 0) throws(InitError) {
+        super(value)
+    }
+
+    abstract fun visit(v: inout Visitor)
+    final fun size(): Int = children.count
+    mut fun push(child: own Node<T>) { children.append(child) }
+}
+
+interface Container {
+    type Item: Equatable
+    type Index = Int
+    fun get(i: Index): Item?
+    fun isEmpty(): Bool { return count() == 0 }
+}
+
+enum Token<T> {
+    Eof,
+    Ident(String)
+    Number(value: Int64, radix: UInt8)
+    fun isEof(): Bool = match self {
+        .Eof -> true
+        _ -> false
+    }
+}
+
+struct Pair<A, B>(first: A, second: B) : Equatable
+
+type Callback = fun(Int, String) -> Bool throws(E)
+type Handle = weak Node<Int>?
+
+file let counter: Int = 0

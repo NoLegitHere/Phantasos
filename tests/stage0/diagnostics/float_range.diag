@@ -1,0 +1,9 @@
+float_range.phs:17:14: error[E0005]: float literal is out of range for Float64
+   17 | let tooBig = 1e9999
+      |              ^^^^^^
+float_range.phs:18:16: error[E0005]: float literal is out of range for Float64
+   18 | let overflow = 1.8e308
+      |                ^^^^^^^
+float_range.phs:19:16: error[E0005]: float literal is out of range for Float64
+   19 | let tooSmall = 1e-9999
+      |                ^^^^^^^

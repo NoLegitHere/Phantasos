@@ -1,0 +1,114 @@
+# Phantasos
+
+Phantasos is an object-oriented programming language that compiles to native
+code. It combines:
+
+- **OOP that is safe by default**: immutable by default, deterministic
+  construction and destruction (`init`/`deinit`), single inheritance with
+  classes `final` by default, interfaces, sealed hierarchies, and no `null`.
+- **Memory safety without a garbage collector**: single ownership with moves,
+  opt-in `shared` (ARC) and `weak` references, and compile-time checked
+  borrows that need no lifetime annotations.
+- **Typed errors**: `throws(E)` is checked at compile time and compiled as
+  zero-cost return values, with no stack unwinding.
+- **Concurrency safety**: `async`/`await`, actors, and `Sendable` checking.
+- **A toolchain written from scratch**: our own x86 backend, our own PE/ELF
+  linker, and our own C11 frontend. It uses no LLVM and no libc
+  (glibc/musl/MSVC CRT).
+
+Supported targets: **Windows x64**, **Linux x86_64**, **Linux i386**.
+
+## Status
+
+The project is in **bootstrap phase P1**. The C++23 stage0 compiler in
+[`bootstrap/stage0`](bootstrap/stage0) has these parts done and tested on
+Windows x64 and Linux x86_64:
+
+- [x] Lexer: significant newlines, nested comments, string interpolation,
+  and full literal support
+- [x] Parser for Phantasos-Core, which builds an AST with error recovery and
+  stable diagnostic codes
+- [ ] Semantic analysis (name resolution, types, ownership)
+- [ ] MIR, x86_64 codegen, COFF/ELF writers, linker, runtime
+- [ ] Workspace-aware build driver
+
+The language is specified in [`docs/spec`](docs/spec).
+
+## Repository layout
+
+| Path | Purpose |
+|---|---|
+| `docs/spec/` | Language and ABI specification |
+| `docs/adr/` | Architecture decision records |
+| `bootstrap/stage0/` | Minimal C++23 bootstrap compiler: frontend (lexer, parser) today; workspace-aware build driver planned |
+| `compiler/` | Self-hosted compiler (a Phantasos workspace), planned |
+| `runtime/` | `rt`, the privileged runtime, planned |
+| `std/` | Standard library (privileged), planned |
+| `libc-compat/` | Optional C standard library for C sources, planned |
+| `platform/` | Our own C declarations of OS interfaces |
+| `tools/` | Developer tools (`license-check`, ...) |
+| `tests/` | Conformance and golden tests |
+
+## Building stage0
+
+Requirements: clang++ 18+, a compatible C++23 standard library, CMake 3.28+,
+and Ninja. CMake compiles and links a feature probe for `std::expected`,
+`std::print`, `std::format`, `std::ranges::to`, `std::views::join_with`, and
+floating-point `std::from_chars`; the Clang version alone is not sufficient.
+
+CI uses Clang 19 with libstdc++ 14 on Linux, and Clang with the MSVC STL on
+Windows. [Clang 19 enables libstdc++'s `std::expected`](https://releases.llvm.org/19.1.0/tools/clang/docs/ReleaseNotes.html#c-20-feature-support),
+and [libstdc++ 14 adds the required print and range facilities](https://gcc.gnu.org/onlinedocs/libstdc++/manual/status.html#status.iso.2023).
+On Ubuntu 24.04 x86_64, install and select the Linux pair explicitly:
+
+```sh
+sudo apt-get install clang-19 g++-14 ninja-build
+cmake -S bootstrap/stage0 -B build/stage0 -G Ninja -DCMAKE_CXX_COMPILER=clang++-19 -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_FLAGS=--gcc-install-dir=/usr/lib/gcc/x86_64-linux-gnu/14
+```
+
+For Windows, or an already configured compatible toolchain:
+
+```sh
+cmake -S bootstrap/stage0 -B build/stage0 -G Ninja -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_BUILD_TYPE=Debug
+cmake --build build/stage0
+ctest --test-dir build/stage0 --output-on-failure                    # focused C++ library tests
+python tests/run_golden.py --stage0 build/stage0/phantasos-stage0      # golden tests
+python tests/test_frontend.py --stage0 build/stage0/phantasos-stage0   # input limits, nesting and parser state
+python tests/fuzz_frontend.py --stage0 build/stage0/phantasos-stage0   # crash/hang fuzzing
+python tools/license-check/license_check.py                            # license headers
+```
+
+The build separates the `phantasos-stage0` CLI from the `phantasos_frontend`
+static library (CMake alias `Phantasos::Frontend`). Link the library to reuse
+source management, diagnostics, lexing, parsing, and AST dumps. Its target
+propagates the required C++23 and no-exception/no-RTTI settings. Focused C++
+tests are enabled by default; use `-DBUILD_TESTING=OFF` to omit them, following
+[CMake's CTest convention](https://cmake.org/cmake/help/v3.28/module/CTest.html).
+
+Source files are limited to **64 MiB of raw input** by default, before BOM and
+line-ending normalization. Oversized files are rejected before reading their
+contents; the CLI returns exit code 2 for source-loading failures. Library
+callers can configure `SourceLimits` (byte and file-count limits), and handle
+`SourceErrorKind` through the `std::expected` returned by both `load` and `add`.
+The hard byte ceiling is `UINT32_MAX - 1`, leaving room for EOF and 1-based
+locations. These are input limits, not a total compilation-memory budget.
+Source references and text views remain valid when more files are added.
+
+Stage0 limits recursive grammar nesting to 128 active guarded entries, shared
+across expressions, types, patterns, blocks, and declarations. Exceeding this
+implementation limit reports `E0112` and stops parsing that file. Flat operator
+and member chains are parsed iteratively; AST dumps also use explicit work
+stacks, including inline type and pattern rendering.
+
+Try it:
+
+```sh
+build/stage0/phantasos-stage0 parse tests/stage0/parser/showcase.phs   # print the syntax tree
+build/stage0/phantasos-stage0 lex   tests/stage0/lexer/literals.phs    # print the token stream
+```
+
+## License
+
+Apache License 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE). Every source
+file must start with the project license header, and CI enforces this with
+`tools/license-check`.

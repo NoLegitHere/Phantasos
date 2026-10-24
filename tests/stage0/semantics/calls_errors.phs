@@ -1,0 +1,33 @@
+// Copyright 2026 The Phantasos Authors
+// SPDX-License-Identifier: Apache-2.0
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+fun scalar(value: Int): Int = value
+let wrongType = scalar(true)
+let missing = scalar()
+let extra = scalar(1, 2)
+let label = scalar(missing: 1)
+fun dual(value: Int8): Int8 = value
+fun dual(value: UInt8): UInt8 = value
+let ambiguous = dual(1)
+fun narrow(value: Int8): Int8 = value
+let outside = narrow(128)
+let notCallable = 1()
+fun inferred() = 1
+let mismatch: Bool = inferred()
+fun cycleRoot() = cycleOverload(1)
+fun cycleOverload(value: Bool) = cycleRoot()
+fun cycleOverload(value: Int) = 1
+let first = cycleRoot()
+let badCycleResult: Bool = cycleOverload(true)

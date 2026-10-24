@@ -41,6 +41,11 @@ unsigned width(Type t) {
         default: return 64;
     }
 }
+u64 integer_limit(Type type, bool negative) {
+    const unsigned bits = width(type);
+    if (unsigned_integer(type)) return std::numeric_limits<u64>::max() >> (64 - bits);
+    return (u64{1} << (bits - 1)) - 1 + static_cast<u64>(negative);
+}
 
 enum class Literal : u8 { None, Integer, Float };
 struct Value {
@@ -69,11 +74,13 @@ Type default_type(Value v) {
 
 struct Node {
     const Expr* expr = nullptr; // null for a binding
+    const FunItem* function = nullptr; // return-type inference node, not a value binding
     const TypeExpr* annotation = nullptr;
     const Expr* init = nullptr;
     std::vector<usize> deps;
     Value value;
     u8 state = 0; // unvisited, active, finished
+    bool call_prepared = false;
 };
 struct Requirement {
     const Expr* value;
@@ -126,6 +133,19 @@ public:
             const auto& b = resolution_.bindings()[i];
             if (b.kind != BindingKind::BuiltinType && b.kind != BindingKind::BuiltinValue)
                 declarations_.emplace(b.name.span.lo, i);
+            if (b.kind == BindingKind::Function) {
+                const auto* fun = cast<FunItem>(b.item);
+                function_nodes_.emplace(i, nodes_.size());
+                nodes_.push_back({.function = fun, .init = fun->expr_body && !fun->sig.ret ? fun->body : nullptr});
+                ScalarSignature sig;
+                parameter_indices_.try_emplace(fun);
+                for (usize p = 0; p < fun->sig.params.size(); ++p) {
+                    sig.parameters.push_back(annotation(fun->sig.params[p].type));
+                    parameter_indices_[fun].emplace(fun->sig.params[p].name.sym.id, p);
+                }
+                sig.generic = !fun->sig.generics.empty();
+                signatures_.emplace(i, std::move(sig));
+            }
         }
         for (const Item* item : file.items) push(item);
         while (!walk_.empty()) {
@@ -156,7 +176,18 @@ public:
                         stack.push_back({dep, 0});
                     }
                 } else {
-                    evaluate(frame.node);
+                    if (const auto* call = as<CallExpr>(node.expr); call && !node.call_prepared) {
+                        // Shape and argument types select a target without its
+                        // return type. Rejected overloads must not create edges
+                        // (and artificial cycles) in the inference graph.
+                        node.call_prepared = true;
+                        node.value = prepare_call(*call);
+                        const auto& record = calls_.at(call);
+                        if (record.state == CallState::Resolved) {
+                            node.deps.push_back(function_nodes_.at(record.target.value));
+                            continue;
+                        }
+                    } else evaluate(frame.node);
                     node.state = 2;
                     stack.pop_back();
                 }
@@ -185,6 +216,9 @@ public:
         ScalarTypes result;
         for (const auto& [expr, index] : expressions_) result.expressions_.emplace(expr, nodes_[index].value.type);
         for (usize i = 0; i < resolution_.bindings().size(); ++i) result.bindings_.push_back(nodes_[i].value.type);
+        for (auto& [id, sig] : signatures_) sig.result = nodes_[function_nodes_.at(id)].value.type;
+        result.signatures_ = std::move(signatures_);
+        result.calls_ = std::move(calls_);
         return result;
     }
 
@@ -202,6 +236,15 @@ private:
         for (Type builtin : builtins)
             if (names_.str(binding.name.sym) == scalar_type_name(builtin)) return builtin;
         return Type::Deferred;
+    }
+
+    std::span<const BindingId> callees(const Expr* expr) const {
+        while (const auto* paren = as<ParenExpr>(expr)) expr = paren->inner;
+        const auto* name = as<NameExpr>(expr);
+        if (!name) return {};
+        const auto* ref = resolution_.reference(name->name.span);
+        return ref && ref->state == ResolutionState::Resolved ? resolution_.candidates(ref->target)
+                                                             : std::span<const BindingId>{};
     }
 
     template <typename T>
@@ -261,7 +304,6 @@ private:
             push(fun->body, returns, !fun->expr_body);
             if (fun->body && fun->expr_body && fun->sig.ret)
                 requirements_.push_back({fun->body, returns, fun->body->span});
-            else if (fun->body && fun->expr_body) defaults_.push_back(fun->body);
         } else if (const auto* var = as<VarItem>(&item)) {
             declare(var->name, var->type, var->init);
             push(var->init);
@@ -434,11 +476,7 @@ private:
             visited.push_back(index);
             const Expr* expr = node.expr;
             if (const auto* number = as<IntExpr>(expr)) {
-                const unsigned bits = width(type);
-                const bool unsign = unsigned_integer(type);
-                const u64 max = unsign ? std::numeric_limits<u64>::max() >> (64 - bits)
-                                       : (u64{1} << (bits - 1)) - 1;
-                if (number->value > max + static_cast<u64>(negative && !unsign)) {
+                if (number->value > integer_limit(type, negative)) {
                     diag_.error(DiagCode::ScalarLiteralRange, expr->span,
                                 "integer literal is out of range for '{}'", scalar_type_name(type));
                     node.value = {Type::Error};
@@ -522,9 +560,174 @@ private:
         return lhs;
     }
 
+    bool fits_literal_tree(usize root, Type type) const {
+        struct Pending { usize index; bool negative; };
+        std::vector<Pending> pending{{root, false}};
+        while (!pending.empty()) {
+            const auto [index, negative] = pending.back();
+            pending.pop_back();
+            const auto& node = nodes_[index];
+            if (node.value.literal == Literal::None) continue;
+            if (const auto* number = as<IntExpr>(node.expr)) {
+                if (number->value > integer_limit(type, negative)) return false;
+            } else if (const auto* f = as<FloatExpr>(node.expr)) {
+                if (type == Type::Float32 && f->value > std::numeric_limits<float>::max()) return false;
+            } else if (const auto* paren = as<ParenExpr>(node.expr)) {
+                pending.push_back({expressions_.at(paren->inner), negative});
+            } else if (const auto* unary = as<UnaryExpr>(node.expr)) {
+                if (unary->op == UnOp::Neg && unsigned_integer(type)) return false;
+                pending.push_back({expressions_.at(unary->operand), unary->op == UnOp::Neg});
+            } else if (const auto* binary = as<BinaryExpr>(node.expr)) {
+                pending.push_back({expressions_.at(binary->lhs), false});
+                pending.push_back({expressions_.at(binary->rhs), false});
+            }
+        }
+        return true;
+    }
+
+    bool argument_mapping(const CallExpr& expr, const FunItem& fun, std::vector<usize>& mapping) const {
+        std::vector<u8> used(fun.sig.params.size());
+        usize positional = 0;
+        bool labeled = false;
+        for (const auto& arg : expr.args) {
+            usize index;
+            if (arg.label.sym.empty()) {
+                if (labeled || positional == fun.sig.params.size()) return false;
+                index = positional++;
+            } else {
+                labeled = true;
+                const auto& labels = parameter_indices_.at(&fun);
+                const auto it = labels.find(arg.label.sym.id);
+                if (it == labels.end()) return false;
+                index = it->second;
+            }
+            if (used[index]) return false;
+            used[index] = 1;
+            mapping.push_back(index);
+        }
+        for (usize p = 0; p < used.size(); ++p)
+            if (!used[p] && !fun.sig.params[p].default_value) return false;
+        return true;
+    }
+
+    void candidate_notes(Diagnostic& d, std::span<const BindingId> candidates) const {
+        for (BindingId id : candidates) {
+            const auto& b = resolution_.binding(id);
+            const auto* fun = cast<FunItem>(b.item);
+            std::string signature = std::format("candidate '{}(", names_.str(b.name.sym));
+            const auto& sig = signatures_.at(id.value);
+            for (usize p = 0; p < sig.parameters.size(); ++p) {
+                if (p) signature += ", ";
+                signature += std::format("{}: {}{}", names_.str(fun->sig.params[p].name.sym),
+                                         scalar_type_name(sig.parameters[p]), fun->sig.params[p].default_value ? " = ..." : "");
+            }
+            signature += ")'";
+            d.notes.push_back({b.name.span, std::move(signature)});
+        }
+    }
+
+    Value prepare_call(const CallExpr& expr) {
+        auto& record = calls_[&expr];
+        const Value callee = value(expr.callee);
+        if (callee.type == Type::Error) { record.state = CallState::Error; return {Type::Error}; }
+        for (const auto& arg : expr.args) {
+            if (value(arg.value).type == Type::Error) { record.state = CallState::Error; return {Type::Error}; }
+        }
+        if (callee.type == Type::Never) return {Type::Never};
+        if (!unavailable(callee)) {
+            diag_.error(DiagCode::NotCallable, expr.callee->span, "value of type '{}' is not callable",
+                        scalar_type_name(default_type(callee)));
+            record.state = CallState::Error;
+            return {Type::Error};
+        }
+        const auto candidates = callees(expr.callee);
+        if (candidates.empty()) return {};
+        // Receiver rules, constructors and indirect callable values need later
+        // type information. Check only direct file-level function overload sets.
+        for (BindingId id : candidates) {
+            const auto& b = resolution_.binding(id);
+            if (b.kind != BindingKind::Function || resolution_.scopes()[b.scope.value].kind != ScopeKind::File) return {};
+        }
+        struct Match {
+            BindingId id;
+            std::vector<usize> parameters;
+            usize score = 0;
+            bool deferred = false;
+        };
+        std::vector<Match> matches, out_of_range;
+        for (BindingId id : candidates) {
+            const auto* fun = cast<FunItem>(resolution_.binding(id).item);
+            const auto& signature = signatures_.at(id.value);
+            Match match{.id = id, .deferred = signature.generic || !fun->sig.where.empty()};
+            if (!argument_mapping(expr, *fun, match.parameters)) continue;
+            bool compatible_args = true, fits = true;
+            for (usize a = 0; a < expr.args.size(); ++a) {
+                const auto actual = value(expr.args[a].value);
+                const Type expected = signature.parameters[match.parameters[a]];
+                if (!known(expected) || unavailable(actual)) { match.deferred = true; continue; }
+                if (actual.type == Type::Never) continue;
+                if ((actual.literal == Literal::Integer && integer(expected)) ||
+                    (actual.literal == Literal::Float && floating(expected))) {
+                    match.score += expected != default_type(actual);
+                    fits &= fits_literal_tree(expressions_.at(expr.args[a].value), expected);
+                } else if (actual.literal != Literal::None || actual.type != expected) compatible_args = false;
+            }
+            if (!compatible_args) continue;
+            if (fits) matches.push_back(std::move(match));
+            else out_of_range.push_back(std::move(match));
+        }
+        if (matches.empty() && out_of_range.size() != 1) {
+            auto& d = diag_.error(DiagCode::NoMatchingCall, expr.span, "arguments do not match any callable signature");
+            candidate_notes(d, candidates);
+            record.state = CallState::Error;
+            return {Type::Error};
+        }
+        Match* selected = nullptr;
+        if (matches.empty()) {
+            // One otherwise matching signature: retain the target and emit the
+            // precise E0402/operand diagnostic instead of a generic mismatch.
+            selected = &out_of_range.front();
+        } else {
+            for (const auto& match : matches) if (match.deferred) return {};
+            usize best = std::numeric_limits<usize>::max(), ties = 0;
+            for (auto& match : matches) {
+                if (match.score < best) { best = match.score; selected = &match; ties = 1; }
+                else if (match.score == best) ++ties;
+            }
+            if (ties != 1) {
+                auto& d = diag_.error(DiagCode::AmbiguousCall, expr.span, "call is ambiguous between matching signatures");
+                candidate_notes(d, candidates);
+                record.state = CallState::Error;
+                return {Type::Error};
+            }
+        }
+        PHS_ASSERT(selected);
+        record.target = selected->id;
+        record.parameters = std::move(selected->parameters);
+        record.state = CallState::Resolved;
+        const auto& signature = signatures_.at(selected->id.value);
+        for (usize a = 0; a < expr.args.size(); ++a) {
+            if (require(expr.args[a].value, signature.parameters[record.parameters[a]], expr.args[a].value->span).type == Type::Error)
+                record.state = CallState::Error;
+        }
+        if (record.state == CallState::Error) return {Type::Error};
+        // The traversal schedules the selected return dependency next.
+        return {};
+    }
+
     void evaluate(usize index) {
         auto& node = nodes_[index];
         const Expr* expr = node.expr;
+        if (node.function) {
+            const auto* fun = node.function;
+            if (fun->sig.ret) node.value = {annotation(fun->sig.ret)};
+            else if (fun->expr_body && fun->body) {
+                node.value = value(fun->body);
+                if (node.value.literal != Literal::None)
+                    node.value = materialize(expressions_.at(fun->body), default_type(node.value));
+            } else node.value = {Type::Unit};
+            return;
+        }
         if (!expr) {
             const Type declared = annotation(node.annotation);
             Value initial = node.init ? value(node.init) : Value{};
@@ -549,6 +752,13 @@ private:
                 break;
             case ExprKind::Paren: node.value = value(cast<ParenExpr>(expr)->inner); break;
             case ExprKind::Binary: node.value = binary(*cast<BinaryExpr>(expr)); break;
+            case ExprKind::Call: {
+                auto& record = calls_.at(cast<CallExpr>(expr));
+                PHS_ASSERT(node.call_prepared && record.state == CallState::Resolved);
+                node.value = nodes_[function_nodes_.at(record.target.value)].value;
+                if (node.value.type == Type::Error) record.state = CallState::Error;
+                break;
+            }
             case ExprKind::Unary: {
                 const auto& unary = *cast<UnaryExpr>(expr);
                 const auto operand = value(unary.operand);
@@ -576,6 +786,10 @@ private:
     // A promoted constructor field and its parameter have separate binding
     // IDs at the same name span. Both inherit the declaration's annotation.
     std::unordered_multimap<u32, usize> declarations_;
+    std::unordered_map<usize, usize> function_nodes_;
+    std::unordered_map<usize, ScalarSignature> signatures_;
+    std::unordered_map<const FunItem*, std::unordered_map<u32, usize>> parameter_indices_;
+    std::unordered_map<const ast::CallExpr*, CheckedCall> calls_;
     std::vector<Walk> walk_;
     std::vector<Requirement> requirements_;
     std::vector<const Expr*> defaults_;

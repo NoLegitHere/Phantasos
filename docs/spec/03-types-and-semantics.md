@@ -333,7 +333,8 @@ Scalar variable annotations, parameter defaults, assignments and explicit return
 values must match their expected type. A promoted primary-constructor field
 retains its parameter's declared type in a separate field binding.
 A block-bodied function without a return annotation returns `Unit`;
-expression-bodied return inference remains pending.
+an expression-bodied function infers its result from the body, defaulting
+numeric literals at the function boundary.
 An explicit bare `return` produces `Unit`. Initializers and destructors also
 return `Unit`. This does not establish that every path returns a value.
 
@@ -343,7 +344,7 @@ rules and retains expression/binding types. `E0400` reports mismatches,
 does not alter the syntax tree, and dependent expressions avoid cascading
 diagnostics. Parsing alone performs none of these checks.
 
-The scalar API explicitly returns `Deferred` for calls, callable values,
+The scalar API explicitly returns `Deferred` for unsupported calls, callable values,
 composite/nominal/generic types, aliases, receiver-dependent members, optional
 bindings, casts, effect operators and block/branch results. It traverses their
 children to check supported scalar subexpressions. Forward variable references
@@ -351,7 +352,54 @@ can infer scalar types. Numeric literals in deferred contextual positions keep
 deferred types instead of defaulting prematurely (for example, an unchecked
 call argument could require `UInt64` rather than `Int`). Cyclic inference
 without an established type remains
-deferred. Function signatures/calls, conversions, initialization cycles,
+deferred. Generic/indirect calls, conversions, initialization cycles,
 all-path returns, mutability, ownership and effects still need later passes.
 Successful `check` therefore continues to mean only that implemented checks
 found no errors, not that the program is valid or executable.
+
+## 3.15 Direct scalar function calls [Core]
+
+Stage0 retains scalar parameter and return types for function declarations,
+including extern functions. Function values themselves are not scalar: their
+value bindings remain deferred, and return types are queried through signatures.
+An omitted return annotation means `Unit` for a block body or declaration
+without a body. Expression bodies infer their scalar result, including forward
+calls and references. Recursive inference cycles without an established type
+remain deferred; an explicit return annotation can break such a cycle.
+Calls select targets from argument facts before adding return dependencies.
+Only the selected target's return type participates, so eliminated overloads
+cannot create artificial inference cycles.
+
+Direct calls to file-level functions check supplied arguments against the
+declared parameters. Positional arguments form a prefix in declaration order;
+named arguments follow them and may be reordered. Labels name parameters.
+A parameter may be supplied only once. Every omitted parameter must have a
+default; defaults are checked once in their declaration's scope. A selected
+call retains a function binding ID and the parameter index of each supplied
+argument. Default insertion/evaluation is left to lowering.
+
+Overload selection considers argument shape and types, without using the
+expected result type. Typed scalar arguments require exact types, with no
+implicit numeric conversions; `Never` can stand in for an expected type.
+Numeric literal trees take a matching integer/float parameter type when their
+literals fit its range. Among fully known candidates, prefer the fewest literal
+types differing from the defaults `Int` and `Float64`. Remaining ties are
+ambiguous; declaration order and return types never break a tie. Speculative
+probes do not emit diagnostics or change literal types. Only the selected
+candidate contextualizes its arguments. If a unique otherwise matching
+signature has a range failure, report the literal's precise range/operator
+diagnostic.
+
+A potentially matching generic/constrained signature, unsupported parameter type or pending
+argument type keeps selection deferred, even if another scalar candidate fits.
+Independently provable shape/type mismatches still eliminate candidates. Calls
+through function values, methods, type-qualified members, constructors, generic
+instantiations and built-in numeric conversions remain deferred. The pass checks
+their supported scalar children. Constraints, effects, conventions, visibility, duplicate
+signature validity and all-path returns require later checks.
+
+`E0410` reports calling a known scalar value, `E0411` no matching signature,
+and `E0412` an ambiguous call. Candidate notes point to declarations. Return
+types, call states and selected targets are cached with other scalar facts;
+failed calls suppress dependent type diagnostics. These checks preserve the AST
+and use iterative dependency traversal, including long forward call chains.

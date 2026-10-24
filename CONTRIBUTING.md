@@ -54,6 +54,11 @@
   expression and binding facts without modifying the AST; unsupported facts
   are `Deferred`, diagnosed failures are `Error`. Keep new type-dependent
   rules in `sema/types`, with explicit stacks for traversal and dependencies.
+  Scalar signatures keep function return types separate from function value
+  bindings. Call records distinguish selected, deferred and erroneous calls;
+  only selected targets carry argument-to-parameter mappings. Keep speculative
+  overload probes free of diagnostics and AST/type mutation; contextualize
+  literals only after selecting a target.
   For low-level API calls, seed the interner with `seed_keywords` before lexing. Source
   managers, interners, and arenas must outlive the views/nodes referring to
   their storage. `DiagEngine::all()` exposes emission order;
@@ -98,6 +103,9 @@
   The `types` suite checks contextual scalar inference, forward dependencies,
   numeric limits, operator domains, defaults, returns, conditions, assignments,
   deferred facts, shadowing, AST immutability, session lifetimes and long trees.
+  The `calls` suite covers signature/return inference, forward and recursive
+  calls, positional/named arguments, defaults, overload and range selection,
+  deferred candidates, diagnostics, stable results and long call chains.
 
 - Run `python tests/test_license_check.py` for license-fixer regressions,
   including encoding declarations, BOMs, line endings, and idempotence.

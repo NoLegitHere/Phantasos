@@ -72,7 +72,7 @@ phs_warnings(phantasos-stage0)
 
 include(CTest)
 if(BUILD_TESTING)
-    foreach(suite IN ITEMS support frontend sema resolve session types)
+    foreach(suite IN ITEMS support frontend sema resolve session types calls)
         add_executable(phantasos-${suite}-tests tests/${suite}_tests.cpp)
         target_link_libraries(phantasos-${suite}-tests PRIVATE Phantasos::Frontend)
         phs_warnings(phantasos-${suite}-tests)

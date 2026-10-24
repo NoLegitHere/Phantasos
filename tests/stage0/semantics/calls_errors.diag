@@ -40,3 +40,6 @@ calls_errors.phs:26:19: error[E0410]: value of type 'Int' is not callable
 calls_errors.phs:28:22: error[E0400]: expected 'Bool', found 'Int'
    28 | let mismatch: Bool = inferred()
       |                      ^^^^^^^^^^
+calls_errors.phs:33:28: error[E0400]: expected 'Bool', found 'Int'
+   33 | let badCycleResult: Bool = cycleOverload(true)
+      |                            ^^^^^^^^^^^^^^^^^^^

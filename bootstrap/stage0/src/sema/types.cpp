@@ -80,6 +80,7 @@ struct Node {
     std::vector<usize> deps;
     Value value;
     u8 state = 0; // unvisited, active, finished
+    bool call_prepared = false;
 };
 struct Requirement {
     const Expr* value;
@@ -154,11 +155,6 @@ public:
         }
         for (usize i = 0; i < nodes_.size(); ++i) {
             if (!nodes_[i].expr) dependency(i, nodes_[i].init);
-            else if (const auto* call = as<CallExpr>(nodes_[i].expr)) {
-                for (BindingId candidate : callees(call->callee))
-                    if (const auto it = function_nodes_.find(candidate.value); it != function_nodes_.end())
-                        nodes_[i].deps.push_back(it->second);
-            }
         }
         // Explicit DFS over the dependency graph handles long expression trees
         // and forward references without using the native call stack.
@@ -180,7 +176,18 @@ public:
                         stack.push_back({dep, 0});
                     }
                 } else {
-                    evaluate(frame.node);
+                    if (const auto* call = as<CallExpr>(node.expr); call && !node.call_prepared) {
+                        // Shape and argument types select a target without its
+                        // return type. Rejected overloads must not create edges
+                        // (and artificial cycles) in the inference graph.
+                        node.call_prepared = true;
+                        node.value = prepare_call(*call);
+                        const auto& record = calls_.at(call);
+                        if (record.state == CallState::Resolved) {
+                            node.deps.push_back(function_nodes_.at(record.target.value));
+                            continue;
+                        }
+                    } else evaluate(frame.node);
                     node.state = 2;
                     stack.pop_back();
                 }
@@ -619,7 +626,7 @@ private:
         }
     }
 
-    Value call(const CallExpr& expr) {
+    Value prepare_call(const CallExpr& expr) {
         auto& record = calls_[&expr];
         const Value callee = value(expr.callee);
         if (callee.type == Type::Error) { record.state = CallState::Error; return {Type::Error}; }
@@ -704,9 +711,8 @@ private:
                 record.state = CallState::Error;
         }
         if (record.state == CallState::Error) return {Type::Error};
-        const auto result = nodes_[function_nodes_.at(selected->id.value)].value;
-        if (result.type == Type::Error) record.state = CallState::Error;
-        return result;
+        // The traversal schedules the selected return dependency next.
+        return {};
     }
 
     void evaluate(usize index) {
@@ -746,7 +752,13 @@ private:
                 break;
             case ExprKind::Paren: node.value = value(cast<ParenExpr>(expr)->inner); break;
             case ExprKind::Binary: node.value = binary(*cast<BinaryExpr>(expr)); break;
-            case ExprKind::Call: node.value = call(*cast<CallExpr>(expr)); break;
+            case ExprKind::Call: {
+                auto& record = calls_.at(cast<CallExpr>(expr));
+                PHS_ASSERT(node.call_prepared && record.state == CallState::Resolved);
+                node.value = nodes_[function_nodes_.at(record.target.value)].value;
+                if (node.value.type == Type::Error) record.state = CallState::Error;
+                break;
+            }
             case ExprKind::Unary: {
                 const auto& unary = *cast<UnaryExpr>(expr);
                 const auto operand = value(unary.operand);

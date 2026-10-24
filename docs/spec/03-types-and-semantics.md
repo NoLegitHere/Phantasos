@@ -366,6 +366,9 @@ An omitted return annotation means `Unit` for a block body or declaration
 without a body. Expression bodies infer their scalar result, including forward
 calls and references. Recursive inference cycles without an established type
 remain deferred; an explicit return annotation can break such a cycle.
+Calls select targets from argument facts before adding return dependencies.
+Only the selected target's return type participates, so eliminated overloads
+cannot create artificial inference cycles.
 
 Direct calls to file-level functions check supplied arguments against the
 declared parameters. Positional arguments form a prefix in declaration order;

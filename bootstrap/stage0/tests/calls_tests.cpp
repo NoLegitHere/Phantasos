@@ -16,6 +16,7 @@
 #include "test_support.hpp"
 
 #include <algorithm>
+#include <array>
 #include <initializer_list>
 #include <string>
 
@@ -237,6 +238,43 @@ let cyclic = a()
     CHECK(call->state == CallState::Resolved && signature->result == Type::Int);
 }
 
+void eliminated_overloads_do_not_create_return_cycles() {
+    const std::array<std::string_view, 3> declarations = {
+        "fun a() = b(1)\n", "fun b(x: Bool) = a()\n", "fun b(x: Int) = 1\n"
+    };
+    std::array<usize, 3> order{0, 1, 2};
+    do {
+        for (int placement = 0; placement < 3; ++placement) {
+            std::string source;
+            for (usize index : order) source += declarations[index];
+            if (placement == 0) source += "let first = a()\n";
+            source += "let bad: Bool = b(true)\n";
+            if (placement == 1) source += "let first = a()\n";
+            Frontend f;
+            f.check(source, {DiagCode::ScalarTypeMismatch});
+            CHECK(f.signature("a").result == Type::Int);
+            CHECK(f.signature("b", 0).result == Type::Int && f.signature("b", 1).result == Type::Int);
+            CHECK(f.type("bad") == Type::Error && f.call("bad").state == CallState::Resolved);
+            if (placement != 2) CHECK(f.type("first") == Type::Int);
+        }
+    } while (std::next_permutation(order.begin(), order.end()));
+
+    // Exclude recursive overloads by arity, literal preference and range too.
+    for (std::string_view source : {
+        "fun a() = b(1)\nfun b(x: Int, extra: Int) = a()\nfun b(x: Int) = x\n"
+        "let first = a()\nlet bad: Bool = b(1, 2)",
+        "fun a() = b(1)\nfun b(x: Int8) = a()\nfun b(x: Int) = x\n"
+        "let first = a()\nlet small: Int8 = 1\nlet bad: Bool = b(small)",
+        "fun a() = b(500)\nfun b(x: Int8) = a()\nfun b(x: Int64) = x\n"
+        "let first = a()\nlet small: Int8 = 1\nlet bad: Bool = b(small)"
+    }) {
+        Frontend f;
+        f.check(source, {DiagCode::ScalarTypeMismatch});
+        CHECK(f.signature("a").result != Type::Deferred);
+        CHECK(f.signature("b", 0).result != Type::Deferred && f.signature("b", 1).result != Type::Deferred);
+    }
+}
+
 void long_forward_call_chain() {
     Frontend f;
     std::string source = "let first = f0()\n";
@@ -253,5 +291,6 @@ int main() {
     overloads_and_literal_ranges();
     deferred_and_noncallable();
     recursion_and_stable_results();
+    eliminated_overloads_do_not_create_return_cycles();
     long_forward_call_chain();
 }

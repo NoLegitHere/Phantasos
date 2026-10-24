@@ -18,17 +18,10 @@
 #include <print>
 #include <span>
 #include <string_view>
-#include <utility>
 
-#include "sema/resolve.hpp"
-#include "sema/validate.hpp"
-#include "support/arena.hpp"
-#include "support/diag.hpp"
-#include "support/interner.hpp"
-#include "support/source.hpp"
+#include "frontend/session.hpp"
 #include "syntax/ast_dump.hpp"
 #include "syntax/lexer.hpp"
-#include "syntax/parser.hpp"
 #include "syntax/token.hpp"
 
 namespace {
@@ -44,33 +37,22 @@ constexpr std::string_view kUsage =
     "  help               print this message\n";
 
 int run_frontend(std::string_view cmd, std::string_view path) {
-    phs::SourceManager sm;
-    const auto file = sm.load(path);
+    phs::FrontendSession session;
+    const auto file = session.sources().load(path);
     if (!file) {
         std::println(stderr, "error: cannot read '{}': {}", path, file.error().message());
         return 2;
     }
-    phs::Interner interner;
-    phs::seed_keywords(interner);
-    phs::DiagEngine diag(sm);
-
-    std::vector<phs::Token> tokens = phs::lex_file(sm, *file, interner, diag);
     if (cmd == "lex") {
-        std::print("{}", phs::dump_tokens(tokens, interner, sm));
-    } else {
-        phs::Arena arena;
-        const phs::ast::File* ast = phs::parse_file(*file, std::move(tokens), arena, interner, diag);
-        if (cmd == "parse") std::print("{}", phs::dump_ast(*ast, interner));
-        else if (diag.error_count() == 0) {
-            phs::validate_file(*ast, interner, diag);
-            if (diag.error_count() == 0) {
-                [[maybe_unused]] const auto resolution = phs::resolve_file(*ast, interner, diag);
-            }
-        }
-    }
+        const auto tokens = phs::lex_file(session.sources(), *file, session.names(), session.diagnostics());
+        std::print("{}", phs::dump_tokens(tokens, session.names(), session.sources()));
+    } else if (cmd == "parse")
+        std::print("{}", phs::dump_ast(*session.parse(*file), session.names()));
+    else
+        (void)session.check(*file);
     std::fflush(stdout);
-    diag.render(stderr);
-    return diag.error_count() ? 1 : 0;
+    session.diagnostics().render(stderr);
+    return session.diagnostics().has_errors(*file) ? 1 : 0;
 }
 
 }  // namespace

@@ -20,6 +20,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -62,6 +63,7 @@ enum class DiagCode : u16 {
     ThrowOutsideThrows = 204,
     AwaitOutsideAsync = 205,
     PatternBindingMismatch = 206,
+    InvalidParameterBinding = 207,
     UnknownValue = 300,
     UnknownType = 301,
     ConflictingDeclaration = 302,
@@ -102,6 +104,7 @@ constexpr std::string_view diag_code(DiagCode code) {
         case DiagCode::ThrowOutsideThrows: return "E0204";
         case DiagCode::AwaitOutsideAsync: return "E0205";
         case DiagCode::PatternBindingMismatch: return "E0206";
+        case DiagCode::InvalidParameterBinding: return "E0207";
         case DiagCode::UnknownValue: return "E0300";
         case DiagCode::UnknownType: return "E0301";
         case DiagCode::ConflictingDeclaration: return "E0302";
@@ -133,6 +136,7 @@ public:
     template <typename... Args>
     Diagnostic& error(DiagCode code, Span span, std::format_string<Args...> fmt, Args&&... args) {
         ++errors_;
+        ++errors_by_file_[span.file.value];
         return diags_.emplace_back(Severity::Error, code, span, std::format(fmt, std::forward<Args>(args)...));
     }
 
@@ -142,6 +146,11 @@ public:
     }
 
     usize error_count() const { return errors_; }
+    usize error_count(FileId file) const {
+        const auto it = errors_by_file_.find(file.value);
+        return it == errors_by_file_.end() ? 0 : it->second;
+    }
+    bool has_errors(FileId file) const { return error_count(file) != 0; }
     // Emission order, which can differ from source order across compiler passes.
     std::span<const Diagnostic> all() const { return diags_; }
     // A separate view ordered by FileId and byte offset; ties keep emission
@@ -157,6 +166,7 @@ private:
     const SourceManager& sm_;
     std::vector<Diagnostic> diags_;
     usize errors_ = 0;
+    std::unordered_map<u32, usize> errors_by_file_;
 };
 
 }  // namespace phs

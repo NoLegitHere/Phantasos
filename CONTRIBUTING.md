@@ -41,12 +41,23 @@
   can be read through a const reference and whose elements can be copied.
   These constraints follow the [C++ Core Guidelines on constrained templates](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#t10-specify-concepts-for-all-template-arguments).
 - The CLI and C++ tests link `Phantasos::Frontend`; keep CLI-only behavior in
-  `main.cpp`. Seed the interner with `seed_keywords` before lexing. Source
+  `main.cpp`. Prefer `FrontendSession` (`frontend/session.hpp`) to own sources,
+  keyword-seeded interning, diagnostics, AST storage and cached resolutions.
+  `parse(FileId)` is syntax-only; `check(FileId)` runs validation and resolution
+  only if that file has no errors. Repeated calls reuse results without
+  emitting diagnostics again. Files are immutable and resolve independently;
+  source IDs and result pointers belong to the session, which cannot be moved
+  or copied. A non-null `CheckResult::resolution` means resolution ran, not
+  that it succeeded: consult `diagnostics().has_errors(file)`.
+  For low-level API calls, seed the interner with `seed_keywords` before lexing. Source
   managers, interners, and arenas must outlive the views/nodes referring to
   their storage. `DiagEngine::all()` exposes emission order;
   `in_source_order()` returns a separate view sorted by file and offset,
   preserving emission order at ties. Diagnostic references, `all()` spans and
   pointers in the sorted view must not be retained across subsequent emissions.
+  `error_count(FileId)` and `has_errors(FileId)` track error emissions by their
+  primary file; warnings and notes pointing into other files do not count.
+  The no-argument `error_count()` remains the total for the whole engine.
 - After a file parses without lexer/parser errors, `validate_file` performs
   initial semantic validation without changing the AST. Keep type-dependent
   checks in future resolution/type passes. Use explicit work stacks for
@@ -77,6 +88,8 @@
   The `resolve` suite checks binding identity, forward declarations, overload
   sets, namespaces, generics, sequential visibility, constructor scopes,
   pattern scopes, deferred references, file isolation and iterative traversal.
+  The `session` suite checks phase gating, per-file error counts, warning/note
+  handling, cached calls, source limits and result lifetimes across file growth.
 
 - Run `python tests/test_license_check.py` for license-fixer regressions,
   including encoding declarations, BOMs, line endings, and idempotence.

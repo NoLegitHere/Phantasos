@@ -44,6 +44,7 @@ function(phs_warnings target)
 endfunction()
 
 add_library(phantasos_frontend STATIC
+    src/frontend/session.cpp
     src/support/source.cpp
     src/support/diag.cpp
     src/syntax/token.cpp
@@ -70,7 +71,7 @@ phs_warnings(phantasos-stage0)
 
 include(CTest)
 if(BUILD_TESTING)
-    foreach(suite IN ITEMS support frontend sema resolve)
+    foreach(suite IN ITEMS support frontend sema resolve session)
         add_executable(phantasos-${suite}-tests tests/${suite}_tests.cpp)
         target_link_libraries(phantasos-${suite}-tests PRIVATE Phantasos::Frontend)
         phs_warnings(phantasos-${suite}-tests)

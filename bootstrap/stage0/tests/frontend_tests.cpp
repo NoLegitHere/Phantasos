@@ -22,7 +22,7 @@
 #include <string>
 #include <type_traits>
 
-#include "support/diag.hpp"
+#include "frontend/session.hpp"
 #include "syntax/ast_dump.hpp"
 #include "syntax/lexer.hpp"
 #include "syntax/parser.hpp"
@@ -50,17 +50,17 @@ static_assert(diag_code(DiagCode::UnexpectedCharacter) == "E0001");
 static_assert(diag_code(DiagCode::NestingLimit) == "E0112");
 
 struct Frontend {
-    SourceManager sources;
-    Interner names;
-    DiagEngine diag{sources};
+    FrontendSession session;
+    SourceManager& sources = session.sources();
+    Interner& names = session.names();
+    DiagEngine& diag = session.diagnostics();
+    // Low-level tests also exercise parse_file with a prebuilt token stream.
     Arena arena;
-
-    Frontend() { seed_keywords(names); }
 
     const File* parse(std::string_view source) {
         const auto file = sources.add("test.phs", source);
         CHECK(file);
-        return parse_file(*file, lex_file(sources, *file, names, diag), arena, names, diag);
+        return session.parse(*file);
     }
 };
 

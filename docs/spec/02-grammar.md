@@ -132,8 +132,8 @@ start before a significant `Newline`. `break` and `continue` have no operand.
 Postfix       = Primary { '(' [ ArgList ] ')' | '.' Ident | '?.' Ident | '[' Expr ']' | '!' | GenericArgs }
 ArgList       = Arg { ',' Arg } [ ',' ]
 Arg           = [ Ident ':' ] Expr
-Primary       = IntLit | FloatLit | CharLit | StringLit | InterpString
-              | 'true' | 'false' | 'none' | 'self' | 'super' | 'Self' | Ident
+Primary       = Literal | InterpString
+              | 'self' | 'super' | 'Self' | Ident
               | '.' Ident                                  (* implicit member, e.g. .Empty *)
               | '(' [ Expr ] ')'                           (* empty parentheses are Unit *)
               | '[' [ Expr { ',' Expr } [ ',' ] ] ']'

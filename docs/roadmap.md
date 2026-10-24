@@ -28,10 +28,12 @@ foundation. Complete.
 - [x] Initial scalar typing: retained expression/binding types, built-in annotations,
   contextual numeric literals and ranges, forward variable inference, scalar
   operators, Boolean conditions, defaults, explicit returns and assignments.
-- [ ] **Next: callable signatures and calls.** Infer expression-body return types,
-  check arguments and select overloads; implement explicit numeric conversions.
+- [x] Initial callable signatures and direct file-level calls: scalar expression-body
+  return inference, arguments, labels, defaults, overload selection and retained targets.
+- [ ] **Next: explicit numeric conversions.** Built-in widening constructors,
+  checked/truncating narrowing, and conversion diagnostics.
 - [ ] Complete type checking: aliases, composite types, generics, optionals,
-  receiver-dependent members, inheritance, visibility, and typed errors.
+  generic/indirect calls, receiver-dependent members, inheritance, visibility, and typed errors.
 - [ ] Definite initialization, moves, borrows and destructor checks.
 - [ ] Typed intermediate representation and lowering.
 - [ ] x86_64 code generation and COFF/ELF object writers.
@@ -39,8 +41,9 @@ foundation. Complete.
 - [ ] Native hello-world executables on Windows x64 and Linux x86_64.
 
 `check` performs syntax, structural semantic validation, file-local lexical
-name resolution and initial scalar typing. Unsupported type facts, including
-calls and block/branch results, are explicitly deferred. Member lookup that
+name resolution, initial scalar typing and direct scalar function calls.
+Unsupported type facts, including generic/indirect calls, conversions and
+block/branch results, are explicitly deferred. Member lookup that
 needs receiver types, alias expansion or inheritance remains pending. A successful
 check does **not** yet imply that all members exist, types match, ownership is valid,
 or executable code can be generated. Imports receive an explicit unsupported

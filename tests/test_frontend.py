@@ -141,6 +141,20 @@ class FrontendTests(unittest.TestCase):
             self.assertIn(f"error[{expected}]", stderr)
             self.assertNotIn("error[E04", stderr)
 
+    def test_call_checking_is_not_part_of_parse(self) -> None:
+        source = "fun f(x: Int) = x\nlet wrong = f(true)\nlet notCallable = 1()"
+        code, _, stderr = self.run_source(source, "parse")
+        self.assertEqual((code, stderr), (0, ""))
+        code, stdout, stderr = self.run_source(source, "check")
+        self.assertEqual((code, stdout), (1, ""))
+        self.assertEqual(stderr.count("error["), 2, stderr)
+        self.assertIn("error[E0411]", stderr)
+        self.assertIn("error[E0410]", stderr)
+        code, _, stderr = self.run_source(source + "\nlet invalid = unknown", "check")
+        self.assertEqual(code, 1)
+        self.assertIn("error[E0300]", stderr)
+        self.assertNotIn("error[E04", stderr)
+
     def test_check_resolves_names_after_validation(self) -> None:
         source = "fun f(x: Missing) = unknown(x)\n"
         code, _, stderr = self.run_source(source, "parse")

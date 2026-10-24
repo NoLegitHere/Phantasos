@@ -209,10 +209,10 @@ fun names(x: Int8) { let x = x + 1; if true { let x = "inner"; x }; x }
 )");
     CHECK(f.binding("alias") == Type::Deferred && f.binding("nominal") == Type::Deferred);
     CHECK(f.binding("wideAlias") == Type::Deferred && f.binding("wideOptional") == Type::Deferred);
-    CHECK(f.binding("wideArray") == Type::Deferred && f.binding("wideCall") == Type::Deferred);
+    CHECK(f.binding("wideArray") == Type::Deferred && f.binding("wideCall") == Type::UInt64);
     CHECK(f.binding("wideBranch") == Type::UInt64);
     CHECK(f.binding("cyclicA") == Type::Deferred && f.binding("cyclicB") == Type::Deferred);
-    CHECK(f.binding("opaque") == Type::Deferred);
+    CHECK(f.binding("opaque") == Type::Int);
     CHECK(f.binding("x", 3) == Type::Int8); // takesWide, generic, optional, then names' parameter
     CHECK(f.binding("x", 4) == Type::Int8 && f.binding("x", 5) == Type::String);
 }
@@ -234,7 +234,7 @@ fun calls() { use(18446744073709551615) }
     CHECK(valid.result.scalar_types->expression(ast::cast<ast::ExprStmt>(branch->then_block->stmts[1])->expr) == Type::Deferred);
     const auto* calls = ast::cast<ast::BlockExpr>(ast::cast<ast::FunItem>(valid.result.syntax->items[3])->body);
     const auto* call = ast::cast<ast::CallExpr>(ast::cast<ast::ExprStmt>(calls->stmts[0])->expr);
-    CHECK(valid.result.scalar_types->expression(call->args[0].value) == Type::Deferred);
+    CHECK(valid.result.scalar_types->expression(call->args[0].value) == Type::UInt64);
 
     for (std::string_view source : {
         "fun f() { 9223372036854775808; return }",
@@ -258,12 +258,12 @@ fun calls() { use(18446744073709551615) }
 void logical_operands_with_deferred_calls() {
     for (std::string_view expression : {"1 && opaque()", "opaque() && 1", "1 || opaque()", "opaque() || 1"}) {
         Frontend invalid;
-        invalid.check(std::format("fun opaque(): Bool = true\nfun f() {{ if {} {{}} }}", expression),
+        invalid.check(std::format("fun opaque<T>(): Bool = true\nfun f() {{ if {} {{}} }}", expression),
                       {DiagCode::ScalarTypeMismatch});
     }
     Frontend valid;
     valid.check(R"(
-fun opaque(): Bool = true
+fun opaque<T>(): Bool = true
 let left = true && opaque()
 let right = opaque() || false
 fun conditions() { if left {}; if right {} }
@@ -274,7 +274,7 @@ fun conditions() { if left {}; if right {} }
 void numeric_operands_with_deferred_calls() {
     const auto reject = [](std::string_view expr) {
         Frontend invalid;
-        invalid.check(std::format("fun opaque(): Int = 1\nlet broken = {}\nlet dependent = broken + opaque()", expr),
+        invalid.check(std::format("fun opaque<T>(): Int = 1\nlet broken = {}\nlet dependent = broken + opaque()", expr),
                       {DiagCode::InvalidScalarOperand});
         CHECK(invalid.binding("broken") == Type::Error && invalid.binding("dependent") == Type::Error);
     };
@@ -293,17 +293,17 @@ void numeric_operands_with_deferred_calls() {
         reject(std::format("opaque() {} true", op));
     }
     Frontend typed;
-    typed.check("fun opaque(): Int = 1\nlet f: Float32 = 1.0\nlet bad = f & opaque()",
+    typed.check("fun opaque<T>(): Int = 1\nlet f: Float32 = 1.0\nlet bad = f & opaque()",
                 {DiagCode::InvalidScalarOperand});
 
     for (std::string_view op : {"+=", "-=", "*=", "/="}) {
         Frontend invalid;
-        invalid.check(std::format("fun opaque(): Int = 1\nfun f() {{ var flag = true; flag {} opaque() }}", op),
+        invalid.check(std::format("fun opaque<T>(): Int = 1\nfun f() {{ var flag = true; flag {} opaque() }}", op),
                       {DiagCode::InvalidScalarOperand});
     }
     for (std::string_view op : {"%=", "&=", "|=", "^=", "<<=", ">>="}) {
         Frontend invalid;
-        invalid.check(std::format("fun opaque(): Int = 1\nfun f() {{ var number = 1.0; number {} opaque() }}", op),
+        invalid.check(std::format("fun opaque<T>(): Int = 1\nfun f() {{ var number = 1.0; number {} opaque() }}", op),
                       {DiagCode::InvalidScalarOperand});
     }
     for (std::string_view assignment : {"target += true", "target &= 1.0"}) {
@@ -314,10 +314,10 @@ void numeric_operands_with_deferred_calls() {
 
     Frontend valid;
     valid.check(R"(
-fun opaque(): Int = 1
-fun floating(): Float64 = 1.0
-fun character(): Char = 'a'
-fun boolean(): Bool = true
+fun opaque<T>(): Int = 1
+fun floating<T>(): Float64 = 1.0
+fun character<T>(): Char = 'a'
+fun boolean<T>(): Bool = true
 let sum = 1 + opaque()
 let product = floating() * 1.0
 let bits = opaque() & 1

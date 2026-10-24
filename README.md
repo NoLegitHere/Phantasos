@@ -32,7 +32,8 @@ Windows x64 and Linux x86_64:
 - [x] File-local lexical name resolution with retained bindings and overload sets
 - [x] Initial scalar type checking, contextual literals and binding inference
 - [x] Scalar function signatures, return inference and direct call/overload checking
-- [ ] Generic/indirect calls, conversions, composite types, member lookup and ownership analysis
+- [x] Initial numeric conversions: widening, checked/truncating integers and optional result facts
+- [ ] Generic/indirect calls, remaining numeric policies, composite types, member lookup and ownership analysis
 - [ ] MIR, x86_64 codegen, COFF/ELF writers, linker, runtime
 - [ ] Workspace-aware build driver
 
@@ -50,7 +51,10 @@ explicit returns and assignments, with retained type facts. File-level function
 calls check argument types, labels and defaults, select scalar overloads, and
 retain the target and parameter mapping. Expression-bodied returns infer scalar
 types, including forward calls. `parse` continues to report syntax only.
-Generic/indirect calls, conversions, receiver-dependent members, inheritance,
+Numeric conversions validate built-in identity, arity, operand types and widening
+ranges. Checked integer conversions return `T?`, with optional type facts retained
+through bindings, signatures and calls. Generic/indirect calls, remaining numeric
+policies, receiver-dependent members, inheritance,
 alias expansion, composite types and ownership analysis remain
 pending, so passing `check` does not yet establish program validity. Imports explicitly report that
 package loading is unavailable.
@@ -119,6 +123,10 @@ when scalar checking ran; query expression and binding facts through it.
 Its `signature(BindingId)` and `call(CallExpr*)` queries expose scalar parameter
 and return types, selected function IDs, and argument-to-parameter mappings.
 Function value bindings remain deferred; their return types live in signatures.
+`ScalarType` stores a built-in `kind` and `optional_depth`;
+`scalar_type_name` renders the complete fact. `conversion(CallExpr*)` records
+conversion mode and source/destination types. Intrinsic conversion call targets
+refer to built-in type bindings, while ordinary call targets refer to functions.
 `ScalarType::Deferred` means the type needs a later pass, while `Error` marks a
 diagnosed type failure. Numeric defaults are `Int` and `Float64`; a scalar
 annotation or a typed operator operand can constrain literals. Stage0 currently

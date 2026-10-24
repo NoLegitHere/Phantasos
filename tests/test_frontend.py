@@ -155,6 +155,20 @@ class FrontendTests(unittest.TestCase):
         self.assertIn("error[E0300]", stderr)
         self.assertNotIn("error[E04", stderr)
 
+    def test_numeric_conversion_diagnostics(self) -> None:
+        source = "let source = 1\nlet narrow = Int8(source)\nlet operand = Int64(true)\nlet shape = Int8.checked()"
+        code, _, stderr = self.run_source(source, "parse")
+        self.assertEqual((code, stderr), (0, ""))
+        code, stdout, stderr = self.run_source(source, "check")
+        self.assertEqual((code, stdout), (1, ""))
+        self.assertEqual(stderr.count("error["), 3, stderr)
+        for code in ("E0420", "E0421", "E0422"):
+            self.assertIn(f"error[{code}]", stderr)
+        code, _, stderr = self.run_source(source + "\nlet invalid = unknown", "check")
+        self.assertEqual(code, 1)
+        self.assertIn("error[E0300]", stderr)
+        self.assertNotIn("error[E04", stderr)
+
     def test_check_resolves_names_after_validation(self) -> None:
         source = "fun f(x: Missing) = unknown(x)\n"
         code, _, stderr = self.run_source(source, "parse")

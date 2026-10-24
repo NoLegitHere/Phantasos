@@ -30,10 +30,14 @@ foundation. Complete.
   operators, Boolean conditions, defaults, explicit returns and assignments.
 - [x] Initial callable signatures and direct file-level calls: scalar expression-body
   return inference, arguments, labels, defaults, overload selection and retained targets.
-- [ ] **Next: explicit numeric conversions.** Built-in widening constructors,
-  checked/truncating narrowing, and conversion diagnostics.
+- [x] Initial numeric conversions: lossless integer and floating widening,
+  checked/truncating integers, diagnostics, retained conversion records and
+  optional wrappers on built-in type facts.
+- [ ] **Next: alias expansion.** Resolve aliases, detect cycles and preserve
+  the identity of expanded types.
 - [ ] Complete type checking: aliases, composite types, generics, optionals,
-  generic/indirect calls, receiver-dependent members, inheritance, visibility, and typed errors.
+  generic/indirect calls, remaining numeric policies, receiver-dependent members,
+  inheritance, visibility, and typed errors.
 - [ ] Definite initialization, moves, borrows and destructor checks.
 - [ ] Typed intermediate representation and lowering.
 - [ ] x86_64 code generation and COFF/ELF object writers.
@@ -42,7 +46,7 @@ foundation. Complete.
 
 `check` performs syntax, structural semantic validation, file-local lexical
 name resolution, initial scalar typing and direct scalar function calls.
-Unsupported type facts, including generic/indirect calls, conversions and
+Unsupported type facts, including generic/indirect calls, remaining numeric policies and
 block/branch results, are explicitly deferred. Member lookup that
 needs receiver types, alias expansion or inheritance remains pending. A successful
 check does **not** yet imply that all members exist, types match, ownership is valid,

@@ -1,0 +1,21 @@
+conversions_errors.phs:17:17: error[E0422]: conversion from 'Int' to 'Int8' may narrow; use an explicit narrowing operation
+   17 | let narrowing = Int8(source)
+      |                 ^^^^^^^^^^^^
+conversions_errors.phs:18:17: error[E0420]: numeric conversion requires one positional argument
+   18 | let arguments = Int64()
+      |                 ^^^^^^^
+conversions_errors.phs:19:29: error[E0421]: numeric conversion requires a non-optional numeric operand, found 'Bool'
+   19 | let operand = UInt8.checked(true)
+      |                             ^^^^
+conversions_errors.phs:21:20: error[E0400]: expected 'Int8', found 'Int8?'
+   21 | let scalar: Int8 = checked
+      |                    ^^^^^^^
+conversions_errors.phs:22:33: error[E0400]: expected 'UInt8?', found 'Int8?'
+   22 | let differentOptional: UInt8? = checked
+      |                                 ^^^^^^^
+conversions_errors.phs:23:29: error[E0421]: numeric conversion requires a non-optional numeric operand, found 'Int8?'
+   23 | let optionalOperand = Int64(checked)
+      |                             ^^^^^^^
+conversions_errors.phs:24:20: error[E0402]: integer literal is out of range for 'Int8'
+   24 | let literal = Int8(128)
+      |                    ^^^

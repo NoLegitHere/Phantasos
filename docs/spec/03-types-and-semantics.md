@@ -352,7 +352,7 @@ can infer scalar types. Numeric literals in deferred contextual positions keep
 deferred types instead of defaulting prematurely (for example, an unchecked
 call argument could require `UInt64` rather than `Int`). Cyclic inference
 without an established type remains
-deferred. Generic/indirect calls, conversions, initialization cycles,
+deferred. Generic/indirect calls, remaining numeric policies, initialization cycles,
 all-path returns, mutability, ownership and effects still need later passes.
 Successful `check` therefore continues to mean only that implemented checks
 found no errors, not that the program is valid or executable.
@@ -394,7 +394,7 @@ A potentially matching generic/constrained signature, unsupported parameter type
 argument type keeps selection deferred, even if another scalar candidate fits.
 Independently provable shape/type mismatches still eliminate candidates. Calls
 through function values, methods, type-qualified members, constructors, generic
-instantiations and built-in numeric conversions remain deferred. The pass checks
+instantiations remain deferred. Built-in numeric conversions follow section 3.16. The pass checks
 their supported scalar children. Constraints, effects, conventions, visibility, duplicate
 signature validity and all-path returns require later checks.
 
@@ -403,3 +403,49 @@ and `E0412` an ambiguous call. Candidate notes point to declarations. Return
 types, call states and selected targets are cached with other scalar facts;
 failed calls suppress dependent type diagnostics. These checks preserve the AST
 and use iterative dependency traversal, including long forward call chains.
+
+## 3.16 Explicit numeric conversions and optional facts [Core]
+
+The numeric conversion APIs require exactly one positional argument. The callee
+must resolve to a built-in numeric type; declarations that shadow a built-in
+name keep their own meaning. Aliases need expansion before they can name these
+intrinsics. Conversion type checking does not execute conversions or fold their
+values; execution and lowering remain future compiler work.
+
+- `T(value)` is an identity or lossless widening conversion. Integers of the
+  same signedness can widen to equal or greater width; unsigned integers can
+  widen to signed integers only at strictly greater width. Signed integers
+  cannot widen to unsigned integers. `Int`/`UInt` use the initial x86_64 ranges
+  but retain distinct identities from `Int64`/`UInt64`.
+- Floating identity and `Float32` to `Float64` widening are supported.
+- A numeric literal tree in a widening constructor takes the destination's
+  matching integer/float type and must fit that range. This is literal typing,
+  not narrowing an already typed value.
+- `T.checked(value)` for integers returns `T?`: the converted value on success,
+  or `none` when the source value is outside `T`'s range.
+- `T.truncating(value)` for integers returns `T`: reduce the value modulo
+  `2^N`, then interpret the bits using the destination's signedness, where `N`
+  is its width. Checked and truncating operations accept any integer source
+  width/signedness. Their numeric literal inputs default to `Int`; an explicit
+  source constructor such as `UInt64(...)` can supply a wider literal value.
+
+Optional wrappers on built-in types retain their full identity in type facts,
+including signatures and inferred checked results. A value of `T` can be lifted
+to `T?` (and deeper wrappers) in an expected optional context; this does not
+permit numeric conversions between different underlying built-ins. Calls prefer
+fewer optional lifts after numeric literal preferences. Checked results cannot
+be used as ordinary numeric values: unwrap a known optional with `!` before
+numeric use. Unwrapping retains its element type; runtime failure handling is
+defined in section 3.6. None inference, conditional bindings, optional equality,
+coalescing and other optional operations remain later checks.
+
+Integer/floating interchange and floating narrowing remain explicitly deferred
+until their rounding and failure policies are specified. Pending source types
+also keep conversion results deferred, while independently invalid shape or
+known non-numeric/optional operands are diagnosed. `E0420` reports conversion
+argument shape, `E0421` invalid operands, and `E0422` a typed narrowing request in
+a widening constructor. Existing literal range/operator diagnostics still apply.
+
+Conversion records retain the mode, source/destination types and checked state.
+Their call targets identify built-in types rather than functions; they introduce
+no function-return dependency. All facts remain cached and the AST is unchanged.

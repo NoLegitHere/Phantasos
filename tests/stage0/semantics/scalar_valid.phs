@@ -37,3 +37,6 @@ let wideArray: [UInt64] = [18446744073709551615]
 let wideBranch: UInt64 = if true { 18446744073709551615 } else { 0 }
 let wideCall = takesWide(18446744073709551615)
 fun takesWide(value: UInt64): UInt64 = value
+fun discardedLiterals() { 1; 1.0; (2 + 3) }
+let contextualTail: UInt64 = if true { 1; 18446744073709551615 } else { 0 }
+fun discardedCall() { takesWide(18446744073709551615) }

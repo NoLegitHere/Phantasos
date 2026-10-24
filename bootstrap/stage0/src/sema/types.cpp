@@ -74,6 +74,7 @@ struct Requirement {
 struct Walk {
     std::variant<const Item*, const Expr*, const Stmt*, const Pattern*> node;
     Type returns = Type::Deferred;
+    bool discarded = false;
 };
 }  // namespace
 
@@ -119,7 +120,7 @@ public:
         while (!walk_.empty()) {
             const auto next = walk_.back();
             walk_.pop_back();
-            std::visit([&](auto node) { collect(*node, next.returns); }, next.node);
+            std::visit([&](auto node) { collect(*node, next.returns, next.discarded); }, next.node);
         }
         for (usize i = 0; i < nodes_.size(); ++i) {
             if (!nodes_[i].expr) dependency(i, nodes_[i].init);
@@ -191,8 +192,8 @@ private:
     }
 
     template <typename T>
-    void push(const T* node, Type returns = Type::Deferred) {
-        if (node) walk_.push_back({node, returns});
+    void push(const T* node, Type returns = Type::Deferred, bool discarded = false) {
+        if (node) walk_.push_back({node, returns, discarded});
     }
     usize expression(const Expr* expr) {
         const auto [it, inserted] = expressions_.try_emplace(expr, nodes_.size());
@@ -204,10 +205,10 @@ private:
         const auto child = expression(expr);
         nodes_[parent].deps.push_back(child);
     }
-    void child(usize parent, const Expr* expr, Type returns) {
+    void child(usize parent, const Expr* expr, Type returns, bool discarded = false) {
         if (!expr) return;
         dependency(parent, expr);
-        push(expr, returns);
+        push(expr, returns, discarded);
     }
     Value value(const Expr* expr) const {
         return expr ? nodes_[expressions_.at(expr)].value : Value{Type::Unit};
@@ -232,7 +233,7 @@ private:
         // Conditional optional bindings are deferred along with optional types.
     }
 
-    void collect(const Item& item, Type) {
+    void collect(const Item& item, Type, bool) {
         for (const auto& attr : item.attrs)
             for (const auto& arg : attr.args) push(arg.value);
         if (const auto* type = as_type_decl(&item)) {
@@ -243,7 +244,7 @@ private:
         } else if (const auto* fun = as<FunItem>(&item)) {
             parameters(fun->sig.params);
             const Type returns = fun->sig.ret ? annotation(fun->sig.ret) : fun->expr_body ? Type::Deferred : Type::Unit;
-            push(fun->body, returns);
+            push(fun->body, returns, !fun->expr_body);
             if (fun->body && fun->expr_body && fun->sig.ret)
                 requirements_.push_back({fun->body, returns, fun->body->span});
             else if (fun->body && fun->expr_body) defaults_.push_back(fun->body);
@@ -254,11 +255,11 @@ private:
             for (const Item* nested : ext->items) push(nested);
         } else if (const auto* init = as<InitItem>(&item)) {
             parameters(init->params);
-            push(init->body, Type::Unit);
-        } else if (const auto* deinit = as<DeinitItem>(&item)) push(deinit->body, Type::Unit);
+            push(init->body, Type::Unit, true);
+        } else if (const auto* deinit = as<DeinitItem>(&item)) push(deinit->body, Type::Unit, true);
     }
 
-    void collect(const Stmt& stmt, Type returns) {
+    void collect(const Stmt& stmt, Type returns, bool discarded) {
         switch (stmt.kind) {
             case StmtKind::Var: {
                 const auto& var = *cast<VarStmt>(&stmt);
@@ -273,7 +274,7 @@ private:
                 break;
             }
             case StmtKind::Throw: push(cast<ThrowStmt>(&stmt)->value, returns); break;
-            case StmtKind::Expr: push(cast<ExprStmt>(&stmt)->expr, returns); break;
+            case StmtKind::Expr: push(cast<ExprStmt>(&stmt)->expr, returns, discarded); break;
             case StmtKind::Assign: {
                 const auto& assign = *cast<AssignStmt>(&stmt);
                 push(assign.target, returns);
@@ -284,22 +285,22 @@ private:
             case StmtKind::While: {
                 const auto& loop = *cast<WhileStmt>(&stmt);
                 condition(loop.cond, returns);
-                push(loop.body, returns);
+                push(loop.body, returns, true);
                 break;
             }
             case StmtKind::For: {
                 const auto& loop = *cast<ForStmt>(&stmt);
                 push(loop.iter, returns);
-                push(loop.body, returns);
+                push(loop.body, returns, true);
                 break;
             }
-            case StmtKind::Loop: push(cast<LoopStmt>(&stmt)->body, returns); break;
-            case StmtKind::Defer: push(cast<DeferStmt>(&stmt)->body, returns); break;
+            case StmtKind::Loop: push(cast<LoopStmt>(&stmt)->body, returns, true); break;
+            case StmtKind::Defer: push(cast<DeferStmt>(&stmt)->body, returns, true); break;
             case StmtKind::Break: case StmtKind::Continue: break;
         }
     }
 
-    void collect(const Pattern& pat, Type returns) {
+    void collect(const Pattern& pat, Type returns, bool) {
         if (const auto* literal = as<LiteralPat>(&pat)) push(literal->literal, returns);
         else if (const auto* alt = as<AltPat>(&pat)) {
             for (const Pattern* p : alt->alts) push(p, returns);
@@ -308,8 +309,9 @@ private:
         }
     }
 
-    void collect(const Expr& expr, Type returns) {
+    void collect(const Expr& expr, Type returns, bool discarded) {
         const usize index = expression(&expr);
+        if (discarded) defaults_.push_back(&expr);
         switch (expr.kind) {
             case ExprKind::Name: {
                 const auto* ref = resolution_.reference(cast<NameExpr>(&expr)->name.span);
@@ -319,7 +321,7 @@ private:
                 }
                 break;
             }
-            case ExprKind::Paren: child(index, cast<ParenExpr>(&expr)->inner, returns); break;
+            case ExprKind::Paren: child(index, cast<ParenExpr>(&expr)->inner, returns, discarded); break;
             case ExprKind::Unary: child(index, cast<UnaryExpr>(&expr)->operand, returns); break;
             case ExprKind::Binary: {
                 const auto& b = *cast<BinaryExpr>(&expr);
@@ -327,14 +329,18 @@ private:
                 child(index, b.rhs, returns);
                 break;
             }
-            case ExprKind::Block:
-                for (const Stmt* stmt : cast<BlockExpr>(&expr)->stmts) push(stmt, returns);
+            case ExprKind::Block: {
+                const auto stmts = cast<BlockExpr>(&expr)->stmts;
+                // Only the last statement can supply a block's deferred result.
+                // Function, loop and cleanup bodies discard every expression.
+                for (usize i = 0; i < stmts.size(); ++i) push(stmts[i], returns, discarded || i + 1 < stmts.size());
                 break;
+            }
             case ExprKind::If: {
                 const auto& branch = *cast<IfExpr>(&expr);
                 condition(branch.cond, returns);
-                child(index, branch.then_block, returns);
-                child(index, branch.else_branch, returns);
+                child(index, branch.then_block, returns, discarded);
+                child(index, branch.else_branch, returns, discarded);
                 break;
             }
             case ExprKind::Match: {
@@ -343,7 +349,7 @@ private:
                 for (const auto& arm : match.arms) {
                     push(arm.pattern, returns);
                     child(index, arm.guard, returns);
-                    child(index, arm.body, returns);
+                    child(index, arm.body, returns, discarded);
                     if (arm.guard) requirements_.push_back({arm.guard, Type::Bool, arm.guard->span});
                 }
                 break;
@@ -371,7 +377,7 @@ private:
             case ExprKind::Cast: child(index, cast<CastExpr>(&expr)->operand, returns); break;
             case ExprKind::Unwrap: child(index, cast<UnwrapExpr>(&expr)->operand, returns); break;
             case ExprKind::GenericInst: child(index, cast<GenericInstExpr>(&expr)->base, returns); break;
-            case ExprKind::Unsafe: child(index, cast<UnsafeExpr>(&expr)->block, returns); break;
+            case ExprKind::Unsafe: child(index, cast<UnsafeExpr>(&expr)->block, returns, discarded); break;
             default: break;
         }
     }
@@ -449,20 +455,24 @@ private:
 
     Value binary(const BinaryExpr& expr) {
         auto lhs = value(expr.lhs), rhs = value(expr.rhs);
+        const bool logical = expr.op == BinOp::And || expr.op == BinOp::Or;
+        if (logical) {
+            // Each Bool requirement is independent of the other operand's
+            // pending type. Keep the result deferred until both are checked.
+            const auto a = require(expr.lhs, Type::Bool, expr.lhs->span);
+            const auto b = require(expr.rhs, Type::Bool, expr.rhs->span);
+            if (a.type == Type::Error || b.type == Type::Error) return {Type::Error};
+            if (unavailable(a) || unavailable(b)) return {};
+            return {Type::Bool};
+        }
         if (lhs.type == Type::Error || rhs.type == Type::Error) return {Type::Error};
         if (unavailable(lhs) || unavailable(rhs)) return {};
         if (expr.op == BinOp::Coalesce || expr.op == BinOp::Range || expr.op == BinOp::RangeExcl) return {};
-        const bool logical = expr.op == BinOp::And || expr.op == BinOp::Or;
         const bool equality = expr.op == BinOp::Eq || expr.op == BinOp::Ne;
         const bool ordering = expr.op >= BinOp::Lt && expr.op <= BinOp::Ge;
         const bool ints = expr.op == BinOp::Rem || expr.op == BinOp::WrapAdd || expr.op == BinOp::WrapSub ||
                           expr.op == BinOp::WrapMul || expr.op == BinOp::BitOr || expr.op == BinOp::BitXor ||
                           expr.op == BinOp::BitAnd || expr.op == BinOp::Shl || expr.op == BinOp::Shr;
-        if (logical) {
-            const auto a = require(expr.lhs, Type::Bool, expr.lhs->span);
-            const auto b = require(expr.rhs, Type::Bool, expr.rhs->span);
-            return {a.type == Type::Error || b.type == Type::Error ? Type::Error : Type::Bool};
-        }
         // Never can stand in for a required operand type. It does not make an
         // otherwise invalid operator (such as String arithmetic) available.
         if (lhs.type == Type::Never && rhs.type == Type::Never)

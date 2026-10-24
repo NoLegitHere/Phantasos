@@ -29,3 +29,15 @@ fun statements() {
     while "bad" { break }
     match count { 1 if 2 -> () }
 }
+fun opaque(): Bool = true
+fun logicalCalls() {
+    if 1 && opaque() {}
+    if opaque() && 1 {}
+    if 1 || opaque() {}
+    if opaque() || 1 {}
+}
+fun discardedLiterals() {
+    9223372036854775808
+    (9223372036854775808 + 1)
+    return
+}

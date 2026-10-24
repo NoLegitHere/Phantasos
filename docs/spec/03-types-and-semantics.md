@@ -309,6 +309,12 @@ inferred as `Int` cannot be assigned to `Int64` implicitly, even on x86_64.
 and Linux x86_64 targets use 64-bit ranges for them. User types that shadow
 built-in names retain their own identity.
 
+Discarded numeric expressions also default and undergo range checking. These
+include expression statements before a block's final statement, and all
+expression statements in ordinary function, initializer, destructor, loop and
+cleanup bodies. If a block's result is used, its final expression retains its
+deferred contextual type. Discarding a call does not default its arguments.
+
 Scalar arithmetic (`+ - * /`) requires operands of the same numeric type.
 Remainder, wrapping arithmetic, shifts and bitwise operators require the same
 integer type. Unary `-` requires signed numeric operands, and `~` requires an
@@ -317,6 +323,8 @@ require `Bool`. Scalar equality accepts matching built-in types; ordering
 accepts matching numeric types or `Char`. There are no implicit numeric
 conversions between typed operands. Compound assignment follows the same
 numeric/integer domains and requires the target's type.
+The `Bool` requirement for each logical operand is checked independently even
+when the other operand's type is deferred; the result can still remain deferred.
 
 Scalar variable annotations, parameter defaults, assignments and explicit return
 values must match their expected type. A block-bodied function without a return

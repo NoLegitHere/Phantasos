@@ -37,3 +37,21 @@ scalar_errors.phs:29:11: error[E0400]: expected 'Bool', found 'String'
 scalar_errors.phs:30:24: error[E0400]: expected 'Bool', found 'Int'
    30 |     match count { 1 if 2 -> () }
       |                        ^
+scalar_errors.phs:34:8: error[E0400]: expected 'Bool', found 'Int'
+   34 |     if 1 && opaque() {}
+      |        ^
+scalar_errors.phs:35:20: error[E0400]: expected 'Bool', found 'Int'
+   35 |     if opaque() && 1 {}
+      |                    ^
+scalar_errors.phs:36:8: error[E0400]: expected 'Bool', found 'Int'
+   36 |     if 1 || opaque() {}
+      |        ^
+scalar_errors.phs:37:20: error[E0400]: expected 'Bool', found 'Int'
+   37 |     if opaque() || 1 {}
+      |                    ^
+scalar_errors.phs:40:5: error[E0402]: integer literal is out of range for 'Int'
+   40 |     9223372036854775808
+      |     ^^^^^^^^^^^^^^^^^^^
+scalar_errors.phs:41:6: error[E0402]: integer literal is out of range for 'Int'
+   41 |     (9223372036854775808 + 1)
+      |      ^^^^^^^^^^^^^^^^^^^

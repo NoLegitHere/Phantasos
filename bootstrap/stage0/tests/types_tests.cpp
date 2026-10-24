@@ -217,6 +217,60 @@ fun names(x: Int8) { let x = x + 1; if true { let x = "inner"; x }; x }
     CHECK(f.binding("x", 4) == Type::Int8 && f.binding("x", 5) == Type::String);
 }
 
+void discarded_numeric_expressions() {
+    Frontend valid;
+    valid.check(R"(
+fun defaults() { 1; 1.0; (2 + 3) }
+let contextual: UInt64 = if true { 1; 18446744073709551615 } else { 18446744073709551615 }
+fun use(value: UInt64) {}
+fun calls() { use(18446744073709551615) }
+)");
+    const auto* body = ast::cast<ast::BlockExpr>(ast::cast<ast::FunItem>(valid.result.syntax->items[0])->body);
+    CHECK(valid.result.scalar_types->expression(ast::cast<ast::ExprStmt>(body->stmts[0])->expr) == Type::Int);
+    CHECK(valid.result.scalar_types->expression(ast::cast<ast::ExprStmt>(body->stmts[1])->expr) == Type::Float64);
+    CHECK(valid.result.scalar_types->expression(ast::cast<ast::ExprStmt>(body->stmts[2])->expr) == Type::Int);
+    const auto* branch = ast::cast<ast::IfExpr>(ast::cast<ast::VarItem>(valid.result.syntax->items[1])->init);
+    CHECK(valid.result.scalar_types->expression(ast::cast<ast::ExprStmt>(branch->then_block->stmts[0])->expr) == Type::Int);
+    CHECK(valid.result.scalar_types->expression(ast::cast<ast::ExprStmt>(branch->then_block->stmts[1])->expr) == Type::Deferred);
+    const auto* calls = ast::cast<ast::BlockExpr>(ast::cast<ast::FunItem>(valid.result.syntax->items[3])->body);
+    const auto* call = ast::cast<ast::CallExpr>(ast::cast<ast::ExprStmt>(calls->stmts[0])->expr);
+    CHECK(valid.result.scalar_types->expression(call->args[0].value) == Type::Deferred);
+
+    for (std::string_view source : {
+        "fun f() { 9223372036854775808; return }",
+        "fun f() { 9223372036854775808 + 1; return }",
+        "fun f() { (9223372036854775808) }",
+        "fun f() { if true { 9223372036854775808 } }",
+        "fun f() { (if true { 9223372036854775808 }) }",
+        "fun f() { while true { 9223372036854775808; break } }",
+        "fun f() { for x in [1] { 9223372036854775808 } }",
+        "fun f() { loop { 9223372036854775808; break } }",
+        "fun f() { defer { 9223372036854775808 } }",
+        "fun f() { unsafe { 9223372036854775808 } }",
+        "fun f() { match true { true -> 9223372036854775808 } }",
+        "let x: UInt64 = if true { 9223372036854775808; 18446744073709551615 } else { 0 }"
+    }) {
+        Frontend invalid;
+        invalid.check(source, {DiagCode::ScalarLiteralRange});
+    }
+}
+
+void logical_operands_with_deferred_calls() {
+    for (std::string_view expression : {"1 && opaque()", "opaque() && 1", "1 || opaque()", "opaque() || 1"}) {
+        Frontend invalid;
+        invalid.check(std::format("fun opaque(): Bool = true\nfun f() {{ if {} {{}} }}", expression),
+                      {DiagCode::ScalarTypeMismatch});
+    }
+    Frontend valid;
+    valid.check(R"(
+fun opaque(): Bool = true
+let left = true && opaque()
+let right = opaque() || false
+fun conditions() { if left {}; if right {} }
+)");
+    CHECK(valid.binding("left") == Type::Deferred && valid.binding("right") == Type::Deferred);
+}
+
 void session_gating_and_lifetimes() {
     FrontendSession session;
     const auto invalid = session.sources().add("invalid", "let x = unknown");
@@ -254,6 +308,8 @@ int main() {
     integer_and_float_boundaries();
     operators();
     deferred_types_and_shadowing();
+    discarded_numeric_expressions();
+    logical_operands_with_deferred_calls();
     session_gating_and_lifetimes();
     long_trees_and_forward_chains();
 }

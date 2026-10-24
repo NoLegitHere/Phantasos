@@ -18,7 +18,7 @@
 #include <optional>
 #include <unordered_map>
 
-#include "sema/resolve.hpp"
+#include "sema/types.hpp"
 #include "support/arena.hpp"
 
 namespace phs {
@@ -29,6 +29,9 @@ struct CheckResult {
     // result can contain unresolved names; use diagnostics().has_errors(file)
     // to determine success.
     const Resolution* resolution;
+    // Null if earlier phases failed. A non-null result retains known/deferred
+    // scalar facts, including on type errors; consult per-file diagnostics.
+    const ScalarTypes* scalar_types;
 };
 
 // Owns the storage for one frontend invocation over immutable source files.
@@ -59,6 +62,7 @@ private:
         const ast::File* syntax = nullptr;
         bool checked = false;
         std::optional<Resolution> resolution;
+        std::optional<ScalarTypes> scalar_types;
     };
 
     SourceManager sources_;

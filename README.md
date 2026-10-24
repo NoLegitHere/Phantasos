@@ -30,7 +30,8 @@ Windows x64 and Linux x86_64:
   stable diagnostic codes
 - [x] Initial semantic validation: bindings, declarations and control flow
 - [x] File-local lexical name resolution with retained bindings and overload sets
-- [ ] Type checking, receiver-dependent member lookup and ownership analysis
+- [x] Initial scalar type checking, contextual literals and binding inference
+- [ ] Calls, composite types, receiver-dependent member lookup and ownership analysis
 - [ ] MIR, x86_64 codegen, COFF/ELF writers, linker, runtime
 - [ ] Workspace-aware build driver
 
@@ -38,14 +39,16 @@ The language is specified in [`docs/spec`](docs/spec), with a standalone
 [Core EBNF grammar](docs/spec/phantasos.ebnf).
 See the [bootstrap roadmap](docs/roadmap.md) for milestones and the next steps.
 
-`check <file.phs>` runs structural semantic validation and lexical name
-resolution after a successful parse. It reports duplicate bindings, invalid
-declaration/control-flow contexts, unknown value/type names and conflicting
+`check <file.phs>` runs structural semantic validation, lexical name
+resolution and initial scalar type checking after a successful parse. It reports
+duplicate bindings, invalid declaration/control-flow contexts, unknown value/type names and conflicting
 declarations. It retains bindings for forward references, generic scopes,
-shadowing and overload sets. `parse` continues to report syntax only.
-Receiver-dependent members, inheritance, alias expansion, type inference,
-overload selection and ownership analysis remain pending, so passing `check`
-does not yet establish program validity. Imports explicitly report that
+shadowing and overload sets. Scalar checks cover built-in annotations, literal
+ranges, variable inference, operators, Boolean conditions, parameter defaults,
+explicit returns and assignments, with retained type facts. `parse` continues
+to report syntax only. Calls, receiver-dependent members, inheritance, alias
+expansion, composite types, overload selection and ownership analysis remain
+pending, so passing `check` does not yet establish program validity. Imports explicitly report that
 package loading is unavailable.
 
 ## Repository layout
@@ -54,7 +57,7 @@ package loading is unavailable.
 |---|---|
 | `docs/spec/` | Language and ABI specification |
 | `docs/adr/` | Architecture decision records |
-| `bootstrap/stage0/` | C++23 bootstrap compiler: lexer, parser, structural validation and lexical name resolution; type checking, native code generation and build driver planned |
+| `bootstrap/stage0/` | C++23 bootstrap compiler: lexer, parser, structural validation, lexical name resolution and scalar typing; full type checking, native code generation and build driver planned |
 | `compiler/` | Self-hosted compiler (a Phantasos workspace), planned |
 | `runtime/` | `rt`, the privileged runtime, planned |
 | `std/` | Standard library (privileged), planned |
@@ -96,19 +99,24 @@ python tools/license-check/license_check.py                            # license
 The build separates the `phantasos-stage0` CLI from the `phantasos_frontend`
 static library (CMake alias `Phantasos::Frontend`). Link the library to reuse
 source management, diagnostics, lexing, parsing, AST dumps, structural
-validation and name resolution. Its target
+validation, name resolution and scalar typing. Its target
 propagates the required C++23 and no-exception/no-RTTI settings. Focused C++
 tests are enabled by default; use `-DBUILD_TESTING=OFF` to omit them, following
 [CMake's CTest convention](https://cmake.org/cmake/help/v3.28/module/CTest.html).
 
 `FrontendSession` in `frontend/session.hpp` owns source files, keyword-seeded
-interning, diagnostics, AST storage and cached name-resolution results.
+interning, diagnostics, AST storage and cached name-resolution/type results.
 Add or load a file through `session.sources()`, then call `session.parse(id)`
 or `session.check(id)`. Query `session.diagnostics().has_errors(id)` for that
 file's result. Errors in other files do not block checking, and repeated calls
 do not duplicate diagnostics. Returned AST and resolution pointers remain
-valid until the session is destroyed. Files still resolve independently;
-this does not implement package or module loading.
+valid until the session is destroyed. `CheckResult::scalar_types` is non-null
+when scalar checking ran; query expression and binding facts through it.
+`ScalarType::Deferred` means the type needs a later pass, while `Error` marks a
+diagnosed type failure. Numeric defaults are `Int` and `Float64`; a scalar
+annotation or a typed operator operand can constrain literals. Stage0 currently
+uses 64-bit `Int`/`UInt` for its initial x86_64 targets. Files still resolve
+independently; this does not implement package or module loading.
 
 Source files are limited to **64 MiB of raw input** by default, before BOM and
 line-ending normalization. Oversized files are rejected before reading their

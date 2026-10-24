@@ -128,6 +128,19 @@ class FrontendTests(unittest.TestCase):
         code, stdout, stderr = self.run_source(source, "check")
         self.assertEqual((code, stdout, stderr), (0, "", ""))
 
+    def test_scalar_checking_and_phase_gating(self) -> None:
+        source = "let x: Bool = 1\nfun f(): Int { return }\n"
+        code, _, stderr = self.run_source(source, "parse")
+        self.assertEqual((code, stderr), (0, ""))
+        code, stdout, stderr = self.run_source(source, "check")
+        self.assertEqual((code, stdout), (1, ""))
+        self.assertEqual(stderr.count("error[E0400]"), 2, stderr)
+        for invalid, expected in (("fun bad() { break }", "E0203"), ("let missing = unknown", "E0300")):
+            code, _, stderr = self.run_source(source + invalid, "check")
+            self.assertEqual(code, 1)
+            self.assertIn(f"error[{expected}]", stderr)
+            self.assertNotIn("error[E04", stderr)
+
     def test_check_resolves_names_after_validation(self) -> None:
         source = "fun f(x: Missing) = unknown(x)\n"
         code, _, stderr = self.run_source(source, "parse")

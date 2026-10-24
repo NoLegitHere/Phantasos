@@ -43,12 +43,17 @@
 - The CLI and C++ tests link `Phantasos::Frontend`; keep CLI-only behavior in
   `main.cpp`. Prefer `FrontendSession` (`frontend/session.hpp`) to own sources,
   keyword-seeded interning, diagnostics, AST storage and cached resolutions.
-  `parse(FileId)` is syntax-only; `check(FileId)` runs validation and resolution
-  only if that file has no errors. Repeated calls reuse results without
+  `parse(FileId)` is syntax-only; `check(FileId)` runs validation, resolution
+  and scalar typing only if that file has no errors. Repeated calls reuse results without
   emitting diagnostics again. Files are immutable and resolve independently;
   source IDs and result pointers belong to the session, which cannot be moved
   or copied. A non-null `CheckResult::resolution` means resolution ran, not
   that it succeeded: consult `diagnostics().has_errors(file)`.
+  `CheckResult::scalar_types` is non-null when resolution succeeded and scalar
+  checking ran, even if type diagnostics were emitted. `ScalarTypes` retains
+  expression and binding facts without modifying the AST; unsupported facts
+  are `Deferred`, diagnosed failures are `Error`. Keep new type-dependent
+  rules in `sema/types`, with explicit stacks for traversal and dependencies.
   For low-level API calls, seed the interner with `seed_keywords` before lexing. Source
   managers, interners, and arenas must outlive the views/nodes referring to
   their storage. `DiagEngine::all()` exposes emission order;
@@ -90,6 +95,9 @@
   pattern scopes, deferred references, file isolation and iterative traversal.
   The `session` suite checks phase gating, per-file error counts, warning/note
   handling, cached calls, source limits and result lifetimes across file growth.
+  The `types` suite checks contextual scalar inference, forward dependencies,
+  numeric limits, operator domains, defaults, returns, conditions, assignments,
+  deferred facts, shadowing, AST immutability, session lifetimes and long trees.
 
 - Run `python tests/test_license_check.py` for license-fixer regressions,
   including encoding declarations, BOMs, line endings, and idempotence.

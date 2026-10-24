@@ -1,0 +1,589 @@
+// Copyright 2026 The Phantasos Authors
+// SPDX-License-Identifier: Apache-2.0
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+#include "sema/types.hpp"
+
+#include <limits>
+#include <variant>
+
+namespace phs {
+namespace {
+using namespace ast;
+using Type = ScalarType;
+
+constexpr Type builtins[] = {
+    Type::Int8, Type::Int16, Type::Int32, Type::Int64, Type::UInt8, Type::UInt16,
+    Type::UInt32, Type::UInt64, Type::Int, Type::UInt, Type::Float32, Type::Float64,
+    Type::Bool, Type::Char, Type::String, Type::Unit, Type::Never
+};
+bool integer(Type t) { return t >= Type::Int8 && t <= Type::UInt; }
+bool floating(Type t) { return t == Type::Float32 || t == Type::Float64; }
+bool numeric(Type t) { return integer(t) || floating(t); }
+bool unsigned_integer(Type t) { return (t >= Type::UInt8 && t <= Type::UInt64) || t == Type::UInt; }
+bool known(Type t) { return t != Type::Deferred && t != Type::Error; }
+unsigned width(Type t) {
+    switch (t) {
+        case Type::Int8: case Type::UInt8: return 8;
+        case Type::Int16: case Type::UInt16: return 16;
+        case Type::Int32: case Type::UInt32: return 32;
+        default: return 64;
+    }
+}
+
+enum class Literal : u8 { None, Integer, Float };
+struct Value {
+    Type type = Type::Deferred;
+    Literal literal = Literal::None;
+};
+bool numeric(Value v) { return v.literal != Literal::None || numeric(v.type); }
+bool integer(Value v) { return v.literal == Literal::Integer || integer(v.type); }
+bool unavailable(Value v) { return v.literal == Literal::None && !known(v.type); }
+enum class OperandDomain : u8 { Numeric, Integer, Ordered };
+bool in_domain(Value operand, OperandDomain domain) {
+    // A pending or non-returning operand cannot disprove a domain requirement.
+    if (unavailable(operand) || operand.type == Type::Never) return true;
+    switch (domain) {
+        case OperandDomain::Numeric: return numeric(operand);
+        case OperandDomain::Integer: return integer(operand);
+        case OperandDomain::Ordered: return numeric(operand) || operand.type == Type::Char;
+    }
+    unreachable();
+}
+Type default_type(Value v) {
+    if (v.literal == Literal::Integer) return Type::Int;
+    if (v.literal == Literal::Float) return Type::Float64;
+    return v.type;
+}
+
+struct Node {
+    const Expr* expr = nullptr; // null for a binding
+    const TypeExpr* annotation = nullptr;
+    const Expr* init = nullptr;
+    std::vector<usize> deps;
+    Value value;
+    u8 state = 0; // unvisited, active, finished
+};
+struct Requirement {
+    const Expr* value;
+    Type expected;
+    Span span;
+    const Expr* target = nullptr; // assignment: type obtained after inference
+    AssignOp assignment = AssignOp::Assign;
+};
+struct Walk {
+    std::variant<const Item*, const Expr*, const Stmt*, const Pattern*> node;
+    Type returns = Type::Deferred;
+    bool discarded = false;
+};
+}  // namespace
+
+std::string_view scalar_type_name(ScalarType type) {
+    switch (type) {
+        case Type::Deferred: return "<deferred>";
+        case Type::Error: return "<error>";
+        case Type::Int8: return "Int8";
+        case Type::Int16: return "Int16";
+        case Type::Int32: return "Int32";
+        case Type::Int64: return "Int64";
+        case Type::UInt8: return "UInt8";
+        case Type::UInt16: return "UInt16";
+        case Type::UInt32: return "UInt32";
+        case Type::UInt64: return "UInt64";
+        case Type::Int: return "Int";
+        case Type::UInt: return "UInt";
+        case Type::Float32: return "Float32";
+        case Type::Float64: return "Float64";
+        case Type::Bool: return "Bool";
+        case Type::Char: return "Char";
+        case Type::String: return "String";
+        case Type::Unit: return "Unit";
+        case Type::Never: return "Never";
+    }
+    unreachable();
+}
+
+class ScalarChecker {
+public:
+    ScalarChecker(const Resolution& resolution, const Interner& names, DiagEngine& diag)
+        : resolution_(resolution), names_(names), diag_(diag) {}
+
+    ScalarTypes run(const File& file) {
+        // Binding nodes have the same indices as the resolver's BindingIds.
+        nodes_.resize(resolution_.bindings().size());
+        for (usize i = 0; i < resolution_.bindings().size(); ++i) {
+            const auto& b = resolution_.bindings()[i];
+            if (b.kind != BindingKind::BuiltinType && b.kind != BindingKind::BuiltinValue)
+                declarations_.emplace(b.name.span.lo, i);
+        }
+        for (const Item* item : file.items) push(item);
+        while (!walk_.empty()) {
+            const auto next = walk_.back();
+            walk_.pop_back();
+            std::visit([&](auto node) { collect(*node, next.returns, next.discarded); }, next.node);
+        }
+        for (usize i = 0; i < nodes_.size(); ++i) {
+            if (!nodes_[i].expr) dependency(i, nodes_[i].init);
+        }
+        // Explicit DFS over the dependency graph handles long expression trees
+        // and forward references without using the native call stack.
+        struct Frame { usize node, next; };
+        std::vector<Frame> stack;
+        for (usize root = 0; root < nodes_.size(); ++root) {
+            if (nodes_[root].state != 0) continue;
+            nodes_[root].state = 1;
+            stack.push_back({root, 0});
+            while (!stack.empty()) {
+                auto& frame = stack.back();
+                auto& node = nodes_[frame.node];
+                if (frame.next < node.deps.size()) {
+                    const auto dep = node.deps[frame.next++];
+                    // An active dependency is a cycle. Its provisional value
+                    // stays Deferred; initialization cycles need a later pass.
+                    if (nodes_[dep].state == 0) {
+                        nodes_[dep].state = 1;
+                        stack.push_back({dep, 0});
+                    }
+                } else {
+                    evaluate(frame.node);
+                    node.state = 2;
+                    stack.pop_back();
+                }
+            }
+        }
+        for (const auto& requirement : requirements_) {
+            const Type expected = requirement.target ? value(requirement.target).type : requirement.expected;
+            if (requirement.target && requirement.assignment != AssignOp::Assign) {
+                const bool ints = requirement.assignment >= AssignOp::BitAnd || requirement.assignment == AssignOp::Rem;
+                const auto domain = ints ? OperandDomain::Integer : OperandDomain::Numeric;
+                if (!in_domain(value(requirement.target), domain) || !in_domain(value(requirement.value), domain)) {
+                    diag_.error(DiagCode::InvalidScalarOperand, requirement.span,
+                                "compound assignment requires {} operands", ints ? "integer" : "numeric");
+                    continue;
+                }
+            }
+            (void)require(requirement.value, expected, requirement.span);
+        }
+        // Only context-free roots default. A literal inside a deferred call,
+        // annotation or composite expression may still need a contextual type
+        // (for example a UInt64 argument beyond the default Int range).
+        for (const Expr* expr : defaults_) {
+            const auto index = expressions_.at(expr);
+            if (nodes_[index].value.literal != Literal::None) materialize(index, default_type(nodes_[index].value));
+        }
+        ScalarTypes result;
+        for (const auto& [expr, index] : expressions_) result.expressions_.emplace(expr, nodes_[index].value.type);
+        for (usize i = 0; i < resolution_.bindings().size(); ++i) result.bindings_.push_back(nodes_[i].value.type);
+        return result;
+    }
+
+private:
+    Type annotation(const TypeExpr* type) const {
+        if (!type) return Type::Deferred;
+        if (type->kind == TypeKind::Unit) return Type::Unit;
+        if (type->kind != TypeKind::Path || !type->args.empty() || type->path.parts.empty()) return Type::Deferred;
+        const auto* ref = resolution_.reference(type->path.parts.back().span);
+        if (!ref || ref->state != ResolutionState::Resolved) return Type::Deferred;
+        const auto candidates = resolution_.candidates(ref->target);
+        if (candidates.size() != 1) return Type::Deferred;
+        const auto& binding = resolution_.binding(candidates.front());
+        if (binding.kind != BindingKind::BuiltinType) return Type::Deferred;
+        for (Type builtin : builtins)
+            if (names_.str(binding.name.sym) == scalar_type_name(builtin)) return builtin;
+        return Type::Deferred;
+    }
+
+    template <typename T>
+    void push(const T* node, Type returns = Type::Deferred, bool discarded = false) {
+        if (node) walk_.push_back({node, returns, discarded});
+    }
+    usize expression(const Expr* expr) {
+        const auto [it, inserted] = expressions_.try_emplace(expr, nodes_.size());
+        if (inserted) nodes_.push_back({.expr = expr});
+        return it->second;
+    }
+    void dependency(usize parent, const Expr* expr) {
+        if (!expr) return;
+        const auto child = expression(expr);
+        nodes_[parent].deps.push_back(child);
+    }
+    void child(usize parent, const Expr* expr, Type returns, bool discarded = false) {
+        if (!expr) return;
+        dependency(parent, expr);
+        push(expr, returns, discarded);
+    }
+    Value value(const Expr* expr) const {
+        return expr ? nodes_[expressions_.at(expr)].value : Value{Type::Unit};
+    }
+    void declare(Name name, const TypeExpr* type, const Expr* init) {
+        const auto [first, last] = declarations_.equal_range(name.span.lo);
+        for (auto it = first; it != last; ++it) {
+            auto& node = nodes_[it->second];
+            node.annotation = type;
+            node.init = init;
+        }
+    }
+    void parameters(List<Param> params) {
+        for (const auto& p : params) {
+            declare(p.name, p.type, nullptr);
+            push(p.default_value);
+            if (p.default_value) requirements_.push_back({p.default_value, annotation(p.type), p.default_value->span});
+        }
+    }
+    void condition(const Cond& cond, Type returns) {
+        push(cond.expr, returns);
+        if (!cond.is_let) requirements_.push_back({cond.expr, Type::Bool, cond.span});
+        // Conditional optional bindings are deferred along with optional types.
+    }
+
+    void collect(const Item& item, Type, bool) {
+        for (const auto& attr : item.attrs)
+            for (const auto& arg : attr.args) push(arg.value);
+        if (const auto* type = as_type_decl(&item)) {
+            parameters(type->ctor_params);
+            for (const auto& base : type->supers)
+                for (const auto& arg : base.args) push(arg.value);
+            for (const Item* member : type->members) push(member);
+        } else if (const auto* fun = as<FunItem>(&item)) {
+            parameters(fun->sig.params);
+            const Type returns = fun->sig.ret ? annotation(fun->sig.ret) : fun->expr_body ? Type::Deferred : Type::Unit;
+            push(fun->body, returns, !fun->expr_body);
+            if (fun->body && fun->expr_body && fun->sig.ret)
+                requirements_.push_back({fun->body, returns, fun->body->span});
+            else if (fun->body && fun->expr_body) defaults_.push_back(fun->body);
+        } else if (const auto* var = as<VarItem>(&item)) {
+            declare(var->name, var->type, var->init);
+            push(var->init);
+        } else if (const auto* ext = as<ExternItem>(&item)) {
+            for (const Item* nested : ext->items) push(nested);
+        } else if (const auto* init = as<InitItem>(&item)) {
+            parameters(init->params);
+            push(init->body, Type::Unit, true);
+        } else if (const auto* deinit = as<DeinitItem>(&item)) push(deinit->body, Type::Unit, true);
+    }
+
+    void collect(const Stmt& stmt, Type returns, bool discarded) {
+        switch (stmt.kind) {
+            case StmtKind::Var: {
+                const auto& var = *cast<VarStmt>(&stmt);
+                declare(var.name, var.type, var.init);
+                push(var.init, returns);
+                break;
+            }
+            case StmtKind::Return: {
+                const auto* ret = cast<ReturnStmt>(&stmt);
+                push(ret->value, returns);
+                requirements_.push_back({ret->value, returns, ret->value ? ret->value->span : ret->span});
+                break;
+            }
+            case StmtKind::Throw: push(cast<ThrowStmt>(&stmt)->value, returns); break;
+            case StmtKind::Expr: push(cast<ExprStmt>(&stmt)->expr, returns, discarded); break;
+            case StmtKind::Assign: {
+                const auto& assign = *cast<AssignStmt>(&stmt);
+                push(assign.target, returns);
+                push(assign.value, returns);
+                requirements_.push_back({assign.value, Type::Deferred, assign.span, assign.target, assign.op});
+                break;
+            }
+            case StmtKind::While: {
+                const auto& loop = *cast<WhileStmt>(&stmt);
+                condition(loop.cond, returns);
+                push(loop.body, returns, true);
+                break;
+            }
+            case StmtKind::For: {
+                const auto& loop = *cast<ForStmt>(&stmt);
+                push(loop.iter, returns);
+                push(loop.body, returns, true);
+                break;
+            }
+            case StmtKind::Loop: push(cast<LoopStmt>(&stmt)->body, returns, true); break;
+            case StmtKind::Defer: push(cast<DeferStmt>(&stmt)->body, returns, true); break;
+            case StmtKind::Break: case StmtKind::Continue: break;
+        }
+    }
+
+    void collect(const Pattern& pat, Type returns, bool) {
+        if (const auto* literal = as<LiteralPat>(&pat)) push(literal->literal, returns);
+        else if (const auto* alt = as<AltPat>(&pat)) {
+            for (const Pattern* p : alt->alts) push(p, returns);
+        } else if (const auto* c = as<CasePat>(&pat)) {
+            for (const Pattern* p : c->args) push(p, returns);
+        }
+    }
+
+    void collect(const Expr& expr, Type returns, bool discarded) {
+        const usize index = expression(&expr);
+        if (discarded) defaults_.push_back(&expr);
+        switch (expr.kind) {
+            case ExprKind::Name: {
+                const auto* ref = resolution_.reference(cast<NameExpr>(&expr)->name.span);
+                if (ref && ref->state == ResolutionState::Resolved) {
+                    const auto candidates = resolution_.candidates(ref->target);
+                    if (candidates.size() == 1) nodes_[index].deps.push_back(candidates.front().value);
+                }
+                break;
+            }
+            case ExprKind::Paren: child(index, cast<ParenExpr>(&expr)->inner, returns, discarded); break;
+            case ExprKind::Unary: child(index, cast<UnaryExpr>(&expr)->operand, returns); break;
+            case ExprKind::Binary: {
+                const auto& b = *cast<BinaryExpr>(&expr);
+                child(index, b.lhs, returns);
+                child(index, b.rhs, returns);
+                break;
+            }
+            case ExprKind::Block: {
+                const auto stmts = cast<BlockExpr>(&expr)->stmts;
+                // Only the last statement can supply a block's deferred result.
+                // Function, loop and cleanup bodies discard every expression.
+                for (usize i = 0; i < stmts.size(); ++i) push(stmts[i], returns, discarded || i + 1 < stmts.size());
+                break;
+            }
+            case ExprKind::If: {
+                const auto& branch = *cast<IfExpr>(&expr);
+                condition(branch.cond, returns);
+                child(index, branch.then_block, returns, discarded);
+                child(index, branch.else_branch, returns, discarded);
+                break;
+            }
+            case ExprKind::Match: {
+                const auto& match = *cast<MatchExpr>(&expr);
+                child(index, match.scrutinee, returns);
+                for (const auto& arm : match.arms) {
+                    push(arm.pattern, returns);
+                    child(index, arm.guard, returns);
+                    child(index, arm.body, returns, discarded);
+                    if (arm.guard) requirements_.push_back({arm.guard, Type::Bool, arm.guard->span});
+                }
+                break;
+            }
+            case ExprKind::Interp:
+                for (const Expr* part : cast<InterpExpr>(&expr)->exprs) child(index, part, returns);
+                break;
+            case ExprKind::Array:
+                for (const Expr* elem : cast<ArrayExpr>(&expr)->elems) child(index, elem, returns);
+                break;
+            case ExprKind::Call: {
+                const auto& call = *cast<CallExpr>(&expr);
+                child(index, call.callee, returns);
+                for (const auto& arg : call.args) child(index, arg.value, returns);
+                break;
+            }
+            case ExprKind::Member: child(index, cast<MemberExpr>(&expr)->base, returns); break;
+            case ExprKind::OptMember: child(index, cast<OptMemberExpr>(&expr)->base, returns); break;
+            case ExprKind::Index: {
+                const auto& subscript = *cast<IndexExpr>(&expr);
+                child(index, subscript.base, returns);
+                child(index, subscript.index, returns);
+                break;
+            }
+            case ExprKind::Cast: child(index, cast<CastExpr>(&expr)->operand, returns); break;
+            case ExprKind::Unwrap: child(index, cast<UnwrapExpr>(&expr)->operand, returns); break;
+            case ExprKind::GenericInst: child(index, cast<GenericInstExpr>(&expr)->base, returns); break;
+            case ExprKind::Unsafe: child(index, cast<UnsafeExpr>(&expr)->block, returns, discarded); break;
+            default: break;
+        }
+    }
+
+    Value invalid(Span span, std::string_view domain) {
+        diag_.error(DiagCode::InvalidScalarOperand, span, "operator requires {} operands", domain);
+        return {Type::Error};
+    }
+    Value compatible(usize index, Type expected, Span span) {
+        Value actual = nodes_[index].value;
+        if (!known(expected) || unavailable(actual)) return actual;
+        if ((actual.literal == Literal::Integer && integer(expected)) ||
+            (actual.literal == Literal::Float && floating(expected))) return materialize(index, expected);
+        if (default_type(actual) == expected || actual.type == Type::Never) return actual;
+        diag_.error(DiagCode::ScalarTypeMismatch, span, "expected '{}', found '{}'",
+                    scalar_type_name(expected), scalar_type_name(default_type(actual)));
+        if (actual.literal != Literal::None) materialize(index, default_type(actual));
+        // Preserve the expression's actual type; the declaration/check fails.
+        return {Type::Error};
+    }
+    Value require(const Expr* expr, Type expected, Span span) {
+        if (expr) return compatible(expressions_.at(expr), expected, span);
+        if (known(expected) && expected != Type::Unit) {
+            diag_.error(DiagCode::ScalarTypeMismatch, span, "expected '{}', found 'Unit'", scalar_type_name(expected));
+            return {Type::Error};
+        }
+        return {Type::Unit};
+    }
+
+    Value materialize(usize root, Type type) {
+        struct Pending { usize index; bool negative; };
+        std::vector<Pending> pending{{root, false}};
+        std::vector<usize> visited;
+        while (!pending.empty()) {
+            const auto [index, negative] = pending.back();
+            pending.pop_back();
+            auto& node = nodes_[index];
+            if (node.value.literal == Literal::None) continue;
+            node.value = {type};
+            visited.push_back(index);
+            const Expr* expr = node.expr;
+            if (const auto* number = as<IntExpr>(expr)) {
+                const unsigned bits = width(type);
+                const bool unsign = unsigned_integer(type);
+                const u64 max = unsign ? std::numeric_limits<u64>::max() >> (64 - bits)
+                                       : (u64{1} << (bits - 1)) - 1;
+                if (number->value > max + static_cast<u64>(negative && !unsign)) {
+                    diag_.error(DiagCode::ScalarLiteralRange, expr->span,
+                                "integer literal is out of range for '{}'", scalar_type_name(type));
+                    node.value = {Type::Error};
+                }
+            } else if (const auto* float_literal = as<FloatExpr>(expr)) {
+                if (type == Type::Float32 && float_literal->value > std::numeric_limits<float>::max()) {
+                    diag_.error(DiagCode::ScalarLiteralRange, expr->span, "float literal is out of range for 'Float32'");
+                    node.value = {Type::Error};
+                }
+            } else if (const auto* paren = as<ParenExpr>(expr)) {
+                pending.push_back({expressions_.at(paren->inner), negative});
+            } else if (const auto* unary = as<UnaryExpr>(expr)) {
+                if (unary->op == UnOp::Neg && unsigned_integer(type))
+                    node.value = invalid(expr->span, "signed numeric");
+                pending.push_back({expressions_.at(unary->operand), unary->op == UnOp::Neg});
+            } else if (const auto* binary = as<BinaryExpr>(expr)) {
+                pending.push_back({expressions_.at(binary->lhs), false});
+                pending.push_back({expressions_.at(binary->rhs), false});
+            }
+        }
+        for (auto it = visited.rbegin(); it != visited.rend(); ++it) {
+            auto& node = nodes_[*it];
+            for (const auto dep : node.deps)
+                if (nodes_[dep].value.type == Type::Error) node.value = {Type::Error};
+        }
+        return nodes_[root].value;
+    }
+
+    Value binary(const BinaryExpr& expr) {
+        auto lhs = value(expr.lhs), rhs = value(expr.rhs);
+        const bool logical = expr.op == BinOp::And || expr.op == BinOp::Or;
+        if (logical) {
+            // Each Bool requirement is independent of the other operand's
+            // pending type. Keep the result deferred until both are checked.
+            const auto a = require(expr.lhs, Type::Bool, expr.lhs->span);
+            const auto b = require(expr.rhs, Type::Bool, expr.rhs->span);
+            if (a.type == Type::Error || b.type == Type::Error) return {Type::Error};
+            if (unavailable(a) || unavailable(b)) return {};
+            return {Type::Bool};
+        }
+        if (lhs.type == Type::Error || rhs.type == Type::Error) return {Type::Error};
+        if (expr.op == BinOp::Coalesce || expr.op == BinOp::Range || expr.op == BinOp::RangeExcl) return {};
+        const bool equality = expr.op == BinOp::Eq || expr.op == BinOp::Ne;
+        const bool ordering = expr.op >= BinOp::Lt && expr.op <= BinOp::Ge;
+        const bool ints = expr.op == BinOp::Rem || expr.op == BinOp::WrapAdd || expr.op == BinOp::WrapSub ||
+                          expr.op == BinOp::WrapMul || expr.op == BinOp::BitOr || expr.op == BinOp::BitXor ||
+                          expr.op == BinOp::BitAnd || expr.op == BinOp::Shl || expr.op == BinOp::Shr;
+        const auto domain = ints ? OperandDomain::Integer : ordering ? OperandDomain::Ordered : OperandDomain::Numeric;
+        if (!equality && (!in_domain(lhs, domain) || !in_domain(rhs, domain)))
+            return invalid(expr.span, ints ? "integer" : "numeric");
+        // Operand domains can fail independently; matching operand types and
+        // inferring the result still require both operands to be available.
+        if (unavailable(lhs) || unavailable(rhs)) return {};
+        // Never can stand in for a required operand type. It does not make an
+        // otherwise invalid operator (such as String arithmetic) available.
+        if (lhs.type == Type::Never && rhs.type == Type::Never)
+            return {equality || ordering ? Type::Bool : Type::Never};
+        if (lhs.type == Type::Never) lhs = rhs;
+        if (rhs.type == Type::Never) rhs = lhs;
+        if (ordering && ((lhs.type == Type::Char) != (rhs.type == Type::Char))) return invalid(expr.span, "numeric");
+        if (lhs.literal != Literal::None && rhs.literal == Literal::None)
+            lhs = require(expr.lhs, rhs.type, expr.lhs->span);
+        else if (rhs.literal != Literal::None && lhs.literal == Literal::None)
+            rhs = require(expr.rhs, lhs.type, expr.rhs->span);
+        if (lhs.type == Type::Error || rhs.type == Type::Error) return {Type::Error};
+        if (lhs.type != rhs.type || lhs.literal != rhs.literal) {
+            diag_.error(DiagCode::ScalarTypeMismatch, expr.span, "operator operands have different types '{}' and '{}'",
+                        scalar_type_name(default_type(lhs)), scalar_type_name(default_type(rhs)));
+            return {Type::Error};
+        }
+        if (equality || ordering) {
+            // Comparisons have Bool results, so numeric operands must default
+            // here rather than taking the result's contextual type.
+            if (lhs.literal != Literal::None) {
+                const auto a = materialize(expressions_.at(expr.lhs), default_type(lhs));
+                const auto b = materialize(expressions_.at(expr.rhs), default_type(rhs));
+                if (a.type == Type::Error || b.type == Type::Error) return {Type::Error};
+            }
+            return {Type::Bool};
+        }
+        return lhs;
+    }
+
+    void evaluate(usize index) {
+        auto& node = nodes_[index];
+        const Expr* expr = node.expr;
+        if (!expr) {
+            const Type declared = annotation(node.annotation);
+            Value initial = node.init ? value(node.init) : Value{};
+            if (node.annotation) {
+                if (node.init && known(declared)) initial = require(node.init, declared, node.init->span);
+                node.value = {initial.type == Type::Error ? Type::Error : declared};
+            } else if (node.init) {
+                if (initial.literal != Literal::None) initial = materialize(expressions_.at(node.init), default_type(initial));
+                node.value = initial;
+            }
+            return;
+        }
+        switch (expr->kind) {
+            case ExprKind::Int: node.value.literal = Literal::Integer; break;
+            case ExprKind::Float: node.value.literal = Literal::Float; break;
+            case ExprKind::Bool: node.value = {Type::Bool}; break;
+            case ExprKind::Char: node.value = {Type::Char}; break;
+            case ExprKind::String: case ExprKind::Interp: node.value = {Type::String}; break;
+            case ExprKind::Unit: node.value = {Type::Unit}; break;
+            case ExprKind::Name:
+                if (!node.deps.empty()) node.value = nodes_[node.deps.front()].value;
+                break;
+            case ExprKind::Paren: node.value = value(cast<ParenExpr>(expr)->inner); break;
+            case ExprKind::Binary: node.value = binary(*cast<BinaryExpr>(expr)); break;
+            case ExprKind::Unary: {
+                const auto& unary = *cast<UnaryExpr>(expr);
+                const auto operand = value(unary.operand);
+                if (unary.op == UnOp::Not) {
+                    const auto checked = require(unary.operand, Type::Bool, unary.operand->span);
+                    node.value = {unavailable(checked) ? checked.type : Type::Bool};
+                } else if (unary.op == UnOp::Neg || unary.op == UnOp::BitNot) {
+                    node.value = operand;
+                    if (!unavailable(operand) && operand.type != Type::Never &&
+                        ((unary.op == UnOp::Neg && (!numeric(operand) || unsigned_integer(operand.type))) ||
+                         (unary.op == UnOp::BitNot && !integer(operand))))
+                        node.value = invalid(expr->span, unary.op == UnOp::Neg ? "signed numeric" : "integer");
+                }
+                break;
+            }
+            default: break;
+        }
+    }
+
+    const Resolution& resolution_;
+    const Interner& names_;
+    DiagEngine& diag_;
+    std::vector<Node> nodes_;
+    std::unordered_map<const Expr*, usize> expressions_;
+    // A promoted constructor field and its parameter have separate binding
+    // IDs at the same name span. Both inherit the declaration's annotation.
+    std::unordered_multimap<u32, usize> declarations_;
+    std::vector<Walk> walk_;
+    std::vector<Requirement> requirements_;
+    std::vector<const Expr*> defaults_;
+};
+
+ScalarTypes check_scalar_types(const ast::File& file, const Resolution& resolution,
+                              const Interner& names, DiagEngine& diag) {
+    return ScalarChecker(resolution, names, diag).run(file);
+}
+
+}  // namespace phs

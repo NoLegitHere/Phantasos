@@ -40,9 +40,12 @@ CheckResult FrontendSession::check(FileId file) {
         if (!diag_.has_errors(file)) {
             validate_file(*syntax, names_, diag_);
             if (!diag_.has_errors(file)) state.resolution = resolve_file(*syntax, names_, diag_);
+            if (!diag_.has_errors(file))
+                state.scalar_types = check_scalar_types(*syntax, *state.resolution, names_, diag_);
         }
     }
-    return {syntax, state.resolution ? &*state.resolution : nullptr};
+    return {syntax, state.resolution ? &*state.resolution : nullptr,
+            state.scalar_types ? &*state.scalar_types : nullptr};
 }
 
 }  // namespace phs

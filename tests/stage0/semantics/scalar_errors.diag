@@ -1,0 +1,75 @@
+scalar_errors.phs:16:24: error[E0400]: expected 'Bool', found 'Int'
+   16 | let badBinding: Bool = 1
+      |                        ^
+scalar_errors.phs:17:19: error[E0401]: operator requires numeric operands
+   17 | let badOperator = true + false
+      |                   ^^^^^^^^^^^^
+scalar_errors.phs:18:24: error[E0402]: integer literal is out of range for 'Int8'
+   18 | let badLiteral: Int8 = 128
+      |                        ^^^
+scalar_errors.phs:20:28: error[E0400]: expected 'Int64', found 'Int8'
+   20 | let badConversion: Int64 = small
+      |                            ^^^^^
+scalar_errors.phs:21:25: error[E0402]: float literal is out of range for 'Float32'
+   21 | let badFloat: Float32 = 1.0e39
+      |                         ^^^^^^
+scalar_errors.phs:22:26: error[E0401]: operator requires signed numeric operands
+   22 | let badUnsigned: UInt8 = -1
+      |                          ^^
+scalar_errors.phs:23:27: error[E0400]: expected 'Bool', found 'Int'
+   23 | fun defaults(flag: Bool = 1): Bool = 0
+      |                           ^
+scalar_errors.phs:23:38: error[E0400]: expected 'Bool', found 'Int'
+   23 | fun defaults(flag: Bool = 1): Bool = 0
+      |                                      ^
+scalar_errors.phs:24:22: error[E0400]: expected 'Int', found 'Unit'
+   24 | fun returns(): Int { return }
+      |                      ^^^^^^
+scalar_errors.phs:27:5: error[E0400]: expected 'Int', found 'Bool'
+   27 |     count = false
+      |     ^^^^^^^^^^^^^
+scalar_errors.phs:28:8: error[E0400]: expected 'Bool', found 'Int'
+   28 |     if 1 {}
+      |        ^
+scalar_errors.phs:29:11: error[E0400]: expected 'Bool', found 'String'
+   29 |     while "bad" { break }
+      |           ^^^^^
+scalar_errors.phs:30:24: error[E0400]: expected 'Bool', found 'Int'
+   30 |     match count { 1 if 2 -> () }
+      |                        ^
+scalar_errors.phs:34:8: error[E0400]: expected 'Bool', found 'Int'
+   34 |     if 1 && opaque() {}
+      |        ^
+scalar_errors.phs:35:20: error[E0400]: expected 'Bool', found 'Int'
+   35 |     if opaque() && 1 {}
+      |                    ^
+scalar_errors.phs:36:8: error[E0400]: expected 'Bool', found 'Int'
+   36 |     if 1 || opaque() {}
+      |        ^
+scalar_errors.phs:37:20: error[E0400]: expected 'Bool', found 'Int'
+   37 |     if opaque() || 1 {}
+      |                    ^
+scalar_errors.phs:40:5: error[E0402]: integer literal is out of range for 'Int'
+   40 |     9223372036854775808
+      |     ^^^^^^^^^^^^^^^^^^^
+scalar_errors.phs:41:6: error[E0402]: integer literal is out of range for 'Int'
+   41 |     (9223372036854775808 + 1)
+      |      ^^^^^^^^^^^^^^^^^^^
+scalar_errors.phs:44:52: error[E0400]: expected 'Bool', found 'Int8'
+   44 | struct BadStruct(value: Int8) { fun read(): Bool = value }
+      |                                                    ^^^^^
+scalar_errors.phs:45:54: error[E0400]: expected 'Bool', found 'Int8'
+   45 | class BadClass(let value: Int8) { fun read(): Bool = value }
+      |                                                      ^^^^^
+scalar_errors.phs:46:54: error[E0400]: expected 'Bool', found 'Int8'
+   46 | actor BadActor(var value: Int8) { fun read(): Bool = value }
+      |                                                      ^^^^^
+scalar_errors.phs:48:29: error[E0401]: operator requires numeric operands
+   48 | let badDeferredArithmetic = true + opaqueNumber()
+      |                             ^^^^^^^^^^^^^^^^^^^^^
+scalar_errors.phs:49:23: error[E0401]: operator requires integer operands
+   49 | let badDeferredBits = opaqueNumber() & 1.0
+      |                       ^^^^^^^^^^^^^^^^^^^^
+scalar_errors.phs:50:46: error[E0401]: compound assignment requires numeric operands
+   50 | fun badDeferredCompound() { var flag = true; flag += opaqueNumber() }
+      |                                              ^^^^^^^^^^^^^^^^^^^^^^

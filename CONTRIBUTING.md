@@ -53,6 +53,15 @@
   traversing ASTs: flat expression chains can be much deeper than parser
   nesting limits. Add semantic rules to `docs/spec` and update the
   [roadmap](docs/roadmap.md) when a milestone advances.
+- After structural validation succeeds, `resolve_file` returns an owning
+  `Resolution` containing scopes, declaration IDs, shared overload sets and
+  reference records. Keep its AST and interner alive. IDs belong to one
+  result; views remain valid until that result is moved or destroyed.
+  Use `reference(Span)` and `candidates(target)` to inspect a use. A deferred
+  reference requires later type or package information; it is not a successful
+  member lookup. Scope binding lists describe the completed scope; reference
+  targets preserve sequential visibility at each use. Constructor defaults
+  expose the same parameter IDs as the primary initializer.
 - Keep use of the C++ standard library minimal, because stage0 is frozen after
   self-hosting.
 
@@ -65,6 +74,9 @@
   frontend library as the CLI and run in both platform jobs and under sanitizers.
   The `sema` suite covers declaration and control-flow contexts, binding
   diagnostics and notes, pattern alternatives, AST immutability, and long trees.
+  The `resolve` suite checks binding identity, forward declarations, overload
+  sets, namespaces, generics, sequential visibility, constructor scopes,
+  pattern scopes, deferred references, file isolation and iterative traversal.
 
 - Run `python tests/test_license_check.py` for license-fixer regressions,
   including encoding declarations, BOMs, line endings, and idempotence.

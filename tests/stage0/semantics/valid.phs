@@ -14,6 +14,11 @@
 // limitations under the License.
 
 type Number = Int
+enum E { A(Int), B(Int), Empty }
+let failure = 1
+let items = [1, 2]
+fun cleanup() {}
+async fun task() {}
 interface Sequence { type Element; type Index = Int }
 class Counter<T>(let value: T) {
     init { return }

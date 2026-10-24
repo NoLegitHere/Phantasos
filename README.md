@@ -101,6 +101,15 @@ propagates the required C++23 and no-exception/no-RTTI settings. Focused C++
 tests are enabled by default; use `-DBUILD_TESTING=OFF` to omit them, following
 [CMake's CTest convention](https://cmake.org/cmake/help/v3.28/module/CTest.html).
 
+`FrontendSession` in `frontend/session.hpp` owns source files, keyword-seeded
+interning, diagnostics, AST storage and cached name-resolution results.
+Add or load a file through `session.sources()`, then call `session.parse(id)`
+or `session.check(id)`. Query `session.diagnostics().has_errors(id)` for that
+file's result. Errors in other files do not block checking, and repeated calls
+do not duplicate diagnostics. Returned AST and resolution pointers remain
+valid until the session is destroyed. Files still resolve independently;
+this does not implement package or module loading.
+
 Source files are limited to **64 MiB of raw input** by default, before BOM and
 line-ending normalization. Oversized files are rejected before reading their
 contents; the CLI returns exit code 2 for source-loading failures. Library

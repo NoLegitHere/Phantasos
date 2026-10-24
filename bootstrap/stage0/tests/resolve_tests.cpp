@@ -19,34 +19,30 @@
 #include <initializer_list>
 #include <string>
 
-#include "sema/resolve.hpp"
+#include "frontend/session.hpp"
 #include "sema/validate.hpp"
 #include "syntax/ast_dump.hpp"
-#include "syntax/lexer.hpp"
-#include "syntax/parser.hpp"
 
 using namespace phs;
 
 namespace {
 struct Frontend {
-    SourceManager sources;
-    Interner names;
-    DiagEngine diag{sources};
-    Arena arena;
+    FrontendSession session;
+    SourceManager& sources = session.sources();
+    Interner& names = session.names();
+    DiagEngine& diag = session.diagnostics();
     std::string source;
     const ast::File* file = nullptr;
     Resolution result;
-
-    Frontend() { seed_keywords(names); }
 
     void check(std::string text, std::initializer_list<DiagCode> expected = {}, bool dump = true) {
         source = std::move(text);
         const auto id = sources.add("resolve.phs", source);
         CHECK(id);
-        file = parse_file(*id, lex_file(sources, *id, names, diag), arena, names, diag);
-        if (diag.error_count() == 0) validate_file(*file, names, diag);
-        if (diag.error_count()) diag.render(stderr);
-        CHECK(diag.error_count() == 0);
+        file = session.parse(*id);
+        if (!diag.has_errors(*id)) validate_file(*file, names, diag);
+        if (diag.has_errors(*id)) diag.render(stderr);
+        CHECK(!diag.has_errors(*id));
         const auto before = dump ? dump_ast(*file, names) : std::string{};
         result = resolve_file(*file, names, diag);
         if (dump) CHECK(dump_ast(*file, names) == before);
@@ -333,7 +329,7 @@ void isolation_and_long_trees() {
     const auto original = f.result.references().size();
     const auto second_id = f.sources.add("other.phs", "let other = x\n");
     CHECK(second_id);
-    const auto* second = parse_file(*second_id, lex_file(f.sources, *second_id, f.names, f.diag), f.arena, f.names, f.diag);
+    const auto* second = f.session.parse(*second_id);
     const auto result = resolve_file(*second, f.names, f.diag);
     CHECK(f.diag.error_count() == 1);
     CHECK(f.diag.all().front().code == DiagCode::UnknownValue);

@@ -80,8 +80,11 @@ FunDecl = "fun", Ident, [ GenericParams ], "(", [ ParamList ], ")",
 FunBody = Block | "=", Expr ;
 Throws = "throws", [ "(", Type, ")" ] ;
 ParamList = Param, { ",", Param }, [ "," ] ;
-Param = [ "let" | "var" ], Ident, ":", [ Convention ], Type,
-        [ "=", Expr ] ;
+Param = Ident, ":", [ Convention ], Type, [ "=", Expr ] ;
+CtorParamList = CtorParam, { ",", CtorParam }, [ "," ] ;
+CtorParam = [ "let" | "var" ], Param ;
+(* let/var prefixes are restricted to primary-constructor parameters.
+   Stage0 parses misplaced prefixes for recovery and rejects them in check. *)
 Convention = "borrow" | "inout" | "own" ;
 
 ClassDecl = "class", TypeHead, [ Body ] ;
@@ -89,7 +92,7 @@ StructDecl = "struct", TypeHead, [ Body ] ;
 ActorDecl = "actor", TypeHead, [ Body ] ;
 InterfaceDecl = "interface", Ident, [ GenericParams ], [ ":", SuperList ],
                 [ WhereClause ], Body ;
-TypeHead = Ident, [ GenericParams ], [ "(", [ ParamList ], ")" ],
+TypeHead = Ident, [ GenericParams ], [ "(", [ CtorParamList ], ")" ],
            [ ":", SuperList ], [ WhereClause ] ;
 SuperList = SuperEntry, { ",", SuperEntry } ;
 SuperEntry = Type, [ "(", [ ArgList ], ")" ] ;

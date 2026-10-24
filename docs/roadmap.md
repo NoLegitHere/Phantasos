@@ -24,6 +24,7 @@ foundation. Complete.
 - [x] File-local name resolution: collect declarations and lexical scopes,
   resolve value/type references, and retain bindings and overload sets.
   Cover forward declarations, generic scopes and sequential local shadowing.
+- [x] Frontend session ownership, cached phase results and per-file diagnostics.
 - [ ] **Next: type checking and inference.** Built-ins, calls, operators, conversions,
   generics, optionals, inheritance, visibility, and typed errors.
 - [ ] Definite initialization, moves, borrows and destructor checks.

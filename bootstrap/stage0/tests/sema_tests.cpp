@@ -20,29 +20,25 @@
 #include <string>
 #include <vector>
 
+#include "frontend/session.hpp"
 #include "sema/validate.hpp"
 #include "syntax/ast_dump.hpp"
-#include "syntax/lexer.hpp"
-#include "syntax/parser.hpp"
 
 using namespace phs;
 
 namespace {
 struct Frontend {
-    SourceManager sources;
-    Interner names;
-    DiagEngine diag{sources};
-    Arena arena;
-
-    Frontend() { seed_keywords(names); }
+    FrontendSession session;
+    SourceManager& sources = session.sources();
+    Interner& names = session.names();
+    DiagEngine& diag = session.diagnostics();
 
     const ast::File* parse(std::string_view source) {
-        const usize before = diag.error_count();
         const auto file = sources.add("test.phs", source);
         CHECK(file);
-        const auto* ast = parse_file(*file, lex_file(sources, *file, names, diag), arena, names, diag);
-        if (diag.error_count() != before) diag.render(stderr);
-        CHECK(diag.error_count() == before);
+        const auto* ast = session.parse(*file);
+        if (diag.has_errors(*file)) diag.render(stderr);
+        CHECK(!diag.has_errors(*file));
         return ast;
     }
 
@@ -367,6 +363,34 @@ void flat_trees_and_multiple_files() {
     CHECK(f.diag.error_count() == 1);
     CHECK(f.diag.all()[0].span.file == invalid->file);
 }
+
+void parameter_binding_contexts() {
+    Frontend valid;
+    valid.check(R"(
+class C(let x: Int, var y: Int) { init(z: Int) {} }
+struct S(let x: Int, var y: Int, z: Int) {}
+actor A(let x: Int, var y: Int) {}
+fun regular(x: borrow Int, y: inout Int, z: own Int = 1) {}
+)", {});
+
+    Frontend invalid;
+    invalid.check(R"(
+fun top(let x: Int, var y: Int) {}
+extern "C" { fun foreign(let x: Int) }
+class C {
+    fun method(var x: Int) {}
+    init(let x: Int, var y: Int) {}
+}
+interface I { fun required(let x: Int) }
+)", {DiagCode::InvalidParameterBinding, DiagCode::InvalidParameterBinding,
+      DiagCode::InvalidParameterBinding, DiagCode::InvalidParameterBinding,
+      DiagCode::InvalidParameterBinding, DiagCode::InvalidParameterBinding, DiagCode::InvalidParameterBinding});
+    for (const auto& d : invalid.diag.all()) {
+        const auto& text = invalid.sources.file(d.span.file).text;
+        const auto keyword = text.substr(d.span.lo, d.span.hi - d.span.lo);
+        CHECK(keyword == "let" || keyword == "var");
+    }
+}
 }  // namespace
 
 int main() {
@@ -382,4 +406,5 @@ int main() {
     valid_contexts_and_shadowing();
     expression_children();
     flat_trees_and_multiple_files();
+    parameter_binding_contexts();
 }

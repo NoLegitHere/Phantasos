@@ -103,6 +103,14 @@ private:
 
     void params(List<Param> parameters, Context context) {
         unique_names(parameters);
+        for (const Param& p : parameters) {
+            if (p.binding == Binding::Let || p.binding == Binding::Var) {
+                const Span keyword{p.span.file, p.span.lo, p.span.lo + 3};
+                diag_.error(DiagCode::InvalidParameterBinding, keyword,
+                            "'{}' parameter bindings are only allowed in primary constructors",
+                            p.binding == Binding::Let ? "let" : "var");
+            }
+        }
         defaults(parameters, context);
     }
 

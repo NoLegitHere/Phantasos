@@ -185,6 +185,9 @@ signature cannot mention less-visible types.
 
 ## 3.12 Binding and control-flow constraints [Core]
 
+- Parameter prefixes `let` and `var` are allowed only in primary
+  constructors. Ordinary functions, methods, extern functions and secondary
+  `init(...)` declarations cannot use them; stage0 reports `E0207`.
 - Names must be unique within each parameter list, generic parameter list,
   or block's local bindings. A nested scope may shadow an outer binding;
   the function body is a nested scope of its parameters. Enum payload

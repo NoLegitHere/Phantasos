@@ -1,0 +1,21 @@
+parameter_bindings.phs:20:13: error[E0207]: 'let' parameter bindings are only allowed in primary constructors
+   20 | fun invalid(let /* not a field */ x: Int, var y: Int = 0) {}
+      |             ^^^
+parameter_bindings.phs:20:43: error[E0207]: 'var' parameter bindings are only allowed in primary constructors
+   20 | fun invalid(let /* not a field */ x: Int, var y: Int = 0) {}
+      |                                           ^^^
+parameter_bindings.phs:21:26: error[E0207]: 'let' parameter bindings are only allowed in primary constructors
+   21 | extern "C" { fun foreign(let x: Int) }
+      |                          ^^^
+parameter_bindings.phs:23:16: error[E0207]: 'var' parameter bindings are only allowed in primary constructors
+   23 |     fun method(var x: Int) {}
+      |                ^^^
+parameter_bindings.phs:24:10: error[E0207]: 'let' parameter bindings are only allowed in primary constructors
+   24 |     init(let x: Int, var y: Int) {}
+      |          ^^^
+parameter_bindings.phs:24:22: error[E0207]: 'var' parameter bindings are only allowed in primary constructors
+   24 |     init(let x: Int, var y: Int) {}
+      |                      ^^^
+parameter_bindings.phs:26:28: error[E0207]: 'let' parameter bindings are only allowed in primary constructors
+   26 | interface I { fun required(let x: Int) }
+      |                            ^^^

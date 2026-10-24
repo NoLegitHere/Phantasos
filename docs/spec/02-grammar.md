@@ -32,14 +32,16 @@ FunDecl       = 'fun' Ident [ GenericParams ] '(' [ ParamList ] ')'
 FunBody       = Block | '=' Expr
 Throws        = 'throws' [ '(' Type ')' ]
 ParamList     = Param { ',' Param } [ ',' ]
-Param         = [ 'let' | 'var' ] Ident ':' [ Convention ] Type [ '=' Expr ]
+Param         = Ident ':' [ Convention ] Type [ '=' Expr ]
+CtorParamList = CtorParam { ',' CtorParam } [ ',' ]
+CtorParam     = [ 'let' | 'var' ] Param
 Convention    = 'borrow' | 'inout' | 'own'
 
 ClassDecl     = 'class'     TypeHead [ Body ]
 StructDecl    = 'struct'    TypeHead [ Body ]
 ActorDecl     = 'actor'     TypeHead [ Body ]
 InterfaceDecl = 'interface' Ident [ GenericParams ] [ ':' SuperList ] [ WhereClause ] Body
-TypeHead      = Ident [ GenericParams ] [ '(' [ ParamList ] ')' ] [ ':' SuperList ] [ WhereClause ]
+TypeHead      = Ident [ GenericParams ] [ '(' [ CtorParamList ] ')' ] [ ':' SuperList ] [ WhereClause ]
 SuperList     = SuperEntry { ',' SuperEntry }
 SuperEntry    = Type [ '(' [ ArgList ] ')' ]               (* args only for the superclass *)
 Body          = '{' { Item Terms } '}'
@@ -66,6 +68,10 @@ WhereClause   = 'where' Type ':' Bounds { ',' Type ':' Bounds }
 ```
 An `init` with no parameter list is the body of the **primary constructor**,
 whose parameters are written after the type name.
+Only these primary-constructor parameters may have a `let` or `var` prefix.
+Ordinary functions (including methods and extern functions) and secondary
+`init(...)` declarations use `ParamList`. For recovery, stage0's parser
+accepts misplaced prefixes into the AST; `check` rejects them with `E0207`.
 
 An attribute's argument list must directly follow its name, without whitespace
 or comments between the name and `(`. Newlines may separate attributes from

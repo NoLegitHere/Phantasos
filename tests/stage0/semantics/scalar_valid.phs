@@ -40,3 +40,6 @@ fun takesWide(value: UInt64): UInt64 = value
 fun discardedLiterals() { 1; 1.0; (2 + 3) }
 let contextualTail: UInt64 = if true { 1; 18446744073709551615 } else { 0 }
 fun discardedCall() { takesWide(18446744073709551615) }
+struct ScalarStruct(value: Int8) { fun read(): Int8 = value }
+class ScalarClass(let value: Int16) { fun read(): Int16 = value }
+actor ScalarActor(var value: Float32) { fun read(): Float32 = value }

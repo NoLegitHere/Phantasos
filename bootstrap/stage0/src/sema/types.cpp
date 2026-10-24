@@ -214,11 +214,12 @@ private:
         return expr ? nodes_[expressions_.at(expr)].value : Value{Type::Unit};
     }
     void declare(Name name, const TypeExpr* type, const Expr* init) {
-        const auto it = declarations_.find(name.span.lo);
-        if (it == declarations_.end()) return;
-        auto& node = nodes_[it->second];
-        node.annotation = type;
-        node.init = init;
+        const auto [first, last] = declarations_.equal_range(name.span.lo);
+        for (auto it = first; it != last; ++it) {
+            auto& node = nodes_[it->second];
+            node.annotation = type;
+            node.init = init;
+        }
     }
     void parameters(List<Param> params) {
         for (const auto& p : params) {
@@ -557,7 +558,9 @@ private:
     DiagEngine& diag_;
     std::vector<Node> nodes_;
     std::unordered_map<const Expr*, usize> expressions_;
-    std::unordered_map<u32, usize> declarations_;
+    // A promoted constructor field and its parameter have separate binding
+    // IDs at the same name span. Both inherit the declaration's annotation.
+    std::unordered_multimap<u32, usize> declarations_;
     std::vector<Walk> walk_;
     std::vector<Requirement> requirements_;
     std::vector<const Expr*> defaults_;

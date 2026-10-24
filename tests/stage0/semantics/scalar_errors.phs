@@ -41,3 +41,6 @@ fun discardedLiterals() {
     (9223372036854775808 + 1)
     return
 }
+struct BadStruct(value: Int8) { fun read(): Bool = value }
+class BadClass(let value: Int8) { fun read(): Bool = value }
+actor BadActor(var value: Int8) { fun read(): Bool = value }

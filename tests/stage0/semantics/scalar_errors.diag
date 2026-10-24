@@ -55,3 +55,12 @@ scalar_errors.phs:40:5: error[E0402]: integer literal is out of range for 'Int'
 scalar_errors.phs:41:6: error[E0402]: integer literal is out of range for 'Int'
    41 |     (9223372036854775808 + 1)
       |      ^^^^^^^^^^^^^^^^^^^
+scalar_errors.phs:44:52: error[E0400]: expected 'Bool', found 'Int8'
+   44 | struct BadStruct(value: Int8) { fun read(): Bool = value }
+      |                                                    ^^^^^
+scalar_errors.phs:45:54: error[E0400]: expected 'Bool', found 'Int8'
+   45 | class BadClass(let value: Int8) { fun read(): Bool = value }
+      |                                                      ^^^^^
+scalar_errors.phs:46:54: error[E0400]: expected 'Bool', found 'Int8'
+   46 | actor BadActor(var value: Int8) { fun read(): Bool = value }
+      |                                                      ^^^^^

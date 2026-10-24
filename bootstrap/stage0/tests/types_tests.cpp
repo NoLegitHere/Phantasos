@@ -271,6 +271,61 @@ fun conditions() { if left {}; if right {} }
     CHECK(valid.binding("left") == Type::Deferred && valid.binding("right") == Type::Deferred);
 }
 
+void primary_constructor_field_types() {
+    Frontend valid;
+    valid.check(R"(
+struct S(sx: Int8) { fun read(): Int8 = sx }
+class C(let cx: Int16 = 1, var flag: Bool = true, temporary: UInt16 = 2) {
+    init { cx; flag; temporary }
+    fun read(): Int16 = cx
+    mut fun update() { flag = false }
+}
+actor A(let ax: Float32 = 1.0) { fun read(): Float32 = ax }
+)");
+    const auto bindings = valid.result.resolution->bindings();
+    const auto check_pair = [&](std::string_view name, Type expected) {
+        std::vector<BindingId> ids;
+        for (usize i = 0; i < bindings.size(); ++i)
+            if (valid.session.names().str(bindings[i].name.sym) == name) ids.push_back(BindingId{i});
+        CHECK(ids.size() == 2 && ids[0] != ids[1]);
+        const auto& parameter = valid.result.resolution->binding(ids[0]);
+        const auto& field = valid.result.resolution->binding(ids[1]);
+        CHECK(parameter.kind == BindingKind::Parameter && field.kind == BindingKind::Field);
+        CHECK(parameter.scope != field.scope && parameter.name.span.lo == field.name.span.lo);
+        CHECK(valid.result.scalar_types->binding(ids[0]) == expected);
+        CHECK(valid.result.scalar_types->binding(ids[1]) == expected);
+    };
+    check_pair("sx", Type::Int8);
+    check_pair("cx", Type::Int16);
+    check_pair("flag", Type::Bool);
+    check_pair("ax", Type::Float32);
+    CHECK(valid.binding("temporary") == Type::UInt16);
+
+    for (std::string_view source : {
+        "struct S(x: Int8) { fun f(): Bool = x }",
+        "class C(let x: Int8) { fun f(): Bool = x }",
+        "class C(var x: Int8) { mut fun f() { x = false } }",
+        "actor A(let x: Int8) { fun f(): Bool = x }",
+        "actor A(var x: Int8) { mut fun f() { x = false } }"
+    }) {
+        Frontend invalid;
+        invalid.check(source, {DiagCode::ScalarTypeMismatch});
+    }
+    Frontend invalid_default;
+    invalid_default.check("class C(let x: Int8 = 128) {}", {DiagCode::ScalarLiteralRange});
+    Frontend invalid_operator;
+    invalid_operator.check("struct S(flag: Bool) { fun f() = flag + 1 }", {DiagCode::InvalidScalarOperand});
+
+    Frontend shadowed;
+    shadowed.check(R"(
+struct S(value: Int8) { fun f(value: Bool): Bool = value }
+struct Generic<T>(value: T) { fun f(): T = value }
+)");
+    CHECK(shadowed.binding("value", 0) == Type::Int8 && shadowed.binding("value", 1) == Type::Int8);
+    CHECK(shadowed.binding("value", 2) == Type::Deferred && shadowed.binding("value", 3) == Type::Deferred);
+    CHECK(shadowed.binding("value", 4) == Type::Bool);
+}
+
 void session_gating_and_lifetimes() {
     FrontendSession session;
     const auto invalid = session.sources().add("invalid", "let x = unknown");
@@ -310,6 +365,7 @@ int main() {
     deferred_types_and_shadowing();
     discarded_numeric_expressions();
     logical_operands_with_deferred_calls();
+    primary_constructor_field_types();
     session_gating_and_lifetimes();
     long_trees_and_forward_chains();
 }

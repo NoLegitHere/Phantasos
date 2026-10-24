@@ -327,8 +327,10 @@ The `Bool` requirement for each logical operand is checked independently even
 when the other operand's type is deferred; the result can still remain deferred.
 
 Scalar variable annotations, parameter defaults, assignments and explicit return
-values must match their expected type. A block-bodied function without a return
-annotation returns `Unit`; expression-bodied return inference remains pending.
+values must match their expected type. A promoted primary-constructor field
+retains its parameter's declared type in a separate field binding.
+A block-bodied function without a return annotation returns `Unit`;
+expression-bodied return inference remains pending.
 An explicit bare `return` produces `Unit`. Initializers and destructors also
 return `Unit`. This does not establish that every path returns a value.
 

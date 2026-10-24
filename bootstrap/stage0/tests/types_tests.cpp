@@ -271,6 +271,64 @@ fun conditions() { if left {}; if right {} }
     CHECK(valid.binding("left") == Type::Deferred && valid.binding("right") == Type::Deferred);
 }
 
+void numeric_operands_with_deferred_calls() {
+    const auto reject = [](std::string_view expr) {
+        Frontend invalid;
+        invalid.check(std::format("fun opaque(): Int = 1\nlet broken = {}\nlet dependent = broken + opaque()", expr),
+                      {DiagCode::InvalidScalarOperand});
+        CHECK(invalid.binding("broken") == Type::Error && invalid.binding("dependent") == Type::Error);
+    };
+    for (std::string_view op : {"+", "-", "*", "/"}) {
+        for (std::string_view bad : {"true", "'x'", "\"text\"", "()"}) {
+            reject(std::format("{} {} opaque()", bad, op));
+            reject(std::format("opaque() {} {}", op, bad));
+        }
+    }
+    for (std::string_view op : {"%", "&+", "&-", "&*", "&", "|", "^", "<<", ">>"}) {
+        reject(std::format("1.0 {} opaque()", op));
+        reject(std::format("opaque() {} 1.0", op));
+    }
+    for (std::string_view op : {"<", "<=", ">", ">="}) {
+        reject(std::format("true {} opaque()", op));
+        reject(std::format("opaque() {} true", op));
+    }
+    Frontend typed;
+    typed.check("fun opaque(): Int = 1\nlet f: Float32 = 1.0\nlet bad = f & opaque()",
+                {DiagCode::InvalidScalarOperand});
+
+    for (std::string_view op : {"+=", "-=", "*=", "/="}) {
+        Frontend invalid;
+        invalid.check(std::format("fun opaque(): Int = 1\nfun f() {{ var flag = true; flag {} opaque() }}", op),
+                      {DiagCode::InvalidScalarOperand});
+    }
+    for (std::string_view op : {"%=", "&=", "|=", "^=", "<<=", ">>="}) {
+        Frontend invalid;
+        invalid.check(std::format("fun opaque(): Int = 1\nfun f() {{ var number = 1.0; number {} opaque() }}", op),
+                      {DiagCode::InvalidScalarOperand});
+    }
+    for (std::string_view assignment : {"target += true", "target &= 1.0"}) {
+        Frontend invalid;
+        invalid.check(std::format("fun f<T>(value: T) {{ var target = value; {} }}", assignment),
+                      {DiagCode::InvalidScalarOperand});
+    }
+
+    Frontend valid;
+    valid.check(R"(
+fun opaque(): Int = 1
+fun floating(): Float64 = 1.0
+fun character(): Char = 'a'
+fun boolean(): Bool = true
+let sum = 1 + opaque()
+let product = floating() * 1.0
+let bits = opaque() & 1
+let ordered = 'a' < character()
+let equal = true == boolean()
+fun assignments() { var count = 1; count += opaque(); var flag = true; flag = boolean() }
+)");
+    for (std::string_view name : {"sum", "product", "bits", "ordered", "equal"})
+        CHECK(valid.binding(name) == Type::Deferred);
+}
+
 void primary_constructor_field_types() {
     Frontend valid;
     valid.check(R"(
@@ -365,6 +423,7 @@ int main() {
     deferred_types_and_shadowing();
     discarded_numeric_expressions();
     logical_operands_with_deferred_calls();
+    numeric_operands_with_deferred_calls();
     primary_constructor_field_types();
     session_gating_and_lifetimes();
     long_trees_and_forward_chains();

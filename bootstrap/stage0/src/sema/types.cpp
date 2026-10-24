@@ -50,6 +50,17 @@ struct Value {
 bool numeric(Value v) { return v.literal != Literal::None || numeric(v.type); }
 bool integer(Value v) { return v.literal == Literal::Integer || integer(v.type); }
 bool unavailable(Value v) { return v.literal == Literal::None && !known(v.type); }
+enum class OperandDomain : u8 { Numeric, Integer, Ordered };
+bool in_domain(Value operand, OperandDomain domain) {
+    // A pending or non-returning operand cannot disprove a domain requirement.
+    if (unavailable(operand) || operand.type == Type::Never) return true;
+    switch (domain) {
+        case OperandDomain::Numeric: return numeric(operand);
+        case OperandDomain::Integer: return integer(operand);
+        case OperandDomain::Ordered: return numeric(operand) || operand.type == Type::Char;
+    }
+    unreachable();
+}
 Type default_type(Value v) {
     if (v.literal == Literal::Integer) return Type::Int;
     if (v.literal == Literal::Float) return Type::Float64;
@@ -153,14 +164,16 @@ public:
         }
         for (const auto& requirement : requirements_) {
             const Type expected = requirement.target ? value(requirement.target).type : requirement.expected;
-            const auto actual = require(requirement.value, expected, requirement.span);
-            if (requirement.target && requirement.assignment != AssignOp::Assign &&
-                known(expected) && !unavailable(actual)) {
+            if (requirement.target && requirement.assignment != AssignOp::Assign) {
                 const bool ints = requirement.assignment >= AssignOp::BitAnd || requirement.assignment == AssignOp::Rem;
-                if ((ints && !integer(expected)) || (!ints && !numeric(expected)))
+                const auto domain = ints ? OperandDomain::Integer : OperandDomain::Numeric;
+                if (!in_domain(value(requirement.target), domain) || !in_domain(value(requirement.value), domain)) {
                     diag_.error(DiagCode::InvalidScalarOperand, requirement.span,
                                 "compound assignment requires {} operands", ints ? "integer" : "numeric");
+                    continue;
+                }
             }
+            (void)require(requirement.value, expected, requirement.span);
         }
         // Only context-free roots default. A literal inside a deferred call,
         // annotation or composite expression may still need a contextual type
@@ -467,23 +480,25 @@ private:
             return {Type::Bool};
         }
         if (lhs.type == Type::Error || rhs.type == Type::Error) return {Type::Error};
-        if (unavailable(lhs) || unavailable(rhs)) return {};
         if (expr.op == BinOp::Coalesce || expr.op == BinOp::Range || expr.op == BinOp::RangeExcl) return {};
         const bool equality = expr.op == BinOp::Eq || expr.op == BinOp::Ne;
         const bool ordering = expr.op >= BinOp::Lt && expr.op <= BinOp::Ge;
         const bool ints = expr.op == BinOp::Rem || expr.op == BinOp::WrapAdd || expr.op == BinOp::WrapSub ||
                           expr.op == BinOp::WrapMul || expr.op == BinOp::BitOr || expr.op == BinOp::BitXor ||
                           expr.op == BinOp::BitAnd || expr.op == BinOp::Shl || expr.op == BinOp::Shr;
+        const auto domain = ints ? OperandDomain::Integer : ordering ? OperandDomain::Ordered : OperandDomain::Numeric;
+        if (!equality && (!in_domain(lhs, domain) || !in_domain(rhs, domain)))
+            return invalid(expr.span, ints ? "integer" : "numeric");
+        // Operand domains can fail independently; matching operand types and
+        // inferring the result still require both operands to be available.
+        if (unavailable(lhs) || unavailable(rhs)) return {};
         // Never can stand in for a required operand type. It does not make an
         // otherwise invalid operator (such as String arithmetic) available.
         if (lhs.type == Type::Never && rhs.type == Type::Never)
             return {equality || ordering ? Type::Bool : Type::Never};
         if (lhs.type == Type::Never) lhs = rhs;
         if (rhs.type == Type::Never) rhs = lhs;
-        if (ints && (!integer(lhs) || !integer(rhs))) return invalid(expr.span, "integer");
-        if (!equality && !ints && (!numeric(lhs) || !numeric(rhs))) {
-            if (!(ordering && lhs.type == Type::Char && rhs.type == Type::Char)) return invalid(expr.span, "numeric");
-        }
+        if (ordering && ((lhs.type == Type::Char) != (rhs.type == Type::Char))) return invalid(expr.span, "numeric");
         if (lhs.literal != Literal::None && rhs.literal == Literal::None)
             lhs = require(expr.lhs, rhs.type, expr.lhs->span);
         else if (rhs.literal != Literal::None && lhs.literal == Literal::None)

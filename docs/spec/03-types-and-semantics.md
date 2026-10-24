@@ -323,8 +323,11 @@ require `Bool`. Scalar equality accepts matching built-in types; ordering
 accepts matching numeric types or `Char`. There are no implicit numeric
 conversions between typed operands. Compound assignment follows the same
 numeric/integer domains and requires the target's type.
-The `Bool` requirement for each logical operand is checked independently even
-when the other operand's type is deferred; the result can still remain deferred.
+Boolean, numeric, integer and ordering requirements are checked independently
+for each available operand, even when the other operand's type is deferred.
+Compound assignment checks both the target and source domains before type
+compatibility. Matching operand types and inferring results can still remain
+deferred.
 
 Scalar variable annotations, parameter defaults, assignments and explicit return
 values must match their expected type. A promoted primary-constructor field

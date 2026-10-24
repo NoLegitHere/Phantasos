@@ -44,3 +44,7 @@ fun discardedLiterals() {
 struct BadStruct(value: Int8) { fun read(): Bool = value }
 class BadClass(let value: Int8) { fun read(): Bool = value }
 actor BadActor(var value: Int8) { fun read(): Bool = value }
+fun opaqueNumber(): Int = 1
+let badDeferredArithmetic = true + opaqueNumber()
+let badDeferredBits = opaqueNumber() & 1.0
+fun badDeferredCompound() { var flag = true; flag += opaqueNumber() }

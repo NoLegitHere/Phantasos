@@ -46,3 +46,15 @@ declarations.phs:25:40: error[E0200]: duplicate binding 'Case'
 declarations.phs:25:10: note: first declared here
    25 | enum E { Case(value: Int, value: Int), Case }
       |          ^^^^
+declarations.phs:26:34: error[E0200]: duplicate binding 'x'
+   26 | class Promoted(let x: Int) { let x: Int = 1 }
+      |                                  ^
+declarations.phs:26:20: note: first declared here
+   26 | class Promoted(let x: Int) { let x: Int = 1 }
+      |                    ^
+declarations.phs:27:31: error[E0200]: duplicate binding 'x'
+   27 | struct Implicit(x: Int) { let x: Int = 1 }
+      |                               ^
+declarations.phs:27:17: note: first declared here
+   27 | struct Implicit(x: Int) { let x: Int = 1 }
+      |                 ^

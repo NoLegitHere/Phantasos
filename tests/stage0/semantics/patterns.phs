@@ -17,4 +17,6 @@ fun f(value: E) = match value {
     .Pair(x, x) -> x
     .A(x) | .B(y) -> 0
     .Pair(.A(x) | .B(x), x) -> x
+    .Pair(.A(x) | .B, x) -> x
+    .Pair(.A | .B(x), x) -> x
 }

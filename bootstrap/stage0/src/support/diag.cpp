@@ -50,13 +50,16 @@ std::string sanitize_utf8(std::string_view s) {
 
 }  // namespace
 
-void DiagEngine::render(std::FILE* out) const {
-    // Present diagnostics in source order regardless of which phase found them.
+std::vector<const Diagnostic*> DiagEngine::in_source_order() const {
     std::vector<const Diagnostic*> sorted;
     sorted.reserve(diags_.size());
     for (const Diagnostic& d : diags_) sorted.push_back(&d);
     std::ranges::stable_sort(sorted, {}, [](const Diagnostic* d) { return std::pair{d->span.file, d->span.lo}; });
-    for (const Diagnostic* d : sorted) render_one(out, *d);
+    return sorted;
+}
+
+void DiagEngine::render(std::FILE* out) const {
+    for (const Diagnostic* d : in_source_order()) render_one(out, *d);
 }
 
 void DiagEngine::render_one(std::FILE* out, const Diagnostic& d) const {

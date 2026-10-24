@@ -1,0 +1,15 @@
+defer.phs:19:13: error[E0203]: 'break' cannot leave a defer block; it requires a loop inside the block
+   19 |             break
+      |             ^^^^^
+defer.phs:20:13: error[E0203]: 'continue' cannot leave a defer block; it requires a loop inside the block
+   20 |             continue
+      |             ^^^^^^^^
+defer.phs:21:13: error[E0203]: 'return' cannot leave a defer block
+   21 |             return
+      |             ^^^^^^
+defer.phs:22:13: error[E0204]: 'throw' cannot escape a defer block; handle it with 'try?' inside the block
+   22 |             throw failure
+      |             ^^^^^^^^^^^^^
+defer.phs:23:13: error[E0205]: 'await' is not allowed in a defer block
+   23 |             await task()
+      |             ^^^^^^^^^^^^

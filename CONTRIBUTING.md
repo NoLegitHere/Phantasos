@@ -43,8 +43,10 @@
 - The CLI and C++ tests link `Phantasos::Frontend`; keep CLI-only behavior in
   `main.cpp`. Seed the interner with `seed_keywords` before lexing. Source
   managers, interners, and arenas must outlive the views/nodes referring to
-  their storage. Diagnostic references and `all()` spans must not be retained
-  across subsequent diagnostic emissions.
+  their storage. `DiagEngine::all()` exposes emission order;
+  `in_source_order()` returns a separate view sorted by file and offset,
+  preserving emission order at ties. Diagnostic references, `all()` spans and
+  pointers in the sorted view must not be retained across subsequent emissions.
 - After a file parses without lexer/parser errors, `validate_file` performs
   initial semantic validation without changing the AST. Keep type-dependent
   checks in future resolution/type passes. Use explicit work stacks for
@@ -66,11 +68,16 @@
 
 - Run `python tests/test_license_check.py` for license-fixer regressions,
   including encoding declarations, BOMs, line endings, and idempotence.
+- Run `python tests/test_golden_runner.py` for golden-runner exit status and
+  baseline-update regressions.
 - Golden tests live in `tests/`. Each `*.phs` input has expected output files
   next to it (`*.tokens`, `*.ast`, `*.diag`).
-- `tests/stage0/semantics/` runs `check`; a nonempty error diagnostic file
-  expects exit code 1, and an empty `.diag` file expects success. `parse`
-  fixtures continue to exercise syntax independently of semantic validity.
+- `tests/stage0/diagnostics/` contains negative `check` cases and always
+  expects exit code 1, including during `--update`.
+- `tests/stage0/semantics/` runs `check`; an error diagnostic header in the
+  expected `.diag` file requires exit code 1. Empty and warning-only files
+  require success; source snippets and notes are not error headers. `parse`
+  fixtures exercise syntax independently of semantic validity.
 - Regenerate them with `python tests/run_golden.py --stage0 <exe> --update`
   and review the diff before committing.
 - Run `python tests/test_frontend.py --stage0 <exe>` for deterministic nesting,

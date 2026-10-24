@@ -52,6 +52,7 @@ jobs:
       - run: cmake --build build/stage0
       - run: ctest --test-dir build/stage0 --output-on-failure
       - run: python tests/test_license_check.py
+      - run: python tests/test_golden_runner.py
       - run: python tests/run_golden.py --stage0 build/stage0/phantasos-stage0
       - run: python tests/test_frontend.py --stage0 build/stage0/phantasos-stage0
       - run: python tests/fuzz_frontend.py --stage0 build/stage0/phantasos-stage0 --cases 300

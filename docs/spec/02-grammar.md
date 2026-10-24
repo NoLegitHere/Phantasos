@@ -18,7 +18,7 @@ Path          = Ident { '.' Ident }
 
 Item          = { Attribute } [ Visibility ] { Modifier } ItemKind
 Attribute     = '@' ( Ident | Keyword ) [ '(' [ AttrArg { ',' AttrArg } [ ',' ] ] ')' ]   (* e.g. @extern("C") *)
-AttrArg       = Ident '=' Literal | Literal | Ident
+AttrArg       = [ Ident '=' ] Expr
 Literal       = IntLit | FloatLit | CharLit | StringLit | 'true' | 'false' | 'none'
 Visibility    = 'public' | 'internal' | 'file' | 'private'
 Modifier      = 'open' | 'final' | 'abstract' | 'sealed' | 'override'
@@ -70,6 +70,9 @@ whose parameters are written after the type name.
 An attribute's argument list must directly follow its name, without whitespace
 or comments between the name and `(`. Newlines may separate attributes from
 the following attribute or declaration.
+Attribute arguments use the ordinary expression grammar, optionally preceded
+by a key and `=`. Attribute-specific value restrictions are semantic checks;
+stage0 currently validates only the expressions' structural control flow.
 
 ## 2.2 Types
 ```

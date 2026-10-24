@@ -40,6 +40,8 @@ There are **no implicit numeric conversions**. Widening is written
   bodies and associated types (`type Item`). A class or struct can implement
   any number of interfaces.
 - **`actor`**: a reference type whose mutable state is isolated. See ch. 5.
+  Primary-constructor parameters marked `let` or `var` become fields, as in
+  classes; plain parameters do not.
 
 ## 3.3 Mutability [Core]
 - `let` creates an immutable binding and `var` a mutable one. Fields follow
@@ -189,6 +191,9 @@ signature cannot mention less-visible types.
   labels must be unique within a case. Named non-function value declarations
   cannot repeat in one declaration list, nor can type declarations or aliases.
   These checks do not determine which function overloads are valid.
+  Promoted primary-constructor fields share the member value namespace:
+  `let`/`var` parameters in classes and actors, and all parameters in structs,
+  must not collide with explicit member value declarations.
 - A name may be bound only once within a pattern. All alternatives of an
   alternative pattern must bind the same set of names, so the arm's guard
   and body can refer to those names regardless of the chosen alternative.
@@ -206,6 +211,12 @@ signature cannot mention less-visible types.
 - `await` requires an `async` function body. Defaults, attributes, field
   initializers and superclass arguments do not inherit the function body's
   async or throwing context. See chapter 5 for further concurrency rules.
+- `defer` schedules synchronous cleanup on leaving the enclosing scope, in
+  reverse registration order. Its body cannot `return`, jump to an enclosing
+  loop outside the cleanup, propagate an error, or suspend with `await`.
+  Loops nested inside a `defer` may use `break`/`continue`, and `try?` inside
+  it may handle local errors. Each nested `defer` starts a fresh cleanup
+  boundary. Throwing-call validation remains part of later effect analysis.
 
 Stage0 currently validates these structural constraints and the type-alias
 forms in chapter 2. Full name resolution, typing, visibility, return-type,

@@ -118,7 +118,8 @@ class DiagEngine {
 public:
     explicit DiagEngine(const SourceManager& sm) : sm_(sm) {}
 
-    // Returned references and all() views are invalidated by the next emission.
+    // Returned references, all() views and in_source_order() pointers are
+    // invalidated by the next emission.
     template <typename... Args>
     Diagnostic& error(DiagCode code, Span span, std::format_string<Args...> fmt, Args&&... args) {
         ++errors_;
@@ -131,7 +132,11 @@ public:
     }
 
     usize error_count() const { return errors_; }
+    // Emission order, which can differ from source order across compiler passes.
     std::span<const Diagnostic> all() const { return diags_; }
+    // A separate view ordered by FileId and byte offset; ties keep emission
+    // order. Does not reorder storage. The caller owns the returned vector.
+    [[nodiscard]] std::vector<const Diagnostic*> in_source_order() const;
 
     void render(std::FILE* out) const;
     void render_one(std::FILE* out, const Diagnostic& d) const;

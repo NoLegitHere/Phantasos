@@ -23,3 +23,5 @@ fun duplicate<T, T>(x: Int, x: Int) {
 interface I { type Element; struct Nested { type Missing } }
 class C { deinit {}; deinit {} }
 enum E { Case(value: Int, value: Int), Case }
+class Promoted(let x: Int) { let x: Int = 1 }
+struct Implicit(x: Int) { let x: Int = 1 }

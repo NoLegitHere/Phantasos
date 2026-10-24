@@ -13,7 +13,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Mutation fuzzer for the stage0 frontend (syntax and initial semantic checks).
+"""Mutation fuzzer for the stage0 frontend (syntax, semantics and name resolution).
 
 Mutates the golden test inputs at the byte level (including invalid UTF-8)
 and checks that `phantasos-stage0 parse` (or `check`) never crashes, hangs, trips a

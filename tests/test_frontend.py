@@ -122,11 +122,25 @@ class FrontendTests(unittest.TestCase):
         self.assertNotIn("error[E02", stderr)
 
     def test_semantics_handles_long_flat_trees(self) -> None:
-        source = "let sum = " + "+".join(["1"] * 20000)
+        source = "enum E { Case(Int) }\nlet x = 1\nlet sum = " + "+".join(["1"] * 20000)
         source += "\nlet chain = x" + ".member" * 20000
         source += "\nfun f(x: E) = match x { " + " | ".join([".Case(a)"] * 2000) + " -> a }"
         code, stdout, stderr = self.run_source(source, "check")
         self.assertEqual((code, stdout, stderr), (0, "", ""))
+
+    def test_check_resolves_names_after_validation(self) -> None:
+        source = "fun f(x: Missing) = unknown(x)\n"
+        code, _, stderr = self.run_source(source, "parse")
+        self.assertEqual((code, stderr), (0, ""))
+        code, stdout, stderr = self.run_source(source, "check")
+        self.assertEqual((code, stdout), (1, ""))
+        self.assertEqual(stderr.count("error["), 2, stderr)
+        self.assertIn("error[E0301]: unknown type 'Missing'", stderr)
+        self.assertIn("error[E0300]: unknown name 'unknown'", stderr)
+        code, _, stderr = self.run_source(source + "fun invalid() { break }", "check")
+        self.assertEqual(code, 1)
+        self.assertIn("error[E0203]", stderr)
+        self.assertNotIn("error[E03", stderr)
 
     def test_long_flat_expressions(self) -> None:
         for name, (source, counts) in {

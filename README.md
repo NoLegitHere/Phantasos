@@ -29,7 +29,8 @@ Windows x64 and Linux x86_64:
 - [x] Parser for Phantasos-Core, which builds an AST with error recovery and
   stable diagnostic codes
 - [x] Initial semantic validation: bindings, declarations and control flow
-- [ ] Name resolution, type checking and ownership analysis
+- [x] File-local lexical name resolution with retained bindings and overload sets
+- [ ] Type checking, receiver-dependent member lookup and ownership analysis
 - [ ] MIR, x86_64 codegen, COFF/ELF writers, linker, runtime
 - [ ] Workspace-aware build driver
 
@@ -37,12 +38,15 @@ The language is specified in [`docs/spec`](docs/spec), with a standalone
 [Core EBNF grammar](docs/spec/phantasos.ebnf).
 See the [bootstrap roadmap](docs/roadmap.md) for milestones and the next steps.
 
-`check <file.phs>` now runs initial semantic validation after a successful
-parse. It reports duplicate bindings, invalid `init`/`deinit` placement,
-invalid type alias forms, inconsistent pattern bindings, and misplaced
-control flow, `throw`, or `await`. `parse` continues to report syntax only.
-Name resolution, type inference, overload checking and ownership analysis
-are still pending, so passing `check` does not yet establish program validity.
+`check <file.phs>` runs structural semantic validation and lexical name
+resolution after a successful parse. It reports duplicate bindings, invalid
+declaration/control-flow contexts, unknown value/type names and conflicting
+declarations. It retains bindings for forward references, generic scopes,
+shadowing and overload sets. `parse` continues to report syntax only.
+Receiver-dependent members, inheritance, alias expansion, type inference,
+overload selection and ownership analysis remain pending, so passing `check`
+does not yet establish program validity. Imports explicitly report that
+package loading is unavailable.
 
 ## Repository layout
 
@@ -50,7 +54,7 @@ are still pending, so passing `check` does not yet establish program validity.
 |---|---|
 | `docs/spec/` | Language and ABI specification |
 | `docs/adr/` | Architecture decision records |
-| `bootstrap/stage0/` | C++23 bootstrap compiler: lexer, parser and initial semantic validation; native code generation and build driver planned |
+| `bootstrap/stage0/` | C++23 bootstrap compiler: lexer, parser, structural validation and lexical name resolution; type checking, native code generation and build driver planned |
 | `compiler/` | Self-hosted compiler (a Phantasos workspace), planned |
 | `runtime/` | `rt`, the privileged runtime, planned |
 | `std/` | Standard library (privileged), planned |
@@ -91,8 +95,8 @@ python tools/license-check/license_check.py                            # license
 
 The build separates the `phantasos-stage0` CLI from the `phantasos_frontend`
 static library (CMake alias `Phantasos::Frontend`). Link the library to reuse
-source management, diagnostics, lexing, parsing, AST dumps, and initial
-semantic validation. Its target
+source management, diagnostics, lexing, parsing, AST dumps, structural
+validation and name resolution. Its target
 propagates the required C++23 and no-exception/no-RTTI settings. Focused C++
 tests are enabled by default; use `-DBUILD_TESTING=OFF` to omit them, following
 [CMake's CTest convention](https://cmake.org/cmake/help/v3.28/module/CTest.html).

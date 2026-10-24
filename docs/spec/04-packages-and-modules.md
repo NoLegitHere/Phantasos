@@ -75,8 +75,10 @@ build/<target>/<profile>/bin/<name>[.exe]  executables
 
 ## 4.5 Stage0 support
 **Current status:** stage0 is frontend-only. It provides `lex`, syntax-only
-`parse`, and `check` (syntax plus initial semantic validation) on single
-files. None of the package or workspace features in this chapter work yet.
+`parse`, and `check` (syntax, structural semantic validation and lexical name
+resolution) on single files. Imports receive `E0304` from `check` until
+package loading is implemented. None of the package or workspace features
+in this chapter work yet.
 
 **Planned scope** (milestone P2, required before the compiler is ported to
 Phantasos):

@@ -1,0 +1,12 @@
+resolve_conflicts.phs:17:5: error[E0302]: conflicting declaration of 'sharedName'
+   17 | let sharedName = 1
+      |     ^^^^^^^^^^
+resolve_conflicts.phs:16:5: note: first declared here
+   16 | fun sharedName(x: Int) = x
+      |     ^^^^^^^^^^
+resolve_conflicts.phs:19:18: error[E0302]: conflicting declaration of 'foreignName'
+   19 | extern "C" { fun foreignName() }
+      |                  ^^^^^^^^^^^
+resolve_conflicts.phs:18:5: note: first declared here
+   18 | let foreignName = 2
+      |     ^^^^^^^^^^^

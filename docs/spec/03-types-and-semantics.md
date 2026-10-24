@@ -218,6 +218,71 @@ signature cannot mention less-visible types.
   it may handle local errors. Each nested `defer` starts a fresh cleanup
   boundary. Throwing-call validation remains part of later effect analysis.
 
-Stage0 currently validates these structural constraints and the type-alias
-forms in chapter 2. Full name resolution, typing, visibility, return-type,
-ownership and effect analysis remain on the [roadmap](../roadmap.md).
+Stage0 validates these structural constraints and the type-alias forms in
+chapter 2 before running the name resolver below. Typing, visibility,
+return-type, ownership and effect analysis remain on the [roadmap](../roadmap.md).
+
+## 3.13 Lexical name resolution [Core]
+
+- Types and values have separate namespaces. Type declarations, aliases and
+  generic parameters bind type names; functions, variables, fields, enum
+  cases, parameters and patterns bind value names. In an expression, lookup
+  checks the value namespace first, then the type namespace at each scope
+  (for constructor calls and type-qualified members), before visiting the
+  parent scope. Type expressions only search the type namespace.
+- File and type-member declarations are visible throughout their declaration
+  list, including before their definition. `extern` blocks add functions to
+  the surrounding scope. Functions sharing a name form an overload set;
+  mixing functions with other values in the same scope is an error. Type
+  and value declarations may share a spelling. Choosing an overload and
+  validating its signature belong to type checking.
+- All generic parameters are visible in their bounds, `where` clauses,
+  signatures and bodies. A nested declaration may shadow outer generic
+  parameters. Type aliases have their own generic scope; associated types
+  are visible to other members of their interface.
+- Parameters are visible in the body. A default expression sees earlier
+  parameters, plus the enclosing declaration scope, but not its own or later
+  parameters. Primary-constructor defaults see type generics and the outer
+  scope, not member fields. Primary-constructor parameters are visible to
+  superclass arguments, instance field initializers and the primary `init`
+  body; only promoted fields are visible to other members. Secondary `init`
+  bodies have their own parameter scope.
+- A local binding becomes visible after its initializer. Thus `let x = x`
+  uses an outer `x`, or reports an unknown name if none exists. A block adds
+  a nested scope, so locals can shadow parameters and outer locals. A
+  `defer` body resolves names where it is declared; later locals are not
+  visible inside it.
+- `if let` and `while let` bindings are visible only in their body, not in
+  the condition or the `else` branch. A `for` binding is visible in its body,
+  not its iterable. Each match arm has its own scope: its pattern bindings
+  are visible in the guard and body. Matching alternatives share bindings;
+  case names and pattern types are looked up outside the arm's bindings.
+- `Self` denotes the enclosing type. `self` requires an instance function,
+  initializer or destructor body; `super` additionally requires a declared
+  base type. Static bodies and parameter defaults do not have a receiver.
+  Initialization safety, inheritance validity and static/instance member
+  access restrictions are checked by later passes.
+
+Stage0 retains immutable scope, declaration, overload-set and reference
+records separately from the AST. References are explicitly resolved,
+unresolved (with a diagnostic), or deferred. It resolves directly declared
+nested types and type-qualified values. Receiver-dependent members, implicit
+`.Case` names, alias-qualified names and dependent generic members such as
+`T.Element` are deferred until type information is available. Inherited
+lookup is also deferred, including an unqualified name that a base could
+provide before an outer scope is searched. A type's own generic parameters
+take precedence over that inherited lookup. Lexical lookup alone cannot
+select inherited members or check visibility. Alias cycles and initialization
+cycles remain later checks.
+
+The bootstrap prelude supplies type names `Int8/16/32/64`, `UInt8/16/32/64`,
+`Int`, `UInt`, `Float32/64`, `Bool`, `Char`, `String`, `Unit`, `Never`, `Error`,
+`Copy` and `Sendable`, plus the value name `panic`. These are name bindings,
+not implemented runtime definitions or checked signatures. User declarations
+may shadow them. Other library names must be declared explicitly.
+
+The current API resolves one file. Package discovery, shared module scopes
+and imported declarations belong to P2. `check` reports `E0304` for imports;
+`parse` still accepts their syntax. Attribute names, argument keys and call
+argument labels are metadata, while attribute argument values undergo the
+same expression lookup as other expressions.

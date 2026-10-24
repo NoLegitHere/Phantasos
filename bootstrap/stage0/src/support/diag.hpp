@@ -62,6 +62,11 @@ enum class DiagCode : u16 {
     ThrowOutsideThrows = 204,
     AwaitOutsideAsync = 205,
     PatternBindingMismatch = 206,
+    UnknownValue = 300,
+    UnknownType = 301,
+    ConflictingDeclaration = 302,
+    InvalidReceiver = 303,
+    ImportUnavailable = 304,
 };
 
 constexpr std::string_view diag_code(DiagCode code) {
@@ -97,6 +102,11 @@ constexpr std::string_view diag_code(DiagCode code) {
         case DiagCode::ThrowOutsideThrows: return "E0204";
         case DiagCode::AwaitOutsideAsync: return "E0205";
         case DiagCode::PatternBindingMismatch: return "E0206";
+        case DiagCode::UnknownValue: return "E0300";
+        case DiagCode::UnknownType: return "E0301";
+        case DiagCode::ConflictingDeclaration: return "E0302";
+        case DiagCode::InvalidReceiver: return "E0303";
+        case DiagCode::ImportUnavailable: return "E0304";
     }
     unreachable();
 }

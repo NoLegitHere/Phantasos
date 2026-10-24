@@ -55,6 +55,7 @@ jobs:
       - run: python tests/run_golden.py --stage0 build/stage0/phantasos-stage0
       - run: python tests/test_frontend.py --stage0 build/stage0/phantasos-stage0
       - run: python tests/fuzz_frontend.py --stage0 build/stage0/phantasos-stage0 --cases 300
+      - run: python tests/fuzz_frontend.py --stage0 build/stage0/phantasos-stage0 --command check --cases 300
 
   stage0-sanitizers:
     runs-on: ubuntu-24.04
@@ -70,3 +71,4 @@ jobs:
       - run: python3 tests/run_golden.py --stage0 build/stage0-san/phantasos-stage0
       - run: python3 tests/test_frontend.py --stage0 build/stage0-san/phantasos-stage0
       - run: python3 tests/fuzz_frontend.py --stage0 build/stage0-san/phantasos-stage0 --cases 1000
+      - run: python3 tests/fuzz_frontend.py --stage0 build/stage0-san/phantasos-stage0 --command check --cases 1000

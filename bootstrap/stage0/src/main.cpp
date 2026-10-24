@@ -20,6 +20,7 @@
 #include <string_view>
 #include <utility>
 
+#include "sema/validate.hpp"
 #include "support/arena.hpp"
 #include "support/diag.hpp"
 #include "support/interner.hpp"
@@ -37,7 +38,7 @@ constexpr std::string_view kUsage =
     "commands:\n"
     "  lex <file.phs>     print the token stream\n"
     "  parse <file.phs>   print the syntax tree\n"
-    "  check <file.phs>   report syntax errors only\n"
+    "  check <file.phs>   check syntax, declarations and control flow\n"
     "  version            print the version\n"
     "  help               print this message\n";
 
@@ -59,6 +60,7 @@ int run_frontend(std::string_view cmd, std::string_view path) {
         phs::Arena arena;
         const phs::ast::File* ast = phs::parse_file(*file, std::move(tokens), arena, interner, diag);
         if (cmd == "parse") std::print("{}", phs::dump_ast(*ast, interner));
+        else if (diag.error_count() == 0) phs::validate_file(*ast, interner, diag);
     }
     std::fflush(stdout);
     diag.render(stderr);

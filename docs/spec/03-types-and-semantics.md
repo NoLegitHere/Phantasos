@@ -180,3 +180,33 @@ signature cannot mention less-visible types.
   instantiation), and then **monomorphized**.
 - The full language may share generic code between class-typed
   instantiations.
+
+## 3.12 Binding and control-flow constraints [Core]
+
+- Names must be unique within each parameter list, generic parameter list,
+  or block's local bindings. A nested scope may shadow an outer binding;
+  the function body is a nested scope of its parameters. Enum payload
+  labels must be unique within a case. Named non-function value declarations
+  cannot repeat in one declaration list, nor can type declarations or aliases.
+  These checks do not determine which function overloads are valid.
+- A name may be bound only once within a pattern. All alternatives of an
+  alternative pattern must bind the same set of names, so the arm's guard
+  and body can refer to those names regardless of the chosen alternative.
+  For example, `.A(x) | .B(x)` is valid, while `.A(x) | .B(y)` is not.
+- `init` and `deinit` must be type members. A type has at most one primary
+  `init` body (the form without a parameter list) and one `deinit` body.
+  Secondary constructor overloads are checked separately.
+- `return` requires an enclosing function, initializer or destructor body.
+  `break` and `continue` require an enclosing loop **body** in that callable;
+  a loop's own condition or iterable expression is outside its body.
+- An explicit `throw` must be handled by an enclosing `try?` expression or
+  propagated from a function/initializer with a `throws` clause. A `try?`
+  expression handles errors only from its operand, not later statements.
+  Error-type compatibility and throwing-call checks still follow section 3.7.
+- `await` requires an `async` function body. Defaults, attributes, field
+  initializers and superclass arguments do not inherit the function body's
+  async or throwing context. See chapter 5 for further concurrency rules.
+
+Stage0 currently validates these structural constraints and the type-alias
+forms in chapter 2. Full name resolution, typing, visibility, return-type,
+ownership and effect analysis remain on the [roadmap](../roadmap.md).

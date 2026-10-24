@@ -1,0 +1,24 @@
+control_flow.phs:16:25: error[E0203]: 'return' requires a function, init or deinit body
+   16 | let outside = if true { return 1 }
+      |                         ^^^^^^^^
+control_flow.phs:18:5: error[E0203]: 'break' requires an enclosing loop body
+   18 |     break
+      |     ^^^^^
+control_flow.phs:19:5: error[E0203]: 'continue' requires an enclosing loop body
+   19 |     continue
+      |     ^^^^^^^^
+control_flow.phs:20:5: error[E0204]: 'throw' requires a throwing function/init or a 'try?' expression
+   20 |     throw failure
+      |     ^^^^^^^^^^^^^
+control_flow.phs:21:5: error[E0205]: 'await' requires an async function body
+   21 |     await task()
+      |     ^^^^^^^^^^^^
+control_flow.phs:23:5: error[E0203]: 'break' requires an enclosing loop body
+   23 |     break
+      |     ^^^^^
+control_flow.phs:25:5: error[E0204]: 'throw' requires a throwing function/init or a 'try?' expression
+   25 |     throw failure
+      |     ^^^^^^^^^^^^^
+control_flow.phs:27:20: error[E0204]: 'throw' requires a throwing function/init or a 'try?' expression
+   27 | class C { deinit { throw failure } }
+      |                    ^^^^^^^^^^^^^

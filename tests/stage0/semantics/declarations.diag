@@ -1,0 +1,48 @@
+declarations.phs:16:1: error[E0202]: a type alias outside an interface requires '= Type' and cannot declare bounds
+   16 | type Missing
+      | ^^^^^^^^^^^^
+declarations.phs:17:1: error[E0201]: 'init' is only allowed as a type member
+   17 | init {}
+      | ^^^^^^^
+declarations.phs:18:1: error[E0201]: 'deinit' is only allowed as a type member
+   18 | deinit {}
+      | ^^^^^^^^^
+declarations.phs:19:18: error[E0200]: duplicate binding 'T'
+   19 | fun duplicate<T, T>(x: Int, x: Int) {
+      |                  ^
+declarations.phs:19:15: note: first declared here
+   19 | fun duplicate<T, T>(x: Int, x: Int) {
+      |               ^
+declarations.phs:19:29: error[E0200]: duplicate binding 'x'
+   19 | fun duplicate<T, T>(x: Int, x: Int) {
+      |                             ^
+declarations.phs:19:21: note: first declared here
+   19 | fun duplicate<T, T>(x: Int, x: Int) {
+      |                     ^
+declarations.phs:21:9: error[E0200]: duplicate binding 'value'
+   21 |     let value = 2
+      |         ^^^^^
+declarations.phs:20:9: note: first declared here
+   20 |     let value = 1
+      |         ^^^^^
+declarations.phs:23:45: error[E0202]: a type alias outside an interface requires '= Type' and cannot declare bounds
+   23 | interface I { type Element; struct Nested { type Missing } }
+      |                                             ^^^^^^^^^^^^
+declarations.phs:24:22: error[E0201]: duplicate deinit body
+   24 | class C { deinit {}; deinit {} }
+      |                      ^^^^^^^^^
+declarations.phs:24:11: note: first declared here
+   24 | class C { deinit {}; deinit {} }
+      |           ^^^^^^^^^
+declarations.phs:25:27: error[E0200]: duplicate binding 'value'
+   25 | enum E { Case(value: Int, value: Int), Case }
+      |                           ^^^^^
+declarations.phs:25:15: note: first declared here
+   25 | enum E { Case(value: Int, value: Int), Case }
+      |               ^^^^^
+declarations.phs:25:40: error[E0200]: duplicate binding 'Case'
+   25 | enum E { Case(value: Int, value: Int), Case }
+      |                                        ^^^^
+declarations.phs:25:10: note: first declared here
+   25 | enum E { Case(value: Int, value: Int), Case }
+      |          ^^^^

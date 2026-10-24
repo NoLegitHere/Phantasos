@@ -19,6 +19,7 @@ Layout (relative to tests/stage0):
     lexer/*.phs        -> `lex`,   stdout compared with *.tokens
     parser/*.phs       -> `parse`, stdout compared with *.ast
     diagnostics/*.phs  -> `check`, stderr compared with *.diag (must fail)
+    semantics/*.phs    -> `check`, stderr compared with *.diag (may succeed)
 
 For lexer/parser tests, stderr is compared with *.diag when that file exists;
 otherwise the test must succeed with empty stderr.
@@ -29,6 +30,7 @@ Usage: python tests/run_golden.py --stage0 <path-to-phantasos-stage0> [--update]
 from __future__ import annotations
 
 import argparse
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -44,6 +46,14 @@ SUITES = {
 
 def norm(text: str) -> str:
     return text.replace("\r\n", "\n")
+
+
+def check_exit_code(suite: str, src: Path, diagnostics: str) -> int:
+    if suite == "diagnostics":
+        return 1  # This suite consists exclusively of negative tests.
+    # Match a complete header for this source, never a quoted snippet or a note.
+    header = rf"^{re.escape(src.name)}:[0-9]+:[0-9]+: error\[E[0-9]+\]:"
+    return int(re.search(header, diagnostics, re.MULTILINE) is not None)
 
 
 def run_case(exe: Path, suite: str, src: Path, update: bool) -> list[str]:
@@ -64,6 +74,12 @@ def run_case(exe: Path, suite: str, src: Path, update: bool) -> list[str]:
     if update:
         if proc.returncode not in (0, 1):
             return [f"abnormal exit code {proc.returncode}; expected files not updated"]
+        if suite in ("diagnostics", "semantics"):
+            expected_code = check_exit_code(suite, src, stderr)
+            if proc.returncode != expected_code:
+                return [f"expected exit code {expected_code}, got {proc.returncode}; expected files not updated"]
+            if stdout:
+                return ["unexpected stdout; expected files not updated"]
         for path, actual in expected_files:
             path.write_text(actual, encoding="utf-8", newline="\n")
         return failures
@@ -84,7 +100,7 @@ def run_case(exe: Path, suite: str, src: Path, update: bool) -> list[str]:
         if stdout:
             failures.append(f"unexpected stdout:\n{stdout}")
         if diag_file.exists():
-            expected_code = 1 if "error[" in diag_file.read_text(encoding="utf-8") else 0
+            expected_code = check_exit_code(suite, src, diag_file.read_text(encoding="utf-8"))
             if proc.returncode != expected_code:
                 failures.append(f"expected exit code {expected_code}, got {proc.returncode}")
     else:

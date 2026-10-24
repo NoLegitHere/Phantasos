@@ -66,9 +66,10 @@ ItemKind = FunDecl | ClassDecl | StructDecl | EnumDecl | InterfaceDecl
 
 Attribute = "@", ( Ident | Keyword ), [ "(", [ AttrArgs ], ")" ] ;
 AttrArgs = AttrArg, { ",", AttrArg }, [ "," ] ;
-AttrArg = Ident, "=", Literal | Literal | Ident ;
+AttrArg = [ Ident, "=" ], Expr ;
 (* An attribute argument list must directly follow its name, without
-   intervening whitespace or comments. *)
+   intervening whitespace or comments. Values use the expression grammar;
+   attribute-specific value restrictions are checked semantically. *)
 
 Visibility = "public" | "internal" | "file" | "private" ;
 Modifier = "open" | "final" | "abstract" | "sealed" | "override"

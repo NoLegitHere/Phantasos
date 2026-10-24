@@ -248,11 +248,17 @@ void diagnostic_rendering_and_order() {
     const auto second = sources.add("second.phs", "z");
     CHECK(first && second);
     DiagEngine diag(sources);
+    CHECK(diag.in_source_order().empty());
     diag.error(DiagCode::ExpectedToken, {*second, 0, 1}, "later file");
     auto& error = diag.error(DiagCode::ExpectedExpression, {*first, 2, 5}, "first message {}", 42);
     error.notes.push_back({{*first, 0, 1}, "context"});
     diag.warning(DiagCode::ExpectedExpression, {*first, 2, 5}, "same position");
     CHECK(diag.error_count() == 2 && diag.all().size() == 3);
+    const auto ordered = diag.in_source_order();
+    CHECK(ordered.size() == 3);
+    CHECK(ordered[0] == &diag.all()[1] && ordered[1] == &diag.all()[2] && ordered[2] == &diag.all()[0]);
+    CHECK(ordered[0]->notes.size() == 1);
+    CHECK(diag.all().front().span.file == *second);  // Querying preserves emission order too.
     const std::string output = rendered(diag);
     const auto a = output.find("first.phs:1:3: error[E0101]: first message 42");
     const auto b = output.find("first.phs:1:3: warning[E0101]: same position");

@@ -32,6 +32,7 @@ struct Context {
     bool loop = false;
     bool can_throw = false;
     bool async = false;
+    bool deferred = false;
 };
 
 // Context travels with each work item: visiting one branch cannot leak loop,
@@ -77,10 +78,17 @@ private:
         for (const auto& entry : entries) bind(scope, entry.name);
     }
 
-    void declarations(List<Item*> items) {
+    void declarations(List<Item*> items, List<Param> ctor_params = {}, bool promote_all = false) {
         // Type and value declaration checks are separate. Function overloads
         // and cross-namespace collisions require the later name/type pass.
         Names types, values;
+        for (const Param& param : ctor_params) {
+            if (!param.name.sym.empty() &&
+                (promote_all || param.binding == Binding::Let || param.binding == Binding::Var))
+                // Parameter-list duplicates are diagnosed separately. Keep the
+                // earliest promoted declaration as the note target for members.
+                values.try_emplace(param.name.sym.id, param.name.span);
+        }
         for (const Item* item : items) {
             if (is_type_decl(item->kind) || item->kind == ItemKind::TypeAlias)
                 bind(types, item->name);
@@ -89,9 +97,13 @@ private:
         }
     }
 
+    void defaults(List<Param> parameters, Context context) {
+        for (const Param& p : std::views::reverse(parameters)) push(p.default_value, context);
+    }
+
     void params(List<Param> parameters, Context context) {
         unique_names(parameters);
-        for (const Param& p : std::views::reverse(parameters)) push(p.default_value, context);
+        defaults(parameters, context);
     }
 
     void arguments(List<Arg> args, Context context) {
@@ -101,7 +113,8 @@ private:
     void visit(const Item& item, Context context) {
         if (const auto* type = as_type_decl(&item)) {
             unique_names(type->generics);
-            declarations(type->members);
+            unique_names(type->ctor_params);
+            declarations(type->members, type->ctor_params, type->kind == ItemKind::Struct);
             const Context member{.owner = type};
             const Item* deinit = nullptr;
             const Item* primary_init = nullptr;
@@ -120,7 +133,7 @@ private:
             }
             for (const Item* child : std::views::reverse(type->members)) push(child, member);
             for (const SuperEntry& base : std::views::reverse(type->supers)) arguments(base.args, member);
-            params(type->ctor_params, member);
+            defaults(type->ctor_params, member);
         } else {
             switch (item.kind) {
                 case ItemKind::Fun: {
@@ -169,8 +182,8 @@ private:
                 default: unreachable();  // type declarations were handled above
             }
         }
-        // Attribute identifiers and values are metadata, not lexical bindings,
-        // but any expression nested inside an attribute still has to obey flow rules.
+        // Attribute values use the normal expression grammar. Attribute-specific
+        // value restrictions belong to a later pass; flow rules apply already.
         for (const Attribute& attr : std::views::reverse(item.attrs))
             for (const AttrArg& arg : std::views::reverse(attr.args)) push(arg.value, context);
     }
@@ -179,22 +192,34 @@ private:
         switch (stmt.kind) {
             case StmtKind::Var: push(cast<VarStmt>(&stmt)->init, context); break;
             case StmtKind::Return:
-                if (!context.callable)
+                if (context.deferred)
+                    diag_.error(DiagCode::InvalidControlFlow, stmt.span, "'return' cannot leave a defer block");
+                else if (!context.callable)
                     diag_.error(DiagCode::InvalidControlFlow, stmt.span,
                                 "'return' requires a function, init or deinit body");
                 push(cast<ReturnStmt>(&stmt)->value, context);
                 break;
             case StmtKind::Break:
             case StmtKind::Continue:
-                if (!context.loop)
-                    diag_.error(DiagCode::InvalidControlFlow, stmt.span,
-                                "'{}' requires an enclosing loop body",
-                                stmt.kind == StmtKind::Break ? "break" : "continue");
+                if (!context.loop) {
+                    const auto keyword = stmt.kind == StmtKind::Break ? "break" : "continue";
+                    if (context.deferred)
+                        diag_.error(DiagCode::InvalidControlFlow, stmt.span,
+                                    "'{}' cannot leave a defer block; it requires a loop inside the block", keyword);
+                    else
+                        diag_.error(DiagCode::InvalidControlFlow, stmt.span,
+                                    "'{}' requires an enclosing loop body", keyword);
+                }
                 break;
             case StmtKind::Throw:
-                if (!context.can_throw)
-                    diag_.error(DiagCode::ThrowOutsideThrows, stmt.span,
-                                "'throw' requires a throwing function/init or a 'try?' expression");
+                if (!context.can_throw) {
+                    if (context.deferred)
+                        diag_.error(DiagCode::ThrowOutsideThrows, stmt.span,
+                                    "'throw' cannot escape a defer block; handle it with 'try?' inside the block");
+                    else
+                        diag_.error(DiagCode::ThrowOutsideThrows, stmt.span,
+                                    "'throw' requires a throwing function/init or a 'try?' expression");
+                }
                 push(cast<ThrowStmt>(&stmt)->value, context);
                 break;
             case StmtKind::While: {
@@ -217,7 +242,11 @@ private:
                 context.loop = true;
                 push(cast<LoopStmt>(&stmt)->body, context);
                 break;
-            case StmtKind::Defer: push(cast<DeferStmt>(&stmt)->body, context); break;
+            case StmtKind::Defer:
+                // Cleanup is a fresh, synchronous control-flow boundary. Loops
+                // and try? inside it can establish their own local contexts.
+                push(cast<DeferStmt>(&stmt)->body, {.owner = context.owner, .deferred = true});
+                break;
             case StmtKind::Expr: push(cast<ExprStmt>(&stmt)->expr, context); break;
             case StmtKind::Assign: {
                 const auto& assign = *cast<AssignStmt>(&stmt);
@@ -245,16 +274,23 @@ private:
             if (next.merge) {
                 const auto* alt = cast<AltPat>(next.node);
                 const Names& first = scopes[next.first_child];
-                for (usize i = 1; i < alt->alts.size(); ++i) {
+                Names combined;
+                for (usize i = 0; i < alt->alts.size(); ++i) {
                     const Names& branch = scopes[next.first_child + i];
-                    if (branch.size() != first.size() ||
-                        !std::ranges::all_of(first, [&](const auto& entry) { return branch.contains(entry.first); }))
+                    if (i != 0 && (branch.size() != first.size() ||
+                        !std::ranges::all_of(first, [&](const auto& entry) { return branch.contains(entry.first); })))
                         diag_.error(DiagCode::PatternBindingMismatch, alt->alts[i]->span,
                                     "pattern alternatives must bind the same names");
+                    for (const auto& [id, span] : branch) {
+                        const auto [entry, inserted] = combined.try_emplace(id, span);
+                        if (!inserted && span.lo < entry->second.lo) entry->second = span;
+                    }
                 }
-                // Use source order for reproducible duplicate-binding diagnostics.
+                // Invalid alternatives recover with the union of their names,
+                // retaining the earliest span. Parent duplicate checks therefore
+                // do not depend on which alternative introduced a name first.
                 std::vector<Name> bindings;
-                for (const auto& [id, span] : first) bindings.push_back({Symbol{id}, span});
+                for (const auto& [id, span] : combined) bindings.push_back({Symbol{id}, span});
                 std::ranges::sort(bindings, {}, [](const Name& name) { return name.span.lo; });
                 for (Name name : bindings) bind(scopes[next.scope], name);
                 continue;
@@ -311,8 +347,12 @@ private:
             }
             case ExprKind::Unary: {
                 const auto& unary = *cast<UnaryExpr>(&expr);
-                if (unary.op == UnOp::Await && !context.async)
-                    diag_.error(DiagCode::AwaitOutsideAsync, unary.span, "'await' requires an async function body");
+                if (unary.op == UnOp::Await && !context.async) {
+                    if (context.deferred)
+                        diag_.error(DiagCode::AwaitOutsideAsync, unary.span, "'await' is not allowed in a defer block");
+                    else
+                        diag_.error(DiagCode::AwaitOutsideAsync, unary.span, "'await' requires an async function body");
+                }
                 if (unary.op == UnOp::TryOpt) context.can_throw = true;
                 push(unary.operand, context);
                 break;

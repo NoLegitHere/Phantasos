@@ -116,6 +116,84 @@ class C {
       DiagCode::InvalidDeclarationContext, DiagCode::InvalidDeclarationContext});
 }
 
+void promoted_fields() {
+    for (std::string_view source : {
+            "class C(let x: Int) { let x: Int = 1 }",
+            "class C(var x: Int) { var x: Int = 1 }",
+            "actor A(let x: Int) { let x: Int = 1 }",
+            "actor A(var x: Int) { let x: Int = 1 }",
+            "struct S(x: Int) { let x: Int = 1 }",
+            "struct S(let x: Int) { var x: Int = 1 }",
+            "struct S(var x: Int) { let x: Int = 1 }",
+        }) {
+        Frontend f;
+        f.check(source, {DiagCode::DuplicateBinding});
+        const auto& d = f.diag.all().front();
+        CHECK(d.notes.size() == 1 && d.notes[0].span.lo == source.find("x:"));
+        CHECK(d.span.lo == source.rfind("x:"));
+    }
+    Frontend f;
+    f.check(R"(
+class C(x: Int) { let x: Int = 1 }
+actor A(x: Int) { let x: Int = 1 }
+struct S(x: Int) { fun f(x: Int) { let x = 1 } }
+class Outer(let x: Int) { class Inner(let x: Int) {} }
+)", {});
+    Frontend duplicate;
+    duplicate.check("class C(let x: Int, let x: Int) { let x: Int = 1 }",
+                    {DiagCode::DuplicateBinding, DiagCode::DuplicateBinding});
+    for (const Diagnostic& d : duplicate.diag.all()) CHECK(d.notes[0].span.lo == 12);
+}
+
+void defer_boundaries() {
+    Frontend f;
+    f.check(R"(
+async fun f() throws(Error) {
+    loop {
+        defer {
+            break
+            continue
+            return
+            throw failure
+            await task()
+            loop { break; continue }
+            let handled = try? unsafe { throw failure }
+        }
+        break
+        continue
+    }
+    await task()
+    throw failure
+    return
+}
+)", {DiagCode::InvalidControlFlow, DiagCode::InvalidControlFlow, DiagCode::InvalidControlFlow,
+      DiagCode::ThrowOutsideThrows, DiagCode::AwaitOutsideAsync});
+    Frontend nested;
+    nested.check(R"(
+fun f() throws(Error) {
+    defer {
+        loop { defer { break }; break }
+        let x = try? unsafe { defer { throw failure }; throw failure }
+        loop { return }
+    }
+    let x = try? unsafe { defer { throw failure } }
+}
+)", {DiagCode::InvalidControlFlow, DiagCode::ThrowOutsideThrows,
+      DiagCode::InvalidControlFlow, DiagCode::ThrowOutsideThrows});
+    Frontend valid;
+    valid.check(R"(
+fun f() {
+    defer {
+        for x in items { continue; break }
+        while true { break; continue }
+        loop { break }
+        defer { loop { break }; let x = try? cleanup() }
+        let x = try? unsafe { throw failure }
+    }
+}
+)", {});
+}
+
 void flow_contexts() {
     Frontend f;
     f.check(R"(
@@ -167,6 +245,48 @@ fun f(x: E) = match x {
 }
 )", {DiagCode::DuplicateBinding, DiagCode::PatternBindingMismatch, DiagCode::DuplicateBinding,
       DiagCode::DuplicateBinding, DiagCode::PatternBindingMismatch});
+}
+
+void alternative_recovery_is_order_independent() {
+    for (std::string_view pattern : {
+            ".Pair(.A(a) | .B, a)", ".Pair(.A | .B(a), a)",
+            ".Pair(a, .A(a) | .B)", ".Pair(a, .A | .B(a))",
+        }) {
+        Frontend f;
+        const std::string source = "fun f(x: E) = match x { " + std::string(pattern) + " -> a }";
+        f.check(source, {DiagCode::PatternBindingMismatch, DiagCode::DuplicateBinding});
+        for (const Diagnostic& d : f.diag.all()) {
+            if (d.code != DiagCode::DuplicateBinding) continue;
+            CHECK(d.notes.size() == 1);
+            CHECK(d.notes[0].span.lo == source.find('a', source.find(".Pair(") + 6));
+            CHECK(d.notes[0].span.lo < d.span.lo);
+        }
+    }
+    Frontend f;
+    constexpr std::string_view source = "fun f(x: E) = match x { .Pair(.A(a) | .B(a) | .C, a) -> a }";
+    f.check(source, {DiagCode::PatternBindingMismatch, DiagCode::DuplicateBinding});
+    CHECK(f.diag.all().back().notes[0].span.lo == source.find(".A(a)") + 3);
+}
+
+void source_order_is_explicit() {
+    Frontend f;
+    f.check(R"(
+@attr(if true { break })
+class C<T, T>(let x: Int) {
+    let x: Int = 1
+    fun f() = match await task() {
+        .A(a, a) if await task() -> await task()
+        .B(b, b) -> 0
+    }
+}
+)", {DiagCode::InvalidControlFlow, DiagCode::DuplicateBinding, DiagCode::DuplicateBinding,
+      DiagCode::AwaitOutsideAsync, DiagCode::DuplicateBinding, DiagCode::AwaitOutsideAsync,
+      DiagCode::AwaitOutsideAsync, DiagCode::DuplicateBinding});
+    const auto ordered = f.diag.in_source_order();
+    CHECK(ordered.size() == f.diag.all().size());
+    CHECK(std::ranges::is_sorted(ordered, {}, [](const Diagnostic* d) { return d->span.lo; }));
+    CHECK(ordered.front()->code == DiagCode::InvalidControlFlow);
+    CHECK(f.diag.all().front().code == DiagCode::DuplicateBinding);
 }
 
 void valid_contexts_and_shadowing() {
@@ -252,9 +372,13 @@ void flat_trees_and_multiple_files() {
 int main() {
     duplicate_bindings();
     declaration_contexts();
+    promoted_fields();
+    defer_boundaries();
     flow_contexts();
     isolated_defaults_and_initializers();
     patterns();
+    alternative_recovery_is_order_independent();
+    source_order_is_explicit();
     valid_contexts_and_shadowing();
     expression_children();
     flat_trees_and_multiple_files();

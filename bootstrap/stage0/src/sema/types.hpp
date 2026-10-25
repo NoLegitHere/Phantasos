@@ -134,7 +134,13 @@ struct ScalarSignature {
 };
 
 enum class CallState : u8 { Resolved, Deferred, Error };
-enum class CallKind : u8 { Function, NumericConversion, NominalConstructor, IndirectFunction };
+enum class CallKind : u8 { Function, NumericConversion, NominalConstructor, IndirectFunction, Method };
+struct CheckedMember {
+    ResolutionState state = ResolutionState::Deferred;
+    BindingId owner;
+    bool type_receiver = false;
+    std::vector<BindingId> candidates; // field, method overloads, or nested type
+};
 enum class ConversionKind : u8 { Widening, Checked, Truncating };
 struct CheckedConversion {
     CallState state = CallState::Deferred;
@@ -150,6 +156,7 @@ struct CheckedCall {
     // Maps each supplied argument to a parameter; omitted defaults have no entry.
     std::vector<usize> parameters;
     CallKind kind = CallKind::Function;
+    const ast::Expr* receiver = nullptr; // explicit instance for a Method call; implicit/static receivers are null
 };
 
 class ScalarChecker;
@@ -176,6 +183,12 @@ public:
         const auto it = conversions_.find(expr);
         return it == conversions_.end() ? nullptr : &it->second;
     }
+    // Ordinary MemberExpr and implicit member NameExpr records. Resolution is
+    // left unchanged; overloaded method values can still have Deferred types.
+    const CheckedMember* member(const ast::Expr* expr) const {
+        const auto it = members_.find(expr);
+        return it == members_.end() ? nullptr : &it->second;
+    }
     const ExpandedType* alias(BindingId id) const { return aliases_.alias(id); }
     const TypeDescriptor* descriptor(ScalarType type) const { return types_.descriptor(type); }
     std::string type_name(ScalarType type, const Resolution& resolution, const Interner& names) const {
@@ -189,6 +202,7 @@ private:
     std::unordered_map<usize, ScalarSignature> signatures_;
     std::unordered_map<const ast::CallExpr*, CheckedCall> calls_;
     std::unordered_map<const ast::CallExpr*, CheckedConversion> conversions_;
+    std::unordered_map<const ast::Expr*, CheckedMember> members_;
     AliasExpansion aliases_;
     TypeTable types_;
 };
@@ -198,8 +212,8 @@ private:
 // Also infers expression-body returns and checks direct file-level function
 // calls, numeric conversions and optional wrappers on built-in facts.
 // Includes fully known composites, non-generic nominal identities, arrays,
-// primary constructors and calls through known function types. Generic aliases,
-// member lookup, inheritance, function-value inference, effects and ownership
+// primary constructors, direct nominal members and calls through known function types. Generic aliases,
+// inherited/dependent member lookup, function-value inference, effects and ownership
 // still require later passes.
 // Dependency evaluation and AST traversal use explicit stacks, including
 // forward binding inference. Cyclic inference remains deferred for a later pass.

@@ -228,7 +228,7 @@ type Container = C
 type NumberType = Container.Number
 let value = Container.Number(true)
 )");
-    CHECK(member_namespace.alias("NumberType").scalar == Type::Int8 && member_namespace.value("value") == Type::Deferred);
+    CHECK(member_namespace.alias("NumberType").scalar == Type::Int8 && member_namespace.value("value") == Type::Bool);
     CHECK(!member_namespace.result.scalar_types->conversion(member_namespace.call("value")));
 }
 

@@ -78,6 +78,11 @@
   Defer possible inheritance/conformance instead of treating it as equality or
   a proven mismatch. Primary constructors and typed indirect calls finish without
   adding function-return dependencies; named-function value inference is pending.
+  Member lookup retains separate `CheckedMember` records; never rewrite lexical
+  references. Index direct member scopes and cache expression type entities.
+  Resolve a receiver before adding its selected field dependency. Method calls
+  add only the selected return dependency, as direct functions do. Keep inherited
+  overload sets deferred until hierarchy lookup is implemented.
   For low-level API calls, seed the interner with `seed_keywords` before lexing. Source
   managers, interners, and arenas must outlive the views/nodes referring to
   their storage. `DiagEngine::all()` exposes emission order;
@@ -135,6 +140,9 @@
   The `composites` suite covers canonical descriptors, contextual/parenthesized
   arrays, indexing, nominal identity/constructors, pointer/function signatures,
   typed indirect calls, deferred relations, stable records and deep type graphs.
+  The `members` suite covers direct fields/methods, static and implicit receivers,
+  alias-qualified access, member overloads/defaults, callable fields, receiver
+  errors, deferred hierarchies/generics, stable records and 10,000-step chains.
 
 - Run `python tests/test_license_check.py` for license-fixer regressions,
   including encoding declarations, BOMs, line endings, and idempotence.

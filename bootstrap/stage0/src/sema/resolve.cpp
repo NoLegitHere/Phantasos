@@ -30,6 +30,7 @@ struct Context {
     ScopeId scope;
     BindingId owner;
     bool receiver = false;
+    bool implicit_receiver = false; // instance field initializers cannot use explicit self yet
 };
 struct TypeScopes {
     ScopeId generics, members, constructor;
@@ -143,7 +144,8 @@ private:
     Target record(Span span, Context context, NameSpace space, Target target) {
         const usize index = result_.references_.size();
         PHS_ASSERT(result_.references_by_offset_.emplace(span.lo, index).second);
-        result_.references_.push_back({span, context.scope, space, target.state, target.set});
+        result_.references_.push_back({span, context.scope, space, target.state, target.set,
+                                      context.receiver || context.implicit_receiver ? context.owner : BindingId{}});
         return target;
     }
 
@@ -307,6 +309,7 @@ private:
                 if (context.owner.valid() && !has_modifier(item.mods, Modifier::Static)) {
                     const auto* owner = cast_type_decl(result_.binding(context.owner).item);
                     context.scope = type_scopes_.at(owner).constructor;
+                    context.implicit_receiver = true;
                 }
                 push(var.init, context);
                 push(var.type, context);
@@ -487,7 +490,7 @@ private:
             case ExprKind::Match: {
                 const auto& match = *cast<MatchExpr>(&expr);
                 for (const MatchArm& arm : std::views::reverse(match.arms)) {
-                    Context local{scope(context.scope, ScopeKind::MatchArm), context.owner, context.receiver};
+                    Context local{scope(context.scope, ScopeKind::MatchArm), context.owner, context.receiver, context.implicit_receiver};
                     push(arm.body, local);
                     push(arm.guard, local);
                     pattern(*arm.pattern, local);

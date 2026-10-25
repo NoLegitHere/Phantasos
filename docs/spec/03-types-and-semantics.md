@@ -346,7 +346,7 @@ does not alter the syntax tree, and dependent expressions avoid cascading
 diagnostics. Parsing alone performs none of these checks.
 
 The type API explicitly returns `Deferred` for unsupported calls, named-function values,
-generic types and aliases, receiver-dependent members, optional
+generic types and aliases, inherited/dependent members (3.19), optional
 bindings, casts, effect operators and block/branch results. It traverses their
 children to check supported scalar subexpressions. Forward variable references
 can infer scalar types. Numeric literals in deferred contextual positions keep
@@ -394,7 +394,8 @@ diagnostic.
 A potentially matching generic/constrained signature, unsupported parameter type or pending
 argument type keeps selection deferred, even if another scalar candidate fits.
 Independently provable shape/type mismatches still eliminate candidates. Calls
-through methods, type-qualified members and generic instantiations remain deferred.
+through generic instantiations remain deferred. Direct nominal methods and
+type-qualified calls follow 3.19.
 Known function-typed calls and primary constructors follow 3.18. Built-in numeric conversions follow section 3.16. The pass checks
 their supported scalar children. Constraints, effects, conventions, visibility, duplicate
 signature validity and all-path returns require later checks.
@@ -551,6 +552,43 @@ including across long alias chains. Matching visits each directed descriptor
 pair once per comparison. Completed type/descriptor facts are cached;
 descriptor pointers are stable after checking, but not across mutable interning.
 
-Receiver-dependent field/method lookup, inheritance/conformance, smart casts,
+Direct receiver-dependent field/method lookup follows 3.19. Inheritance/conformance, smart casts,
 effects, unsafe checking and remaining optional operations are still pending.
 Passing `check` continues to establish only the implemented checks.
+
+## 3.19 Initial receiver-dependent members [Core]
+
+Known non-optional, non-generic nominal receivers support directly declared
+fields and methods. Promoted primary-constructor fields keep their separate
+binding identities and declared types. Explicit field initializers can infer
+their types. Field reads, chains and assignment type requirements use those
+facts; initialization, mutable-place legality and ownership remain later checks.
+
+Instance members require an instance receiver. Static fields/methods and nested
+types require a type receiver, including a transparent alias or `Self`.
+Unqualified instance fields/methods use the enclosing implicit receiver when
+available; static bodies and parameter defaults have no implicit instance.
+Instance field initializers can refer to fields without making explicit `self`
+available. Unqualified static members are available in either kind of body.
+Values take precedence over nested types with the same spelling.
+
+Method calls use the direct-call argument, label, default, overload and literal
+range rules. Only the selected method adds a return-inference dependency;
+rejected overloads cannot create inference cycles. A field of function type
+uses the positional indirect-call rules. Bound method values and explicit
+generic method instantiation remain deferred.
+
+`E0450` reports a missing direct receiver member when no inherited lookup is
+pending. `E0451` reports an incompatible static/instance receiver. Lexical
+type-qualified name errors retain the resolver's diagnostics. Inherited lookup,
+including potentially inherited method overloads, remains deferred. Generic
+owners/captured generic types, `super`, optional chaining, ownership-wrapper
+and built-in members, visibility, effects and smart casts still require later
+checking. Direct field facts of a derived owner can still be used.
+
+`ScalarTypes::member` retains the owner, receiver kind and field/method/nested
+type candidates for ordinary member expressions and implicit member names.
+Lexical reference states and the AST remain unchanged. `CallKind::Method`
+records retain selected targets and explicit instance receiver expressions;
+implicit/static receivers have no explicit expression. Lookups, entity caching
+and selected dependencies use explicit stacks, including long member/call chains.

@@ -196,6 +196,22 @@ class FrontendTests(unittest.TestCase):
         self.assertIn("error[E0300]", stderr)
         self.assertNotIn("error[E04", stderr)
 
+    def test_receiver_member_checks_and_phase_gating(self) -> None:
+        source = ('struct C(x: Int8) { fun read(): Int8 = self.x }\n'
+                  'let missing = C(1).nope\nlet receiver = C.x\n'
+                  'let mismatch: Bool = C(1).read()')
+        code, _, stderr = self.run_source(source, "parse")
+        self.assertEqual((code, stderr), (0, ""))
+        code, stdout, stderr = self.run_source(source, "check")
+        self.assertEqual((code, stdout), (1, ""))
+        self.assertEqual(stderr.count("error["), 3, stderr)
+        for diagnostic in ("E0450", "E0451", "E0400"):
+            self.assertIn(f"error[{diagnostic}]", stderr)
+        code, _, stderr = self.run_source(source + "\nlet unknown = absent", "check")
+        self.assertEqual(code, 1)
+        self.assertIn("error[E0300]", stderr)
+        self.assertNotIn("error[E04", stderr)
+
     def test_check_resolves_names_after_validation(self) -> None:
         source = "fun f(x: Missing) = unknown(x)\n"
         code, _, stderr = self.run_source(source, "parse")

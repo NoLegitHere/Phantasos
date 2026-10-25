@@ -74,12 +74,12 @@ phs_warnings(phantasos-stage0)
 
 include(CTest)
 if(BUILD_TESTING)
-    foreach(suite IN ITEMS support frontend sema resolve session types calls conversions aliases composites)
+    foreach(suite IN ITEMS support frontend sema resolve session types calls conversions aliases composites members)
         add_executable(phantasos-${suite}-tests tests/${suite}_tests.cpp)
         target_link_libraries(phantasos-${suite}-tests PRIVATE Phantasos::Frontend)
         phs_warnings(phantasos-${suite}-tests)
         add_test(NAME ${suite} COMMAND phantasos-${suite}-tests)
     endforeach()
-    # Bound the shared descriptor-DAG regression if pair memoization regresses.
-    set_tests_properties(composites PROPERTIES TIMEOUT 30)
+    # Bound the descriptor-DAG and long member-chain regressions.
+    set_tests_properties(composites members PROPERTIES TIMEOUT 30)
 endif()

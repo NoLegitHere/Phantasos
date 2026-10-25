@@ -164,10 +164,11 @@ type Alias = Int8
 let alias = Alias.truncating(1)
 struct Int8 { static fun checked(value: Int): Bool = true }
 let shadowed = Int8.checked(1)
-)");
+)", {DiagCode::UnknownMember});
     // The file's Int8 shadows the built-in throughout, including pending.
     CHECK(!f.result.scalar_types->conversion(f.call("pending")));
     CHECK(!f.result.scalar_types->conversion(f.call("alias")) && !f.result.scalar_types->conversion(f.call("shadowed")));
+    CHECK(f.type("alias") == Type::Error && f.type("shadowed") == Type::Bool);
     CHECK(f.conversion("cross").state == CallState::Deferred && f.conversion("cross").source == Type::Int);
     CHECK(f.conversion("floatingNarrow").state == CallState::Deferred);
     Frontend pending;

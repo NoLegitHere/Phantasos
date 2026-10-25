@@ -1,0 +1,30 @@
+members_errors.phs:18:34: error[E0451]: member 'x' is unavailable through this implicit receiver
+   18 |     static fun invalid(): Int8 = x
+      |                                  ^
+members_errors.phs:22:21: error[E0450]: type 'Point' has no member 'nope'
+   22 | let missing = point.nope
+      |                     ^^^^
+members_errors.phs:23:22: error[E0451]: member 'x' is unavailable through this type receiver
+   23 | let instance = Point.x
+      |                      ^
+members_errors.phs:24:24: error[E0451]: member 'flag' is unavailable through this instance receiver
+   24 | let typeAccess = point.flag
+      |                        ^^^^
+members_errors.phs:25:20: error[E0451]: member 'read' is unavailable through this type receiver
+   25 | let method = Point.read()
+      |                    ^^^^
+members_errors.phs:26:16: error[E0411]: arguments do not match any callable signature
+   26 | let argument = point.read(true)
+      |                ^^^^^^^^^^^^^^^^
+members_errors.phs:17:9: note: candidate 'read(value: Int8 = ...)'
+   17 |     fun read(value: Int8 = 1): Int8 = self.x
+      |         ^^^^
+members_errors.phs:27:24: error[E0402]: integer literal is out of range for 'Int8'
+   27 | let range = point.read(128)
+      |                        ^^^
+members_errors.phs:28:20: error[E0400]: expected 'Bool', found 'Int8'
+   28 | let result: Bool = point.read()
+      |                    ^^^^^^^^^^^^
+members_errors.phs:29:27: error[E0400]: expected 'Int8', found 'Bool'
+   29 | fun write(value: Point) { value.x = false }
+      |                           ^^^^^^^^^^^^^^^

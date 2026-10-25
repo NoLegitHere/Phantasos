@@ -35,7 +35,8 @@ Windows x64 and Linux x86_64:
 - [x] Initial numeric conversions: widening, checked/truncating integers and optional result facts
 - [x] Non-generic alias expansion, cycle diagnostics and canonical type identities
 - [x] Initial composite/nominal identities, arrays, primary constructors and typed indirect calls
-- [ ] Generics, function-value inference, remaining numeric policies, member lookup and ownership analysis
+- [x] Direct nominal field/method lookup, static/instance access and member call targets
+- [ ] Generics, function-value inference, remaining numeric policies, inheritance and ownership analysis
 - [ ] MIR, x86_64 codegen, COFF/ELF writers, linker, runtime
 - [ ] Workspace-aware build driver
 
@@ -61,9 +62,12 @@ checks cycles before value typing and supports known direct alias-qualified
 type members and numeric conversion targets. Canonical descriptors represent
 fully known arrays, pointers, ownership wrappers, function signatures and
 non-generic nominal instances. Array literals/indexing, exact composite matches,
-primary constructor arguments and typed indirect calls are checked. Generics,
+primary constructor arguments and typed indirect calls are checked. Direct fields
+and methods on known nominal receivers retain declaration/overload identities;
+method calls check arguments and infer returns. Static/instance access is checked
+through types, aliases, ordinary instances and implicit receivers. Generics,
 function-value inference, associated requirements, remaining numeric policies,
-receiver-dependent members, inheritance and ownership analysis remain
+inherited/dependent members, optional/ownership-wrapper member access and ownership analysis remain
 pending, so passing `check` does not yet establish program validity. Imports explicitly report that
 package loading is unavailable.
 

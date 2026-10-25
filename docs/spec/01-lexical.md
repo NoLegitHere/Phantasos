@@ -31,6 +31,8 @@ The parser also skips newlines:
 - after any binary operator, `,`, `=`, `->`, `:`, `.`, `?.`, and after an
   opening delimiter (so a line ending in an operator continues the
   expression);
+- after `|` in an alternative pattern, so its next pattern can start on a
+  new line;
 - before any required type, e.g. after `:`, `=`, `->`, `&`, `is`, or `as`;
 - before `.` and `?.` (leading-dot member chains), **except** directly at
   the top level of a `match` arm body, where a line starting with `.`

@@ -196,6 +196,19 @@ class FrontendTests(unittest.TestCase):
         self.assertIn("error[E0300]", stderr)
         self.assertNotIn("error[E04", stderr)
 
+    def test_bounded_type_mismatch_diagnostics(self) -> None:
+        declarations = []
+        for prefix, leaf in (("A", "Int"), ("B", "Bool")):
+            for i in range(64):
+                declarations.append(f"type {prefix}{i} = fun({prefix}{i+1}, {prefix}{i+1}) -> {prefix}{i+1}")
+            declarations.append(f"type {prefix}64 = fun() -> {leaf}")
+        declarations.append("fun compare(value: A0) { let bad: B0 = value }")
+        code, stdout, stderr = self.run_source("\n".join(declarations), "check")
+        self.assertEqual((code, stdout), (1, ""))
+        self.assertEqual(stderr.count("error[E0400]"), 1, stderr)
+        self.assertIn("...", stderr)
+        self.assertLess(len(stderr.encode("utf-8")), 4096)
+
     def test_receiver_member_checks_and_phase_gating(self) -> None:
         source = ('struct C(x: Int8) { fun read(): Int8 = self.x }\n'
                   'let missing = C(1).nope\nlet receiver = C.x\n'

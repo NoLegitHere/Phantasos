@@ -279,7 +279,7 @@ public:
     }
 
 private:
-    std::string scalar_type_name(Type type) const { return types_.name(type, resolution_, names_); }
+    std::string scalar_type_name(Type type) const { return types_.name(type, resolution_, names_, 1024); }
 
     enum class Relation : u8 { Yes, No, Deferred };
     bool protocol(Type type) const {

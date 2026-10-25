@@ -1,0 +1,83 @@
+File
+  Let asComparisons
+    Call
+      Name foo
+      Binary Lt
+        Cast as Int
+          Name x
+        Name y
+      Binary Gt
+        Name z
+        Name w
+  Let isComparisons
+    Call
+      Name foo
+      Binary Lt
+        Cast is Int
+          Name x
+        Name y
+      Binary Ge
+        Name z
+        Name w
+  Let parenthesized
+    Call
+      Name foo
+      Binary Lt
+        Cast as Int
+          Name x
+        Name y
+      Binary Gt
+        Name z
+        Paren
+          Name w
+  Let callback
+    Binary Lt
+      Cast as fun(A<B>) -> Int
+        Name x
+      Name y
+  Let nested
+    Binary Lt
+      Cast is fun([A<B>], fun(C) -> D) -> Result<T> throws(Error<U>)
+        Name x
+      Name y
+  Let optional
+    Binary Add
+      Cast as Container<T>??
+        Name x
+      Name y
+  Fun alternatives
+    Param x: Int
+    ExprBody
+      Match
+        Name x
+        Arm 1 | 2 | 3
+          Int 0
+        Arm _
+          Int 1
+  Fun controls
+    Param x: Value
+    Body
+      Block
+        If
+          Cond
+            Cast is Box<Int>
+              Name x
+          Block
+        While
+          Cond
+            Cast is Box<Outer<Int>>?
+              Name x
+          Block
+        For item
+          Cast as Box<Int>
+            Name x
+          Block
+        Let result
+          Match
+            Cast as Box<Int>
+              Name x
+            Arm _
+              Guard
+                Cast is Box<Int>
+                  Name x
+              Int 0

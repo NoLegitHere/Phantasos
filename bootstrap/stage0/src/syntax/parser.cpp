@@ -506,6 +506,7 @@ private:
         throws = true;
         if (at(Tok::LParen)) {
             advance();
+            const ScopedValue enclosed_type(cast_type_, false);
             type = parse_type();
             expect(Tok::RParen);
         }
@@ -749,6 +750,7 @@ private:
             }
             case Tok::LBracket: {
                 advance();
+                const ScopedValue enclosed_type(cast_type_, false);
                 TypeExpr* inner = parse_type();
                 expect(Tok::RBracket);
                 TypeExpr* t = new_type(TypeKind::Array, from(start));
@@ -766,12 +768,15 @@ private:
             case Tok::KwFun: {
                 advance();
                 std::vector<TypeExpr*> params;
-                if (expect(Tok::LParen)) {
-                    while (!at(Tok::RParen) && !at(Tok::Eof)) {
-                        params.push_back(parse_type());
-                        if (!eat(Tok::Comma)) break;
+                {
+                    const ScopedValue enclosed_types(cast_type_, false);
+                    if (expect(Tok::LParen)) {
+                        while (!at(Tok::RParen) && !at(Tok::Eof)) {
+                            params.push_back(parse_type());
+                            if (spec_failed_ || !eat(Tok::Comma)) break;
+                        }
+                        expect(Tok::RParen);
                     }
-                    expect(Tok::RParen);
                 }
                 TypeExpr* t = new_type(TypeKind::Fun, start);
                 t->args = arena_.copy(params);
@@ -786,7 +791,7 @@ private:
                 const bool in_cast = std::exchange(cast_type_, false);
                 if (at(Tok::Lt) && in_cast) {
                     // After `is`/`as`, `<` may be a comparison: `x as Int < y`.
-                    if (auto args = try_generic_args(false)) t->args = *args;
+                    if (auto args = try_generic_args(GenericFollow::CastType)) t->args = *args;
                 } else if (at(Tok::Lt)) {
                     advance();
                     skip_newlines();
@@ -1207,10 +1212,33 @@ private:
         }
     }
 
-    // Spec 2.6 rule 1: speculatively parse `<Types>` after a name. With
-    // check_follow, the token after '>' must also be in the follow set.
-    [[nodiscard]] std::optional<List<TypeExpr*>> try_generic_args(bool check_follow) {
+    enum class GenericFollow : u8 { Postfix, CastType };
+    bool cast_type_follow() const {
+        usize offset = 0;
+        while (peek(offset).kind == Tok::Question) ++offset;
+        const Tok next = peek(offset).kind;
+        // Calls/member access cannot attach to an unparenthesized cast. These
+        // tokens can instead start the RHS of the comparison being retried.
+        if (next == Tok::LParen || next == Tok::Dot || next == Tok::QuestionDot) return false;
+        if (generic_follow(next)) return true;
+        switch (next) {
+            case Tok::LBrace: case Tok::Arrow: // control-flow body or match-guard terminator
+            case Tok::Plus: case Tok::Minus: case Tok::Star: case Tok::Slash: case Tok::Percent:
+            case Tok::AmpPlus: case Tok::AmpMinus: case Tok::AmpStar:
+            case Tok::Amp: case Tok::Pipe: case Tok::Caret: case Tok::Shl: case Tok::Shr:
+            case Tok::EqEq: case Tok::NotEq: case Tok::Lt: case Tok::LtEq: case Tok::Gt: case Tok::GtEq:
+            case Tok::AmpAmp: case Tok::PipePipe: case Tok::QuestionQuestion: case Tok::DotDot: case Tok::DotDotLt:
+            case Tok::KwIs: case Tok::KwAs: case Tok::KwThrows:
+                return true;
+            default: return false;
+        }
+    }
+
+    // Cast/type-test operands and postfix generic values have different legal
+    // continuations. In particular, binary operators can follow a cast type.
+    [[nodiscard]] std::optional<List<TypeExpr*>> try_generic_args(GenericFollow follow) {
         Speculation speculation(*this);
+        const ScopedValue enclosed_types(cast_type_, false);
         advance();  // '<'
         skip_newlines();
         std::vector<TypeExpr*> args;
@@ -1221,7 +1249,7 @@ private:
             skip_newlines();
         }
         if (depth_exceeded_ || spec_failed_ || args.empty() || !eat_gt() ||
-            (check_follow && !generic_follow(cur().kind))) return std::nullopt;
+            !(follow == GenericFollow::Postfix ? generic_follow(cur().kind) : cast_type_follow())) return std::nullopt;
         speculation.commit();
         return arena_.copy(args);
     }
@@ -1282,7 +1310,7 @@ private:
                     continue;
                 case Tok::Lt: {
                     if (e->kind != ExprKind::Name && e->kind != ExprKind::Member) return e;
-                    const auto args = try_generic_args(true);
+                    const auto args = try_generic_args(GenericFollow::Postfix);
                     if (!args) return e;
                     GenericInstExpr* g = mk<GenericInstExpr>(from(start));
                     g->base = e;
@@ -1488,7 +1516,10 @@ private:
         Pattern* first = parse_simple_pattern();
         if (!at(Tok::Pipe)) return first;
         std::vector<Pattern*> alts{first};
-        while (eat(Tok::Pipe)) alts.push_back(parse_simple_pattern());
+        while (eat(Tok::Pipe)) {
+            skip_newlines();
+            alts.push_back(parse_simple_pattern());
+        }
         AltPat* a = mk<AltPat>(from(start));
         a->alts = arena_.copy(alts);
         return a;

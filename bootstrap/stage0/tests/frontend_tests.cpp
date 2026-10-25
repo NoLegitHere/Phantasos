@@ -272,8 +272,99 @@ void diagnostic_rendering_and_order() {
 
 }  // namespace
 
+void cast_type_context_and_follow_tokens() {
+    for (std::string_view op : {"as", "is"}) {
+        for (std::string_view type : {"fun() -> Int", "fun(A) -> Int", "fun(A<B>) -> Int",
+             "fun([A<B>], fun(B) -> C) -> Result<T> throws(E<U>)"}) {
+            Frontend f;
+            const auto* file = f.parse(std::format("let value = x {} {} < y", op, type));
+            if (f.diag.has_errors(file->file)) f.diag.render(stderr);
+            CHECK(!f.diag.has_errors(file->file));
+            const auto* comparison = cast<BinaryExpr>(cast<VarItem>(file->items[0])->init);
+            CHECK(comparison->op == BinOp::Lt);
+            const auto* conversion = cast<CastExpr>(comparison->lhs);
+            CHECK(conversion->type->kind == TypeKind::Fun && conversion->type->args.empty() == type.starts_with("fun()"));
+            CHECK(f.names.str(cast<NameExpr>(comparison->rhs)->name.sym) == "y");
+        }
+        for (std::string_view comparison : {">", ">="}) {
+            for (std::string_view rhs : {"w", "1", "true", "\"text\"", "(w)", "!flag", ".Case"}) {
+                Frontend f;
+                const auto* file = f.parse(std::format("let value = foo(x {} Int < y, z {} {})", op, comparison, rhs));
+                if (f.diag.has_errors(file->file)) f.diag.render(stderr);
+                CHECK(!f.diag.has_errors(file->file));
+                const auto* call = cast<CallExpr>(cast<VarItem>(file->items[0])->init);
+                CHECK(call->args.size() == 2);
+                CHECK(cast<BinaryExpr>(call->args[0].value)->op == BinOp::Lt);
+                CHECK(cast<BinaryExpr>(call->args[1].value)->op == (comparison == ">" ? BinOp::Gt : BinOp::Ge));
+            }
+        }
+    }
+    // Cast types have more legal continuations than postfix generic values.
+    for (std::string_view tail : {"+ y", "* y", "== y", "< y", ">> y", "?? y", "is Other", "as Other", "? ? + y"}) {
+        Frontend f;
+        const auto* file = f.parse(std::format("let value = x as Container<T> {}", tail));
+        if (f.diag.has_errors(file->file)) f.diag.render(stderr);
+        CHECK(!f.diag.has_errors(file->file));
+        const auto* init = cast<VarItem>(file->items[0])->init;
+        const auto* conversion = as<CastExpr>(init);
+        if (!conversion) conversion = cast<CastExpr>(cast<BinaryExpr>(init)->lhs);
+        else if (as<CastExpr>(conversion->operand)) conversion = cast<CastExpr>(conversion->operand);
+        const auto* type = conversion->type;
+        while (type->kind == TypeKind::Optional) type = type->inner;
+        CHECK(type->kind == TypeKind::Path && type->args.size() == 1);
+    }
+    for (std::string_view source : {"let value = (x as Container<T>).field",
+                                   "let value = (x as fun(A) -> Result<T>)(arg)"}) {
+        Frontend f;
+        const auto* file = f.parse(source);
+        CHECK(!f.diag.has_errors(file->file));
+    }
+}
+
+void generic_cast_control_flow_delimiters() {
+    for (std::string_view op : {"is", "as"}) {
+        for (std::string_view type : {"Box<Int>", "Box<Outer<Int>>", "Box<Int> ? ?", "fun(A) -> Box<Int>"}) {
+            Frontend f;
+            const auto* file = f.parse(std::format(
+                "fun f(x: Int) {{\nif x {} {} {{}}\nwhile x {} {} {{}}\nfor element in x {} {} {{}}\n"
+                "let result = match x {} {} {{ _ if x {} {} -> 0 }}\n}}",
+                op, type, op, type, op, type, op, type, op, type));
+            if (f.diag.has_errors(file->file)) f.diag.render(stderr);
+            CHECK(!f.diag.has_errors(file->file));
+            const auto* body = cast<BlockExpr>(cast<FunItem>(file->items[0])->body);
+            CHECK(body->stmts.size() == 4);
+            const auto* branch = cast<IfExpr>(cast<ExprStmt>(body->stmts[0])->expr);
+            const auto* loop = cast<WhileStmt>(body->stmts[1]);
+            const auto* iteration = cast<ForStmt>(body->stmts[2]);
+            const auto* match = cast<MatchExpr>(cast<VarStmt>(body->stmts[3])->init);
+            CHECK(match->arms.size() == 1 && match->arms[0].guard);
+            for (const auto* expr : {branch->cond.expr, loop->cond.expr, iteration->iter, match->scrutinee, match->arms[0].guard}) {
+                const auto* conversion = cast<CastExpr>(expr);
+                CHECK(conversion->op == (op == "is" ? CastOp::Is : CastOp::As));
+                const auto* target = conversion->type;
+                if (target->kind == TypeKind::Fun) target = target->inner;
+                while (target->kind == TypeKind::Optional) target = target->inner;
+                CHECK(target->kind == TypeKind::Path && target->args.size() == 1);
+            }
+        }
+    }
+}
+
+void multiline_alternative_patterns() {
+    for (std::string_view newline : {"\n", "\r\n", "\r"}) {
+        Frontend f;
+        const auto* file = f.parse(std::format("fun f(x: Int) = match x {{ 1 |{} 2 -> 0 }}", newline));
+        CHECK(!f.diag.has_errors(file->file));
+        const auto* match = cast<MatchExpr>(cast<FunItem>(file->items[0])->body);
+        CHECK(match->arms.size() == 1 && cast<AltPat>(match->arms[0].pattern)->alts.size() == 2);
+    }
+}
+
 int main() {
     ast_casts_and_modifiers();
+    cast_type_context_and_follow_tokens();
+    generic_cast_control_flow_delimiters();
+    multiline_alternative_patterns();
     lexer_values_and_spans();
     block_comment_newlines();
     token_dump_locations();

@@ -75,6 +75,9 @@
   keys so aliases share identity. Descriptor pointers must not survive interning
   during a check. Completed result pointers remain stable. Type normalization,
   formatting, array materialization and overload probes use explicit work stacks.
+  Keep type-name formatting bounded in both work and output; shared descriptor
+  graphs can expand exponentially even with iterative traversal. Public names
+  default to 32 KiB and diagnostic names to 1 KiB per type, with `...` elision.
   Defer possible inheritance/conformance instead of treating it as equality or
   a proven mismatch. Primary constructors and typed indirect calls finish without
   adding function-return dependencies; named-function value inference is pending.
@@ -158,6 +161,10 @@
   fixtures exercise syntax independently of semantic validity.
 - Regenerate them with `python tests/run_golden.py --stage0 <exe> --update`
   and review the diff before committing.
+  Lexer/parser fixtures are positive unless an existing `.diag` baseline has
+  a primary error header. Updates must preserve that expected exit status
+  before writing any files. Intentionally negative lexer/parser cases need
+  that diagnostic baseline first. A filter matching no cases is an error.
 - Run `python tests/test_frontend.py --stage0 <exe>` for deterministic nesting,
   long AST/token traversal, and parser-state regression tests. These run on both
   platforms and in the sanitizer job, alongside the mutation fuzzer.

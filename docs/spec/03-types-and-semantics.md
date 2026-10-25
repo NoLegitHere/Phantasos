@@ -521,6 +521,8 @@ suppress errors in that sibling. Without an anchor or expected type, the array
 remains deferred. Unresolved concrete element types also remain deferred.
 Overload probes inspect elements without changing them,
 and only the selected signature contextualizes its literal arguments.
+Array equality remains deferred, but independently inferred literal operands
+still undergo element validation.
 
 Indexing a known non-optional array requires an integer index (or `Never`) and
 produces its element type. Invalid array/index combinations report `E0440`.

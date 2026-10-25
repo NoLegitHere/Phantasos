@@ -41,3 +41,4 @@ let contravariant: fun(Int) -> Int = produceOptional()
 let byte: Int8 = 1
 let inferredLeft = [[1], [byte]]
 let inferredRight = [[byte], [1]]
+let deferredEquality = [1] == [true]

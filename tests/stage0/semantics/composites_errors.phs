@@ -30,3 +30,5 @@ let nestedEmptyFirst = [[], [1, true]]
 let nestedEmptyLast = [[1, true], []]
 extern "C" { fun produceRequired(): fun(Int) -> Int }
 let unsafeVariance: fun(Int?) -> Int = produceRequired()
+let badEquality = [1, true] == [true]
+let badInequality = [true] != ([[], [1, true]])

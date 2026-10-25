@@ -31,3 +31,9 @@ composites_errors.phs:30:25: error[E0400]: expected 'Bool', found 'Int'
 composites_errors.phs:32:40: error[E0400]: expected 'fun(Int?) -> Int', found 'fun(Int) -> Int'
    32 | let unsafeVariance: fun(Int?) -> Int = produceRequired()
       |                                        ^^^^^^^^^^^^^^^^^
+composites_errors.phs:33:20: error[E0400]: expected 'Bool', found 'Int'
+   33 | let badEquality = [1, true] == [true]
+      |                    ^
+composites_errors.phs:34:38: error[E0400]: expected 'Bool', found 'Int'
+   34 | let badInequality = [true] != ([[], [1, true]])
+      |                                      ^

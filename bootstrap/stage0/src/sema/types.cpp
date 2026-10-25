@@ -737,9 +737,15 @@ private:
             if (unavailable(a) || unavailable(b)) return {};
             return {Type::Bool};
         }
+        const bool equality = expr.op == BinOp::Eq || expr.op == BinOp::Ne;
+        if (equality) {
+            // Validate independently inferred array elements before deferring
+            // equality. Check both operands even when one literal fails.
+            if (lhs.literal == Literal::Array && known(lhs.type)) lhs = materialize(expressions_.at(expr.lhs), lhs.type);
+            if (rhs.literal == Literal::Array && known(rhs.type)) rhs = materialize(expressions_.at(expr.rhs), rhs.type);
+        }
         if (lhs.type == Type::Error || rhs.type == Type::Error) return {Type::Error};
         if (expr.op == BinOp::Coalesce || expr.op == BinOp::Range || expr.op == BinOp::RangeExcl) return {};
-        const bool equality = expr.op == BinOp::Eq || expr.op == BinOp::Ne;
         if (equality && (lhs.type.optional_depth || rhs.type.optional_depth || lhs.type.kind >= Type::Nominal || rhs.type.kind >= Type::Nominal ||
                          lhs.literal == Literal::Array || rhs.literal == Literal::Array)) return {};
         const bool ordering = expr.op >= BinOp::Lt && expr.op <= BinOp::Ge;

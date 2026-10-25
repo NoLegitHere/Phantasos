@@ -281,6 +281,30 @@ let floats = [[1.0], [single]]
     }
 }
 
+void deferred_array_equality_checks_elements() {
+    for (std::string_view expr : {"[1, true] == [true]", "[true] == [1, true]",
+                                  "[1, true] != [true]", "[true] != [1, true]",
+                                  "([[], [1, true]]) == []"}) {
+        Frontend bad;
+        bad.check(std::format("let bad = {}", expr), {DiagCode::ScalarTypeMismatch});
+        CHECK(bad.value("bad") == Type::Error);
+    }
+    Frontend both;
+    both.check("let bad = [1, true] == [false, 2]", {DiagCode::ScalarTypeMismatch, DiagCode::ScalarTypeMismatch});
+    Frontend valid;
+    valid.check(R"(
+let same = [1] == [1]
+let distinct = [1] != [true]
+let empty = [] == []
+let byte: Int8 = 1
+let nested = ([[1], [byte]]) == [[]]
+fun opaque<T>(): UInt64 = UInt64(18446744073709551615)
+let pending = [opaque<Int>(), 18446744073709551615] == []
+)");
+    for (std::string_view binding : {"same", "distinct", "empty", "nested", "pending"})
+        CHECK(valid.value(binding) == Type::Deferred);
+}
+
 void function_parameter_variance() {
     Frontend possible;
     possible.check("extern \"C\" { fun produce(): fun(Int?) -> Int }\nlet value: fun(Int) -> Int = produce()");
@@ -319,6 +343,7 @@ int main() {
     stable_descriptors_and_deep_aliases();
     nested_array_defaults_and_never();
     nested_concrete_anchors();
+    deferred_array_equality_checks_elements();
     function_parameter_variance();
     shared_descriptor_graph_relations();
 }

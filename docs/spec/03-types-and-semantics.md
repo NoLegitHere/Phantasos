@@ -478,6 +478,8 @@ Transparent aliases must be acyclic. `E0430` reports an expansion cycle with
 notes on its path, including cycles through optional, array, pointer, function
 and generic-argument syntax, or through a known alias-qualified member. Only
 non-generic transparent definitions participate in this initial cycle pass.
+Alias-qualified dependency discovery examines nested paths in all of these
+forms, even when the composite expansion result remains deferred.
 Dependent aliases retain an error fact without additional cycle diagnostics.
 Alias definition errors gate value checking for that file while retaining alias
 records; `parse` remains syntax-only. Traversal uses explicit work stacks.

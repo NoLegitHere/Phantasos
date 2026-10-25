@@ -116,6 +116,7 @@ public:
         const auto bindings = resolution_.bindings();
         result_.progress_.resize(bindings.size(), 2);
         dependencies_.resize(bindings.size());
+        qualified_paths_.resize(bindings.size());
         positions_.resize(bindings.size());
         std::unordered_set<usize> interfaces;
         for (usize i = 0; i < bindings.size(); ++i) {
@@ -154,6 +155,7 @@ public:
             while (!pending.empty()) {
                 const auto* type = pending.back(); pending.pop_back();
                 if (type->kind == TypeKind::Path) {
+                    if (type->path.parts.size() > 1) qualified_paths_[id].push_back(type);
                     for (const Name& name : type->path.parts) {
                         const auto* ref = resolution_.reference(name.span);
                         if (!ref || ref->state != ResolutionState::Resolved) continue;
@@ -168,7 +170,7 @@ public:
             std::sort(deps.begin(), deps.end());
             deps.erase(std::unique(deps.begin(), deps.end()), deps.end());
         }
-        struct Frame { usize id, next = 0; };
+        struct Frame { usize id, next = 0, checked = 0, path_next = 0; };
         std::vector<Frame> stack;
         const auto push = [&](usize id) {
             result_.progress_[id] = 1;
@@ -197,14 +199,37 @@ public:
                     }
                     continue;
                 }
-                for (usize dep : deps)
+                while (frame.checked < deps.size()) {
+                    const auto dep = deps[frame.checked++];
                     if (result_.aliases_.at(dep).state == ExpansionState::Error) fact = failed();
+                }
+                if (fact.state != ExpansionState::Error) {
+                    // A composite result can remain deferred while a path
+                    // inside it still exposes an unconditional alias edge.
+                    // Resolve each such path after its lexical prefixes, and
+                    // resume it when a newly discovered dependency finishes.
+                    const auto& paths = qualified_paths_[frame.id];
+                    bool waiting = false;
+                    while (frame.path_next < paths.size()) {
+                        const auto lookup = result_.path(paths[frame.path_next]->path.parts, NameSpace::Type, resolution_);
+                        if (lookup.pending.valid()) {
+                            deps.push_back(lookup.pending.value);
+                            waiting = true;
+                            break;
+                        }
+                        ++frame.path_next;
+                        if (lookup.type.state == ExpansionState::Error) {
+                            report_unknown(lookup);
+                            fact = failed();
+                            break;
+                        }
+                    }
+                    if (waiting) continue;
+                }
                 if (fact.state != ExpansionState::Error) {
                     const auto lookup = result_.lookup(cast<TypeAliasItem>(bindings[frame.id].item)->type, resolution_);
                     if (lookup.pending.valid()) { deps.push_back(lookup.pending.value); continue; }
-                    if (!lookup.unknown.sym.empty())
-                        diag_.error(DiagCode::UnknownType, lookup.unknown.span, "unknown type '{}' in '{}'",
-                                    names_.str(lookup.unknown.sym), names_.str(bindings[lookup.owner.value].name.sym));
+                    report_unknown(lookup);
                     fact = lookup.type;
                 }
                 result_.progress_[frame.id] = 2;
@@ -215,11 +240,18 @@ public:
     }
 
 private:
+    void report_unknown(const AliasExpansion::Lookup& lookup) {
+        if (!lookup.unknown.sym.empty())
+            diag_.error(DiagCode::UnknownType, lookup.unknown.span, "unknown type '{}' in '{}'",
+                        names_.str(lookup.unknown.sym), names_.str(resolution_.binding(lookup.owner).name.sym));
+    }
+
     const Resolution& resolution_;
     const Interner& names_;
     DiagEngine& diag_;
     AliasExpansion result_;
     std::vector<std::vector<usize>> dependencies_;
+    std::vector<std::vector<const TypeExpr*>> qualified_paths_;
     std::vector<usize> positions_;
 };
 

@@ -154,6 +154,45 @@ void mismatches_and_member_diagnostics() {
     }
 }
 
+void qualified_dependencies_inside_composites() {
+    for (std::string_view target : {
+        "[Prefix.Back]", "*Prefix.Back", "shared Prefix.Back", "weak Prefix.Back",
+        "fun(Prefix.Back) -> Int", "fun() -> Prefix.Back", "fun() -> Int throws(Prefix.Back)",
+        "Box<Prefix.Back>", "fun([*Prefix.Back?]) -> Int"
+    }) {
+        for (bool root_first : {false, true}) {
+            const auto root = std::format("type Outer = {}\n", target);
+            const std::string definitions = "class Box<T> {}\nclass C { type Back = Outer }\ntype Prefix = C\n";
+            Frontend cycle;
+            cycle.check(root_first ? root + definitions : definitions + root, {DiagCode::AliasCycle});
+            CHECK(cycle.alias("Outer").state == ExpansionState::Error && cycle.alias("Back").state == ExpansionState::Error);
+            CHECK(cycle.alias("Prefix").state == ExpansionState::Resolved);
+        }
+        Frontend acyclic;
+        acyclic.check(std::format("type Outer = {}\nclass Box<T> {{}}\nclass C {{ type Back = Int }}\ntype Prefix = C", target));
+        CHECK(acyclic.alias("Outer").state == ExpansionState::Deferred);
+        CHECK(acyclic.alias("Back").state == ExpansionState::Resolved);
+    }
+    Frontend missing;
+    missing.check("class C {}\ntype Prefix = C\ntype Outer = [Prefix.Missing]", {DiagCode::UnknownType});
+    CHECK(missing.alias("Outer").state == ExpansionState::Error);
+}
+
+void many_qualified_dependencies() {
+    Frontend f;
+    std::string source = "type Outer = fun(";
+    for (int i = 0; i < 5000; ++i) {
+        if (i) source += ", ";
+        source += std::format("Prefix.T{}", i);
+    }
+    source += ") -> Unit\ntype Prefix = C\nclass C {\ntype T0 = Outer\n";
+    for (int i = 1; i < 5000; ++i) source += std::format("type T{} = Int\n", i);
+    source += "}";
+    f.check(source, {DiagCode::AliasCycle}, false);
+    CHECK(f.alias("Outer").state == ExpansionState::Error && f.alias("T0").state == ExpansionState::Error);
+    CHECK(f.alias("T1").scalar == Type::Int && f.alias("T4999").scalar == Type::Int);
+}
+
 void deferred_forms_and_shadowing() {
     Frontend f;
     f.check(R"(
@@ -219,6 +258,8 @@ int main() {
     qualified_types_and_nominal_identity();
     cycles_and_phase_gating();
     mismatches_and_member_diagnostics();
+    qualified_dependencies_inside_composites();
+    many_qualified_dependencies();
     deferred_forms_and_shadowing();
     cached_results_and_long_chains();
 }

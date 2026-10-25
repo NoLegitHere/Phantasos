@@ -16,3 +16,6 @@
 type First = Second?
 type Second = First
 type Dependent = First
+class C { type Back = Outer }
+type Prefix = C
+type Outer = [Prefix.Back]

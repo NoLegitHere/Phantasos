@@ -30,3 +30,11 @@ let callback = produce()
 let result = callback(1)
 fun take(values: [UInt64]): UInt64 = values[0]
 let maximum = take([18446744073709551615])
+extern "C" {
+    fun stop(): Never
+    fun produceOptional(): fun(Int?) -> Int
+}
+let neverLast = [1, stop()]
+let neverFirst = [stop(), 1]
+let nestedEmptyFirst = [[], [1]]
+let contravariant: fun(Int) -> Int = produceOptional()

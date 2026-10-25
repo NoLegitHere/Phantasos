@@ -26,3 +26,7 @@ let abstractValue = Abstract()
 extern "C" { fun produce(): fun(Int8) -> Bool }
 let callback = produce()
 let argument = callback(true)
+let nestedEmptyFirst = [[], [1, true]]
+let nestedEmptyLast = [[1, true], []]
+extern "C" { fun produceRequired(): fun(Int) -> Int }
+let unsafeVariance: fun(Int?) -> Int = produceRequired()

@@ -80,4 +80,6 @@ if(BUILD_TESTING)
         phs_warnings(phantasos-${suite}-tests)
         add_test(NAME ${suite} COMMAND phantasos-${suite}-tests)
     endforeach()
+    # Bound the shared descriptor-DAG regression if pair memoization regresses.
+    set_tests_properties(composites PROPERTIES TIMEOUT 30)
 endif()

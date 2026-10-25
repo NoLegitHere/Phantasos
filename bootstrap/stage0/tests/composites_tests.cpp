@@ -220,6 +220,64 @@ void stable_descriptors_and_deep_aliases() {
     CHECK(deep.value("value").kind == Type::Array);
     CHECK(deep.name(deep.value("value")).size() == 20004);
 }
+
+void nested_array_defaults_and_never() {
+    for (std::string_view array : {"[[], [1, true]]", "[[1, true], []]", "[[], ([1, true])]",
+                                   "[[], [[], [1, true]]]"}) {
+        Frontend bad;
+        bad.check(std::format("let values = {}", array), {DiagCode::ScalarTypeMismatch});
+    }
+    Frontend f;
+    f.check(R"(
+extern "C" { fun stop(): Never }
+let last = [1, stop()]
+let first = [stop(), 1]
+let allNever = [stop(), stop()]
+let nested = [[stop()], [1]]
+let emptyFirst = [[], [1]]
+let typed: Int8 = 1
+let anchored = [stop(), typed, 2]
+fun opaque<T>(): UInt64 = UInt64(18446744073709551615)
+let pendingFirst = [opaque<Int>(), 18446744073709551615]
+let pendingLast = [18446744073709551615, opaque<Int>()]
+)");
+    CHECK(f.name(f.value("last")) == "[Int]" && f.value("first") == f.value("last"));
+    CHECK(f.name(f.value("nested")) == "[[Int]]" && f.value("emptyFirst") == f.value("nested"));
+    CHECK(f.name(f.value("anchored")) == "[Int8]");
+    CHECK(f.value("allNever") == Type::Deferred);
+    CHECK(f.value("pendingFirst") == Type::Deferred && f.value("pendingLast") == Type::Deferred);
+    Frontend independent;
+    independent.check("fun opaque<T>(): Int = 1\nlet values = [true, 1, opaque<Int>()]", {DiagCode::ScalarTypeMismatch});
+}
+
+void function_parameter_variance() {
+    Frontend possible;
+    possible.check("extern \"C\" { fun produce(): fun(Int?) -> Int }\nlet value: fun(Int) -> Int = produce()");
+    CHECK(possible.value("value").kind == Type::Function);
+    Frontend unsafe;
+    unsafe.check("extern \"C\" { fun produce(): fun(Int) -> Int }\nlet value: fun(Int?) -> Int = produce()", {DiagCode::ScalarTypeMismatch});
+    // The two directions of the same descriptor pair are not interchangeable:
+    // the result comparison is possible, but the parameter comparison is not.
+    Frontend higher_order;
+    higher_order.check(R"(
+type A = fun(Int?) -> Int
+type B = fun(Int) -> Int
+extern "C" { fun produce(): fun(A) -> A }
+let value: fun(B) -> B = produce()
+)", {DiagCode::ScalarTypeMismatch});
+}
+
+void shared_descriptor_graph_relations() {
+    Frontend f;
+    std::string source;
+    for (int i = 0; i < 64; ++i) {
+        source += std::format("type A{} = fun(A{}) -> A{}\n", i, i + 1, i + 1);
+        source += std::format("type B{} = fun(B{}) -> B{}\n", i, i + 1, i + 1);
+    }
+    source += "type A64 = fun() -> Int\ntype B64 = fun() -> Int throws\n";
+    source += "fun compare(value: A0) { let pending: B0 = value }";
+    f.check(source, {}, false);
+}
 }  // namespace
 
 int main() {
@@ -228,4 +286,7 @@ int main() {
     nominal_constructors_and_mismatches();
     pointers_functions_and_deferred_features();
     stable_descriptors_and_deep_aliases();
+    nested_array_defaults_and_never();
+    function_parameter_variance();
+    shared_descriptor_graph_relations();
 }

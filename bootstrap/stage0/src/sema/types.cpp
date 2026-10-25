@@ -17,6 +17,7 @@
 
 #include <limits>
 #include <optional>
+#include <unordered_set>
 #include <variant>
 
 namespace phs {
@@ -56,6 +57,7 @@ enum class Literal : u8 { None, Integer, Float, Array };
 struct Value {
     Type type = Type::Deferred;
     Literal literal = Literal::None;
+    bool context_pending = false; // a literal array still has an unknown concrete element anchor
 };
 bool numeric(Value v) { return v.literal == Literal::Integer || v.literal == Literal::Float || numeric(v.type); }
 bool integer(Value v) { return v.literal == Literal::Integer || integer(v.type); }
@@ -276,11 +278,19 @@ private:
         return b.kind == BindingKind::Type && !cast_type_decl(b.item)->supers.empty();
     }
     Relation relation(Type from, Type to) const {
+        if (promotes(from, to) || from == Type::Never) return Relation::Yes;
+        // Shared descriptors form a DAG. Keep the pair directed, since function
+        // parameters compare in the opposite direction from their results.
+        auto hash = [](const std::pair<Type, Type>& pair) {
+            return TypeDescriptorHash{}({.element = pair.first, .result = pair.second});
+        };
+        std::unordered_set<std::pair<Type, Type>, decltype(hash)> compared(0, hash);
         std::vector<std::pair<Type, Type>> pending{{from, to}};
         Relation result = Relation::Yes;
         while (!pending.empty()) {
             const auto [source, target] = pending.back(); pending.pop_back();
             if (promotes(source, target) || source == Type::Never) continue;
+            if (!compared.emplace(source, target).second) continue;
             if (!known(source) || !known(target)) { result = Relation::Deferred; continue; }
             if (protocol(target)) { result = Relation::Deferred; continue; }
             if (source.optional_depth > target.optional_depth) return Relation::No;
@@ -294,7 +304,7 @@ private:
                 // Function variance/effect coercions are not established by
                 // this pass, even when their component types are compatible.
                 result = Relation::Deferred;
-                for (usize p = 0; p < a->parameters.size(); ++p) pending.push_back({a->parameters[p], b->parameters[p]});
+                for (usize p = 0; p < a->parameters.size(); ++p) pending.push_back({b->parameters[p], a->parameters[p]});
                 pending.push_back({a->result, b->result});
                 if (a->throws && b->throws) pending.push_back({a->error, b->error});
                 continue;
@@ -1161,14 +1171,26 @@ private:
             case ExprKind::Array: {
                 const auto* array = cast<ArrayExpr>(expr);
                 Type element;
+                bool context_pending = false;
                 for (auto* child : array->elems) {
                     const auto value_type = value(child);
                     if (value_type.type == Type::Error) { element = Type::Error; break; }
-                    if (value_type.literal == Literal::None && known(value_type.type)) { element = value_type.type; break; }
+                    if (value_type.type == Type::Never) continue;
+                    context_pending |= unavailable(value_type) || value_type.context_pending;
+                    if (!known(element) && value_type.literal == Literal::None && known(value_type.type)) element = value_type.type;
                 }
-                if (!known(element) && element != Type::Error && !array->elems.empty()) element = default_type(value(array->elems[0]));
+                if (element != Type::Error) {
+                    // Empty/Never-only siblings provide no anchor. An unknown
+                    // concrete element, however, can still supply literal context.
+                    if (!known(element) && !context_pending) for (auto* child : array->elems) {
+                        const auto candidate = value(child);
+                        if (candidate.type == Type::Never) continue;
+                        const auto type = default_type(candidate);
+                        if (known(type)) { element = type; break; }
+                    }
+                }
                 if (element == Type::Error) node.value = {Type::Error};
-                else node.value = {known(element) ? types_.intern({.kind = Type::Array, .element = element}) : Type{}, Literal::Array};
+                else node.value = {known(element) ? types_.intern({.kind = Type::Array, .element = element}) : Type{}, Literal::Array, context_pending && !known(element)};
                 break;
             }
             case ExprKind::Index: {

@@ -507,12 +507,17 @@ and the throws flag. Possible inheritance, interface conformance, function
 variance/effect coercions and ownership-wrapper conversions remain deferred;
 they are not assumed to succeed or treated as proven mismatches. Unrelated
 concrete nominal types and scalar-to-concrete-nominal mismatches are rejected.
+Function compatibility compares parameters contravariantly and results
+covariantly before ruling out a possible conversion.
 
 Array literals take an expected `[T]` context when available, including nested
 and parenthesized literals. Otherwise a concrete element can anchor inference;
 numeric literals default to `Int`/`Float64`. Element types must match without
-implicit numeric conversion. Empty literals need a context; unresolved element
-types remain deferred. Overload probes inspect elements without changing them,
+implicit numeric conversion. `Never` elements do not anchor inference. Empty
+and `Never`-only nested literals can take context from a sibling; they do not
+suppress errors in that sibling. Without an anchor or expected type, the array
+remains deferred. Unresolved concrete element types also remain deferred.
+Overload probes inspect elements without changing them,
 and only the selected signature contextualizes its literal arguments.
 
 Indexing a known non-optional array requires an integer index (or `Never`) and
@@ -538,7 +543,8 @@ constructors and typed indirect functions. The latter two finish without adding
 function-return dependencies. Indirect calls may identify a parameter/variable
 binding, or have no static binding ID for a computed callee. Type normalization,
 formatting, literal materialization and matching use explicit work stacks,
-including across long alias chains. Completed type/descriptor facts are cached;
+including across long alias chains. Matching visits each directed descriptor
+pair once per comparison. Completed type/descriptor facts are cached;
 descriptor pointers are stable after checking, but not across mutable interning.
 
 Receiver-dependent field/method lookup, inheritance/conformance, smart casts,

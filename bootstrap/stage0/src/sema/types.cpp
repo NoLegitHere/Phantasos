@@ -89,6 +89,7 @@ struct Node {
     Value value;
     u8 state = 0; // unvisited, active, finished
     bool call_prepared = false;
+    bool reference_prepared = false;
 };
 struct Requirement {
     const Expr* value;
@@ -164,6 +165,13 @@ public:
             }
         }
         // Binding nodes have the same indices as the resolver's BindingIds.
+        for (usize i = 0; i < resolution_.bindings().size(); ++i) {
+            const auto& b = resolution_.bindings()[i];
+            if (b.members.valid()) member_owners_.emplace(b.members.value, BindingId{i});
+            if (resolution_.scopes()[b.scope.value].kind == ScopeKind::Members &&
+                b.kind != BindingKind::Type && b.kind != BindingKind::TypeAlias)
+                member_values_[b.scope.value][b.name.sym.id].push_back(BindingId{i});
+        }
         nodes_.resize(resolution_.bindings().size());
         for (usize i = 0; i < resolution_.bindings().size(); ++i) {
             const auto& b = resolution_.bindings()[i];
@@ -212,6 +220,14 @@ public:
                         stack.push_back({dep, 0});
                     }
                 } else {
+                    if (node.expr && !node.reference_prepared &&
+                        (node.expr->kind == ExprKind::Member || node.expr->kind == ExprKind::Name)) {
+                        node.reference_prepared = true;
+                        if (const auto field = prepare_reference(node.expr)) {
+                            node.deps.push_back(field->value);
+                            continue;
+                        }
+                    }
                     if (const auto* call = as<CallExpr>(node.expr); call && !node.call_prepared) {
                         // Shape and argument types select a target without its
                         // return type. Rejected overloads must not create edges
@@ -219,7 +235,7 @@ public:
                         node.call_prepared = true;
                         node.value = prepare_call(*call);
                         const auto& record = calls_.at(call);
-                        if (record.state == CallState::Resolved && record.kind == CallKind::Function) {
+                        if (record.state == CallState::Resolved && (record.kind == CallKind::Function || record.kind == CallKind::Method)) {
                             node.deps.push_back(function_nodes_.at(record.target.value));
                             continue;
                         }
@@ -256,6 +272,7 @@ public:
         result.signatures_ = std::move(signatures_);
         result.calls_ = std::move(calls_);
         result.conversions_ = std::move(conversions_);
+        result.members_ = std::move(members_);
         result.aliases_ = std::move(aliases_);
         result.types_ = std::move(types_);
         return result;
@@ -407,8 +424,101 @@ private:
         return annotations_.at(type);
     }
 
+    ExpandedType entity(const Expr* expr) const {
+        const auto it = entities_.find(expr);
+        return it == entities_.end() ? ExpandedType{} : it->second;
+    }
+
+    void entity(const Expr* expr, BindingId id) {
+        const auto type = aliases_.binding(id, resolution_).type;
+        if (type.state == ExpansionState::Resolved) entities_[expr] = type;
+    }
+
+    // Receiver facts select a declaration before adding its dependency. Method
+    // overloads do not depend on their bodies until a call selects one target.
+    std::optional<BindingId> prepare_reference(const Expr* expr) {
+        const auto* name_expr = as<NameExpr>(expr);
+        const auto* member = as<MemberExpr>(expr);
+        const Name name = name_expr ? name_expr->name : member->name;
+        CheckedMember record;
+        std::vector<BindingId> candidates;
+        const auto* reference = resolution_.reference(name.span);
+        if (name_expr) {
+            if (!reference || reference->state != ResolutionState::Resolved) return std::nullopt;
+            const auto ids = resolution_.candidates(reference->target);
+            if (ids.size() == 1) entity(expr, ids.front());
+            if (ids.empty()) return std::nullopt;
+            const auto& b = resolution_.binding(ids.front());
+            const auto owner = member_owners_.find(b.scope.value);
+            if (owner == member_owners_.end() || (b.kind != BindingKind::Field && b.kind != BindingKind::Function)) return std::nullopt;
+            record.owner = owner->second;
+            if (!known(nominal(record.owner))) { members_[expr] = std::move(record); return std::nullopt; }
+            candidates.assign(ids.begin(), ids.end());
+        } else {
+            const auto base = value(member->base);
+            const auto type = entity(member->base);
+            if (base.type == Type::Error) record.state = ResolutionState::Unresolved;
+            else if (type.state == ExpansionState::Resolved && type.target.valid() && !type.optional_depth &&
+                     resolution_.binding(type.target).kind == BindingKind::Type && known(nominal(type.target))) {
+                record.owner = type.target;
+                record.type_receiver = true;
+            } else if (base.type.kind == Type::Nominal && !base.type.optional_depth)
+                record.owner = types_.descriptor(base.type)->declaration;
+            if (!record.owner.valid()) { members_[expr] = std::move(record); return std::nullopt; }
+            if (!resolution_.binding(record.owner).members.valid()) { members_[expr] = std::move(record); return std::nullopt; }
+            const auto scope = resolution_.binding(record.owner).members.value;
+            if (const auto table = member_values_.find(scope); table != member_values_.end()) {
+                if (const auto it = table->second.find(name.sym.id); it != table->second.end()) candidates = it->second;
+            }
+            if (candidates.empty()) {
+                const auto& types = aliases_.member_types_.at(scope);
+                if (const auto it = types.find(name.sym.id); it != types.end()) candidates.push_back(it->second);
+            }
+            if (candidates.empty()) {
+                const auto* owner = cast_type_decl(resolution_.binding(record.owner).item);
+                if (owner->supers.empty()) {
+                    diag_.error(DiagCode::UnknownMember, name.span, "type '{}' has no member '{}'",
+                                names_.str(owner->name.sym), names_.str(name.sym));
+                    record.state = ResolutionState::Unresolved;
+                }
+                members_[expr] = std::move(record);
+                return std::nullopt;
+            }
+        }
+        const auto* owner = cast_type_decl(resolution_.binding(record.owner).item);
+        if (!owner->supers.empty() && resolution_.binding(candidates.front()).kind == BindingKind::Function) {
+            // A base can add overloads with different static/instance rules.
+            record.candidates = std::move(candidates);
+            members_[expr] = std::move(record);
+            return std::nullopt;
+        }
+        for (const auto id : candidates) {
+            const auto& b = resolution_.binding(id);
+            const bool is_static = b.kind == BindingKind::Type || b.kind == BindingKind::TypeAlias || b.kind == BindingKind::EnumCase ||
+                                   (b.item && has_modifier(b.item->mods, Modifier::Static));
+            const bool allowed = name_expr ? is_static || (reference && reference->receiver == record.owner)
+                                           : is_static == record.type_receiver;
+            if (allowed) record.candidates.push_back(id);
+        }
+        if (record.candidates.empty()) {
+            diag_.error(DiagCode::InvalidMemberReceiver, name.span, "member '{}' is unavailable through this {} receiver",
+                        names_.str(name.sym), name_expr ? "implicit" : record.type_receiver ? "type" : "instance");
+            record.state = ResolutionState::Unresolved;
+        } else record.state = ResolutionState::Resolved;
+        std::optional<BindingId> field;
+        if (record.candidates.size() == 1) {
+            const auto id = record.candidates.front();
+            entity(expr, id);
+            if (resolution_.binding(id).kind == BindingKind::Field) field = id;
+        }
+        members_[expr] = std::move(record);
+        return field;
+    }
+
     std::span<const BindingId> callees(const Expr* expr) const {
         while (const auto* paren = as<ParenExpr>(expr)) expr = paren->inner;
+        if (const auto it = members_.find(expr); it != members_.end())
+            return it->second.state == ResolutionState::Resolved ? std::span<const BindingId>(it->second.candidates) : std::span<const BindingId>{};
         const auto* name = as<NameExpr>(expr);
         if (!name) return {};
         const auto* ref = resolution_.reference(name->name.span);
@@ -897,7 +1007,7 @@ private:
         const Expr* callee = expr.callee;
         while (const auto* paren = as<ParenExpr>(callee)) callee = paren->inner;
         ConversionKind kind = ConversionKind::Widening;
-        auto target = aliases_.entity(callee, resolution_);
+        auto target = entity(callee);
         if (target.state != ExpansionState::Resolved || target.optional_depth || !numeric(target.scalar)) {
             const auto* member = as<MemberExpr>(callee);
             if (!member) return std::nullopt;
@@ -905,7 +1015,7 @@ private:
             if (name == "checked") kind = ConversionKind::Checked;
             else if (name == "truncating") kind = ConversionKind::Truncating;
             else return std::nullopt;
-            target = aliases_.entity(member->base, resolution_);
+            target = entity(member->base);
         }
         if (target.state != ExpansionState::Resolved || target.optional_depth || !target.target.valid()) return std::nullopt;
         const auto& binding = resolution_.binding(target.target);
@@ -970,15 +1080,15 @@ private:
     }
 
     std::optional<Value> prepare_constructor(const CallExpr& expr) {
-        const auto entity = aliases_.entity(expr.callee, resolution_);
-        if (entity.state != ExpansionState::Resolved || !entity.target.valid() || entity.optional_depth) return std::nullopt;
-        const auto& binding = resolution_.binding(entity.target);
+        const auto type = entity(expr.callee);
+        if (type.state != ExpansionState::Resolved || !type.target.valid() || type.optional_depth) return std::nullopt;
+        const auto& binding = resolution_.binding(type.target);
         if (binding.kind != BindingKind::Type) return std::nullopt;
         const auto* item = cast_type_decl(binding.item);
         auto& record = calls_[&expr];
         record.kind = CallKind::NominalConstructor;
-        record.target = entity.target;
-        const Type result = nominal(entity.target);
+        record.target = type.target;
+        const Type result = nominal(type.target);
         if (!known(result)) return Value{};
         if (item->kind == ItemKind::Interface || has_modifier(item->mods, Modifier::Abstract)) {
             diag_.error(DiagCode::NotConstructible, expr.span, "type '{}' cannot be constructed directly", scalar_type_name(result));
@@ -1063,11 +1173,16 @@ private:
         }
         const auto candidates = callees(expr.callee);
         if (candidates.empty()) return {};
-        // Receiver rules, constructors and indirect callable values need later
-        // type information. Check only direct file-level function overload sets.
         for (BindingId id : candidates) {
             const auto& b = resolution_.binding(id);
-            if (b.kind != BindingKind::Function || resolution_.scopes()[b.scope.value].kind != ScopeKind::File) return {};
+            if (b.kind != BindingKind::Function) return {};
+            if (resolution_.scopes()[b.scope.value].kind == ScopeKind::Members) {
+                record.kind = CallKind::Method;
+                const Expr* callee_expr = expr.callee;
+                while (const auto* paren = as<ParenExpr>(callee_expr)) callee_expr = paren->inner;
+                if (const auto* member = as<MemberExpr>(callee_expr); member && !members_.at(member).type_receiver)
+                    record.receiver = member->base;
+            } else if (resolution_.scopes()[b.scope.value].kind != ScopeKind::File) return {};
         }
         struct Match {
             BindingId id;
@@ -1224,9 +1339,30 @@ private:
                 break;
             }
             case ExprKind::Name:
-                if (!node.deps.empty()) node.value = nodes_[node.deps.front()].value;
+            case ExprKind::Member: {
+                const auto it = members_.find(expr);
+                if (it != members_.end()) {
+                    const auto& record = it->second;
+                    if (record.state == ResolutionState::Unresolved) node.value = {Type::Error};
+                    else if (record.state == ResolutionState::Resolved && record.candidates.size() == 1 && resolution_.binding(record.candidates.front()).kind == BindingKind::Field)
+                        node.value = nodes_[record.candidates.front().value].value;
+                } else if (expr->kind == ExprKind::Name && !node.deps.empty()) node.value = nodes_[node.deps.front()].value;
                 break;
-            case ExprKind::Paren: node.value = value(cast<ParenExpr>(expr)->inner); break;
+            }
+            case ExprKind::SelfType: {
+                const auto* reference = resolution_.reference(expr->span);
+                if (reference && reference->state == ResolutionState::Resolved) {
+                    const auto ids = resolution_.candidates(reference->target);
+                    if (ids.size() == 1) entity(expr, ids.front());
+                }
+                break;
+            }
+            case ExprKind::Paren: {
+                const auto* inner = cast<ParenExpr>(expr)->inner;
+                node.value = value(inner);
+                if (const auto type = entity(inner); type.state == ExpansionState::Resolved) entities_[expr] = type;
+                break;
+            }
             case ExprKind::Binary: node.value = binary(*cast<BinaryExpr>(expr)); break;
             case ExprKind::Unwrap: {
                 const auto operand = value(cast<UnwrapExpr>(expr)->operand);
@@ -1276,6 +1412,10 @@ private:
     std::unordered_map<const FunItem*, std::unordered_map<u32, usize>> parameter_indices_;
     std::unordered_map<const ast::CallExpr*, CheckedCall> calls_;
     std::unordered_map<const ast::CallExpr*, CheckedConversion> conversions_;
+    std::unordered_map<const Expr*, CheckedMember> members_;
+    std::unordered_map<const Expr*, ExpandedType> entities_;
+    std::unordered_map<usize, BindingId> member_owners_;
+    std::unordered_map<usize, std::unordered_map<u32, std::vector<BindingId>>> member_values_;
     std::vector<Walk> walk_;
     std::vector<Requirement> requirements_;
     std::vector<const Expr*> defaults_;

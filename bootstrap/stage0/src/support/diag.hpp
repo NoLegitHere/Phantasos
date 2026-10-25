@@ -81,6 +81,8 @@ enum class DiagCode : u16 {
     AliasCycle = 430,
     InvalidArrayIndex = 440,
     NotConstructible = 441,
+    UnknownMember = 450,
+    InvalidMemberReceiver = 451,
 };
 
 constexpr std::string_view diag_code(DiagCode code) {
@@ -134,6 +136,8 @@ constexpr std::string_view diag_code(DiagCode code) {
         case DiagCode::AliasCycle: return "E0430";
         case DiagCode::InvalidArrayIndex: return "E0440";
         case DiagCode::NotConstructible: return "E0441";
+        case DiagCode::UnknownMember: return "E0450";
+        case DiagCode::InvalidMemberReceiver: return "E0451";
     }
     unreachable();
 }

@@ -63,6 +63,7 @@ struct NameReference {
     NameSpace space;
     ResolutionState state;
     BindingSetId target;  // resolved declaration or overload set; invalid otherwise
+    BindingId receiver;   // enclosing implicit instance, when available
 };
 
 class Resolver;

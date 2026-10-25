@@ -16,7 +16,10 @@
 """Golden-runner regressions for exit status and safe baseline updates."""
 
 from pathlib import Path
+import contextlib
+import io
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -84,6 +87,59 @@ class GoldenRunnerTests(unittest.TestCase):
         failures = self.run_case("semantics", 2, original, stderr="", update=True)
         self.assertTrue(any("abnormal exit code 2" in failure for failure in failures))
         self.assertEqual(self.baseline.read_text(encoding="utf-8"), original)
+
+    def test_positive_lexer_parser_failure_cannot_update(self) -> None:
+        for suite, extension in (("lexer", ".tokens"), ("parser", ".ast")):
+            with self.subTest(suite=suite):
+                tree = self.source.with_suffix(extension)
+                tree.write_text("original output\n", encoding="utf-8")
+                self.baseline.unlink(missing_ok=True)
+                result = subprocess.CompletedProcess([], 1, "partial output\n", "case[1].phs:1:1: error[E0100]: broken\n")
+                with patch.object(run_golden.subprocess, "run", return_value=result):
+                    failures = run_golden.run_case(Path("unused-compiler"), suite, self.source, True)
+                self.assertTrue(any("expected files not updated" in failure for failure in failures))
+                self.assertEqual(tree.read_text(encoding="utf-8"), "original output\n")
+                self.assertFalse(self.baseline.exists())
+
+    def test_explicit_negative_lexer_parser_status(self) -> None:
+        error = "case[1].phs:1:1: error[E0100]: expected token\n"
+        for suite, extension in (("lexer", ".tokens"), ("parser", ".ast")):
+            tree = self.source.with_suffix(extension)
+            tree.write_text("original\n", encoding="utf-8")
+            self.assertEqual(self.run_case(suite, 1, error, stdout="updated\n", update=True), [])
+            self.assertEqual(tree.read_text(encoding="utf-8"), "updated\n")
+            failures = self.run_case(suite, 0, error, stdout="updated\n")
+            self.assertTrue(any("expected exit code 1, got 0" in failure for failure in failures))
+            failures = self.run_case(suite, 0, error, stderr="", stdout="partial\n", update=True)
+            self.assertTrue(any("expected files not updated" in failure for failure in failures))
+            self.assertEqual(tree.read_text(encoding="utf-8"), "updated\n")
+            self.assertEqual(self.baseline.read_text(encoding="utf-8"), error)
+
+    def test_no_cases_is_an_error(self) -> None:
+        for filter_text in ([], ["unmatched-filter"]):
+            with patch.object(run_golden, "ROOT", Path(self.directory.name)), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()) as stderr:
+                status = run_golden.main(["--stage0", sys.executable, *filter_text])
+            self.assertEqual(status, 2)
+            self.assertIn("no test cases", stderr.getvalue())
+
+    def test_unmatched_filter_does_not_run_existing_cases(self) -> None:
+        root = Path(self.directory.name)
+        (root / "parser").mkdir()
+        (root / "parser" / "existing.phs").write_text("let x = 1\n", encoding="utf-8")
+        with patch.object(run_golden, "ROOT", root), patch.object(run_golden.subprocess, "run") as compiler, contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            status = run_golden.main(["--stage0", sys.executable, "unmatched-filter"])
+        self.assertEqual(status, 2)
+        compiler.assert_not_called()
+
+    def test_success_status_cannot_introduce_error_baseline(self) -> None:
+        error = "case[1].phs:1:1: error[E0100]: broken\n"
+        for suite, extension in (("lexer", ".tokens"), ("parser", ".ast")):
+            tree = self.source.with_suffix(extension)
+            tree.write_text("original\n", encoding="utf-8")
+            failures = self.run_case(suite, 0, stderr=error, stdout="partial\n", update=True)
+            self.assertTrue(any("expected files not updated" in failure for failure in failures))
+            self.assertEqual(tree.read_text(encoding="utf-8"), "original\n")
+            self.assertEqual(self.baseline.read_text(encoding="utf-8"), "")
 
 
 if __name__ == "__main__":

@@ -322,6 +322,37 @@ let value: fun(B) -> B = produce()
 )", {DiagCode::ScalarTypeMismatch});
 }
 
+void bounded_type_names_and_mismatch_dags() {
+    TypeTable table;
+    Resolution resolution;
+    Interner names;
+    CHECK(table.name(Type::Int, resolution, names, 0).empty());
+    CHECK(table.name(Type::Int, resolution, names, 1) == ".");
+    CHECK(table.name(Type::Int, resolution, names, 3) == "Int");
+    CHECK(table.name(Type::Int8, resolution, names, 3) == "...");
+    CHECK(table.name(Type{Type::Int, 4}, resolution, names, 7) == "Int????");
+    const auto optional = table.name(Type{Type::Int, std::numeric_limits<u32>::max()}, resolution, names, 16);
+    CHECK(optional.size() <= 16 && optional.ends_with("..."));
+    const auto wide = table.intern({.kind = Type::Function, .parameters = std::vector<Type>(10000, Type::Int), .result = Type::Bool});
+    const auto wide_name = table.name(wide, resolution, names, 64);
+    CHECK(wide_name.size() <= 64 && wide_name.ends_with("..."));
+
+    Frontend f;
+    std::string source;
+    for (int i = 0; i < 64; ++i) {
+        source += std::format("type A{} = fun(A{}, A{}) -> A{}\n", i, i + 1, i + 1, i + 1);
+        source += std::format("type B{} = fun(B{}, B{}) -> B{}\n", i, i + 1, i + 1, i + 1);
+    }
+    source += "type A64 = fun() -> Int\ntype B64 = fun() -> Bool\n";
+    source += "fun compare(value: A0) { let bad: B0 = value }";
+    f.check(source, {DiagCode::ScalarTypeMismatch}, false);
+    const auto& diagnostic = f.session.diagnostics().all()[0];
+    CHECK(diagnostic.message.size() < 2200 && diagnostic.message.contains("..."));
+    const auto root = f.result.scalar_types->alias(f.id("A0", BindingKind::TypeAlias))->scalar;
+    const auto full = f.name(root);
+    CHECK(full.size() <= TypeTable::kNameLimit && full.ends_with("..."));
+}
+
 void shared_descriptor_graph_relations() {
     Frontend f;
     std::string source;
@@ -345,5 +376,6 @@ int main() {
     nested_concrete_anchors();
     deferred_array_equality_checks_elements();
     function_parameter_variance();
+    bounded_type_names_and_mismatch_dags();
     shared_descriptor_graph_relations();
 }

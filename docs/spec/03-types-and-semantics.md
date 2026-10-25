@@ -549,8 +549,12 @@ function-return dependencies. Indirect calls may identify a parameter/variable
 binding, or have no static binding ID for a computed callee. Type normalization,
 formatting, literal materialization and matching use explicit work stacks,
 including across long alias chains. Matching visits each directed descriptor
-pair once per comparison. Completed type/descriptor facts are cached;
-descriptor pointers are stable after checking, but not across mutable interning.
+pair once per comparison. Completed type/descriptor facts are cached.
+Type-name formatting also bounds expansion work and output: public names use
+a default 32 KiB limit, and diagnostic names use 1 KiB per type. Incomplete
+names end in `...`; smaller explicit API limits shorten that marker as needed.
+This prevents shared descriptor graphs from producing exponential diagnostics.
+Descriptor pointers are stable after checking, but not across mutable interning.
 
 Direct receiver-dependent field/method lookup follows 3.19. Inheritance/conformance, smart casts,
 effects, unsafe checking and remaining optional operations are still pending.

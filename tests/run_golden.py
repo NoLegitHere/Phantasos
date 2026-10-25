@@ -80,6 +80,16 @@ def run_case(exe: Path, suite: str, src: Path, update: bool) -> list[str]:
                 return [f"expected exit code {expected_code}, got {proc.returncode}; expected files not updated"]
             if stdout:
                 return ["unexpected stdout; expected files not updated"]
+        else:
+            # Positive lexer/parser fixtures cannot become negative merely by
+            # updating after a compiler regression. Negative cases opt in with
+            # an existing primary error header in their diagnostic baseline.
+            previous = norm(diag_file.read_text(encoding="utf-8")) if diag_file.exists() else ""
+            expected_code = check_exit_code(suite, src, previous)
+            if proc.returncode != expected_code:
+                return [f"expected exit code {expected_code}, got {proc.returncode}; expected files not updated"]
+            if check_exit_code(suite, src, stderr) != expected_code:
+                return ["diagnostics do not match expected exit status; expected files not updated"]
         for path, actual in expected_files:
             path.write_text(actual, encoding="utf-8", newline="\n")
         return failures
@@ -107,8 +117,9 @@ def run_case(exe: Path, suite: str, src: Path, update: bool) -> list[str]:
         has_diag = diag_file.exists()
         if not has_diag and stderr:
             failures.append(f"unexpected diagnostics:\n{stderr}")
-        if not has_diag and proc.returncode != 0:
-            failures.append(f"expected exit code 0, got {proc.returncode}")
+        expected_code = check_exit_code(suite, src, diag_file.read_text(encoding="utf-8") if has_diag else "")
+        if proc.returncode in (0, 1) and proc.returncode != expected_code:
+            failures.append(f"expected exit code {expected_code}, got {proc.returncode}")
     return failures
 
 
@@ -151,6 +162,9 @@ def main(argv: list[str]) -> int:
             else:
                 print(f"ok   {rel}")
 
+    if total == 0:
+        print(f"error: no test cases matched filter {args.filter!r}", file=sys.stderr)
+        return 2
     verb = "updated" if args.update else "passed"
     print(f"\n{total - failed}/{total} {verb}")
     return 1 if failed else 0

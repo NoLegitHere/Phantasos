@@ -62,13 +62,15 @@ struct TypeDescriptorHash {
 };
 class TypeTable {
 public:
+    static constexpr usize kNameLimit = 32 * 1024;
     ScalarType intern(TypeDescriptor descriptor);
     // During construction, interning may invalidate descriptor pointers. A
     // completed ScalarTypes result is immutable and exposes stable pointers.
     const TypeDescriptor* descriptor(ScalarType type) const {
         return type.detail == std::numeric_limits<usize>::max() ? nullptr : &descriptors_.at(type.detail);
     }
-    std::string name(ScalarType type, const Resolution& resolution, const Interner& names) const;
+    // Bound both output and expansion work; an incomplete name ends in "...".
+    std::string name(ScalarType type, const Resolution& resolution, const Interner& names, usize limit = kNameLimit) const;
 private:
     std::vector<TypeDescriptor> descriptors_;
     std::unordered_map<TypeDescriptor, usize, TypeDescriptorHash> ids_;
@@ -191,8 +193,8 @@ public:
     }
     const ExpandedType* alias(BindingId id) const { return aliases_.alias(id); }
     const TypeDescriptor* descriptor(ScalarType type) const { return types_.descriptor(type); }
-    std::string type_name(ScalarType type, const Resolution& resolution, const Interner& names) const {
-        return types_.name(type, resolution, names);
+    std::string type_name(ScalarType type, const Resolution& resolution, const Interner& names, usize limit = TypeTable::kNameLimit) const {
+        return types_.name(type, resolution, names, limit);
     }
 
 private:

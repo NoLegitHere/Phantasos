@@ -45,10 +45,10 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y clang-19 g++-14 ninja-build
       - name: Configure (Linux)
         if: runner.os == 'Linux'
-        run: cmake -S bootstrap/stage0 -B build/stage0 -G Ninja -DCMAKE_CXX_COMPILER=clang++-19 -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_FLAGS=--gcc-install-dir=/usr/lib/gcc/x86_64-linux-gnu/14
+        run: cmake -S bootstrap/stage0 -B build/stage0 -G Ninja -DCMAKE_CXX_COMPILER=clang++-19 -DCMAKE_BUILD_TYPE=Debug -DPHS_WERROR=ON -DCMAKE_CXX_FLAGS=--gcc-install-dir=/usr/lib/gcc/x86_64-linux-gnu/14
       - name: Configure (Windows)
         if: runner.os == 'Windows'
-        run: cmake -S bootstrap/stage0 -B build/stage0 -G Ninja -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_BUILD_TYPE=Debug
+        run: cmake -S bootstrap/stage0 -B build/stage0 -G Ninja -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_BUILD_TYPE=Debug -DPHS_WERROR=ON
       - run: cmake --build build/stage0
       - run: ctest --test-dir build/stage0 --output-on-failure
       - run: python tests/test_license_check.py

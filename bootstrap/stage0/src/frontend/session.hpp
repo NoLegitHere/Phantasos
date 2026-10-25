@@ -31,6 +31,7 @@ struct CheckResult {
     const Resolution* resolution;
     // Null if earlier phases failed. A non-null result retains known/deferred
     // scalar facts, including on type errors; consult per-file diagnostics.
+    // Alias definition errors retain alias records but gate value checking.
     const ScalarTypes* scalar_types;
 };
 

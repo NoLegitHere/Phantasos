@@ -65,6 +65,12 @@
   function targets from intrinsic numeric type targets. Conversion calls finish
   immediately and must not create function-return dependencies. Conversion
   records retain modes, source/destination facts, and deferred/error states.
+  Alias expansion runs before scalar annotations and retains canonical binding
+  IDs rather than creating new types. Generic aliases and associated-type
+  requirements/defaults remain deferred. Keep alias/type wrapper traversal
+  iterative, report cycle paths once, and do not mutate lexical resolution.
+  Type queries cache diagnostics so shared constructor annotations are not
+  diagnosed once for each generated parameter/field binding.
   For low-level API calls, seed the interner with `seed_keywords` before lexing. Source
   managers, interners, and arenas must outlive the views/nodes referring to
   their storage. `DiagEngine::all()` exposes emission order;
@@ -115,6 +121,10 @@
   The `conversions` suite covers widening boundaries, checked/truncating integer
   APIs, optional result identity, promotion, arguments and operators, name
   shadowing, deferred policies, cached facts and long forward dependencies.
+  The `aliases` suite checks forward chains, cycles through wrappers and
+  qualified names, declaration-scope capture, namespace shadowing, canonical
+  nominal identity, conversion targets, diagnostic caching, file isolation,
+  stable records, and 10,000 aliases with accumulated optional depth.
 
 - Run `python tests/test_license_check.py` for license-fixer regressions,
   including encoding declarations, BOMs, line endings, and idempotence.

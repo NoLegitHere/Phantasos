@@ -24,11 +24,6 @@ namespace {
 using namespace ast;
 using Type = ScalarType;
 
-constexpr Type builtins[] = {
-    Type::Int8, Type::Int16, Type::Int32, Type::Int64, Type::UInt8, Type::UInt16,
-    Type::UInt32, Type::UInt64, Type::Int, Type::UInt, Type::Float32, Type::Float64,
-    Type::Bool, Type::Char, Type::String, Type::Unit, Type::Never
-};
 bool integer(Type t) { return !t.optional_depth && t.kind >= Type::Int8 && t.kind <= Type::UInt; }
 bool floating(Type t) { return t == Type::Float32 || t == Type::Float64; }
 bool numeric(Type t) { return integer(t) || floating(t); }
@@ -142,6 +137,13 @@ public:
         : resolution_(resolution), names_(names), diag_(diag) {}
 
     ScalarTypes run(const File& file) {
+        aliases_ = expand_aliases(resolution_, names_, diag_);
+        if (diag_.has_errors(file.file)) {
+            ScalarTypes result;
+            result.bindings_.resize(resolution_.bindings().size());
+            result.aliases_ = std::move(aliases_);
+            return result;
+        }
         // Binding nodes have the same indices as the resolver's BindingIds.
         nodes_.resize(resolution_.bindings().size());
         for (usize i = 0; i < resolution_.bindings().size(); ++i) {
@@ -235,26 +237,20 @@ public:
         result.signatures_ = std::move(signatures_);
         result.calls_ = std::move(calls_);
         result.conversions_ = std::move(conversions_);
+        result.aliases_ = std::move(aliases_);
         return result;
     }
 
 private:
-    Type annotation(const TypeExpr* type) const {
+    Type annotation(const TypeExpr* type) {
         if (!type) return Type::Deferred;
-        u32 depth = 0;
-        while (type && type->kind == TypeKind::Optional) { ++depth; type = type->inner; }
-        if (!type) return Type::Deferred;
-        if (type->kind == TypeKind::Unit) return {Type::Unit, depth};
-        if (type->kind != TypeKind::Path || !type->args.empty() || type->path.parts.empty()) return Type::Deferred;
-        const auto* ref = resolution_.reference(type->path.parts.back().span);
-        if (!ref || ref->state != ResolutionState::Resolved) return Type::Deferred;
-        const auto candidates = resolution_.candidates(ref->target);
-        if (candidates.size() != 1) return Type::Deferred;
-        const auto& binding = resolution_.binding(candidates.front());
-        if (binding.kind != BindingKind::BuiltinType) return Type::Deferred;
-        for (Type builtin : builtins)
-            if (names_.str(binding.name.sym) == scalar_type_name(builtin)) return {builtin.kind, depth};
-        return Type::Deferred;
+        if (const auto it = annotations_.find(type); it != annotations_.end()) return it->second;
+        const auto expanded = aliases_.type(type, resolution_);
+        if (!expanded.unknown_member.sym.empty())
+            diag_.error(DiagCode::UnknownType, expanded.unknown_member.span, "unknown type '{}' in '{}'",
+                        names_.str(expanded.unknown_member.sym), names_.str(resolution_.binding(expanded.member_owner).name.sym));
+        annotations_.emplace(type, expanded.type.scalar);
+        return expanded.type.scalar;
     }
 
     std::span<const BindingId> callees(const Expr* expr) const {
@@ -654,21 +650,20 @@ private:
         const Expr* callee = expr.callee;
         while (const auto* paren = as<ParenExpr>(callee)) callee = paren->inner;
         ConversionKind kind = ConversionKind::Widening;
-        const Expr* target = callee;
-        if (const auto* member = as<MemberExpr>(callee)) {
+        auto target = aliases_.entity(callee, resolution_);
+        if (target.state != ExpansionState::Resolved || target.optional_depth || !numeric(target.scalar)) {
+            const auto* member = as<MemberExpr>(callee);
+            if (!member) return std::nullopt;
             const auto name = names_.str(member->name.sym);
             if (name == "checked") kind = ConversionKind::Checked;
             else if (name == "truncating") kind = ConversionKind::Truncating;
             else return std::nullopt;
-            target = member->base;
+            target = aliases_.entity(member->base, resolution_);
         }
-        const auto candidates = callees(target);
-        if (candidates.size() != 1) return std::nullopt;
-        const auto& binding = resolution_.binding(candidates.front());
+        if (target.state != ExpansionState::Resolved || target.optional_depth || !target.target.valid()) return std::nullopt;
+        const auto& binding = resolution_.binding(target.target);
         if (binding.kind != BindingKind::BuiltinType) return std::nullopt;
-        Type destination;
-        for (Type builtin : builtins)
-            if (names_.str(binding.name.sym) == scalar_type_name(builtin)) destination = builtin;
+        const Type destination = target.scalar;
         if (!numeric(destination)) return std::nullopt;
 
         auto& conversion = conversions_[&expr];
@@ -676,7 +671,7 @@ private:
         conversion.destination = destination;
         auto& record = calls_[&expr];
         record.kind = CallKind::NumericConversion;
-        record.target = candidates.front();
+        record.target = target.target;
         const auto fail = [&]() -> Value {
             conversion.state = record.state = CallState::Error;
             return {Type::Error};
@@ -895,6 +890,8 @@ private:
     const Resolution& resolution_;
     const Interner& names_;
     DiagEngine& diag_;
+    AliasExpansion aliases_;
+    std::unordered_map<const TypeExpr*, Type> annotations_;
     std::vector<Node> nodes_;
     std::unordered_map<const Expr*, usize> expressions_;
     // A promoted constructor field and its parameter have separate binding

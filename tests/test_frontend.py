@@ -169,6 +169,19 @@ class FrontendTests(unittest.TestCase):
         self.assertIn("error[E0300]", stderr)
         self.assertNotIn("error[E04", stderr)
 
+    def test_alias_expansion_and_cycle_gating(self) -> None:
+        source = "type A = B\ntype B = A\nlet wrong: Bool = 1"
+        code, _, stderr = self.run_source(source, "parse")
+        self.assertEqual((code, stderr), (0, ""))
+        code, stdout, stderr = self.run_source(source, "check")
+        self.assertEqual((code, stdout), (1, ""))
+        self.assertEqual(stderr.count("error["), 1, stderr)
+        self.assertIn("error[E0430]", stderr)
+        self.assertNotIn("error[E0400]", stderr)
+        code, _, stderr = self.run_source("type Small = Int8\nlet wrong: Small = true", "check")
+        self.assertEqual(code, 1)
+        self.assertIn("error[E0400]: expected 'Int8', found 'Bool'", stderr)
+
     def test_check_resolves_names_after_validation(self) -> None:
         source = "fun f(x: Missing) = unknown(x)\n"
         code, _, stderr = self.run_source(source, "parse")

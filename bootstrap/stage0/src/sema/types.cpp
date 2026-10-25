@@ -479,11 +479,11 @@ private:
     }
     Value require(const Expr* expr, Type expected, Span span) {
         if (expr) return compatible(expressions_.at(expr), expected, span);
-        if (known(expected) && expected != Type::Unit) {
+        if (known(expected) && !promotes(Type::Unit, expected)) {
             diag_.error(DiagCode::ScalarTypeMismatch, span, "expected '{}', found 'Unit'", scalar_type_name(expected));
             return {Type::Error};
         }
-        return {Type::Unit};
+        return {known(expected) ? expected : Type{Type::Unit}};
     }
 
     Value materialize(usize root, Type type) {

@@ -335,7 +335,8 @@ retains its parameter's declared type in a separate field binding.
 A block-bodied function without a return annotation returns `Unit`;
 an expression-bodied function infers its result from the body, defaulting
 numeric literals at the function boundary.
-An explicit bare `return` produces `Unit`. Initializers and destructors also
+An explicit bare `return` produces `Unit`, with the same optional lifting as
+`return ()`. Initializers and destructors also
 return `Unit`. This does not establish that every path returns a value.
 
 After successful validation and name resolution, stage0 checks these scalar

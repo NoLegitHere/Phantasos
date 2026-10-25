@@ -19,3 +19,6 @@ conversions_errors.phs:23:29: error[E0421]: numeric conversion requires a non-op
 conversions_errors.phs:24:20: error[E0402]: integer literal is out of range for 'Int8'
    24 | let literal = Int8(128)
       |                    ^^^
+conversions_errors.phs:25:36: error[E0400]: expected 'Int8?', found 'Unit'
+   25 | fun missingNumericValue(): Int8? { return }
+      |                                    ^^^^^^

@@ -22,3 +22,4 @@ let scalar: Int8 = checked
 let differentOptional: UInt8? = checked
 let optionalOperand = Int64(checked)
 let literal = Int8(128)
+fun missingNumericValue(): Int8? { return }

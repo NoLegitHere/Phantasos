@@ -28,3 +28,5 @@ fun preserve(value: Int8?): Int8? = value
 let returned = preserve(checked)
 let fraction: Float32 = 1.0
 let floatWidening = Float64(fraction)
+fun optionalUnit(): Unit? { return }
+fun explicitUnit(): Unit? { return () }

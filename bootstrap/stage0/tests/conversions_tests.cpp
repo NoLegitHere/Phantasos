@@ -198,6 +198,30 @@ let preferred = rank(1)
     chain.check(source, {}, false);
     CHECK(chain.type("n0") == Type::Int64);
 }
+
+void bare_unit_returns_lift_like_explicit_unit() {
+    Frontend f;
+    f.check(R"(
+fun bare(): Unit? { return }
+fun explicitUnit(): Unit? { return () }
+fun tupleSpelling(): ()? { return }
+fun nested(): Unit? ? { return }
+fun plain() { return }
+let bareResult = bare()
+let explicitResult = explicitUnit()
+let tupleResult = tupleSpelling()
+let nestedResult = nested()
+let plainResult = plain()
+)");
+    const auto optional_unit = Type{Type::Unit}.optional();
+    CHECK(f.type("bareResult") == optional_unit && f.type("explicitResult") == optional_unit);
+    CHECK(f.type("tupleResult") == optional_unit && f.type("nestedResult") == optional_unit.optional());
+    CHECK(f.type("plainResult") == Type::Unit);
+    for (std::string_view type : {"Int", "Int8?", "Bool?", "Never", "Never?"}) {
+        Frontend bad;
+        bad.check(std::format("fun f(): {} {{ return }}", type), {DiagCode::ScalarTypeMismatch});
+    }
+}
 }  // namespace
 
 int main() {
@@ -206,4 +230,5 @@ int main() {
     invalid_shapes_operands_and_optionals();
     deferred_policies_and_shadowing();
     optional_arguments_and_long_dependencies();
+    bare_unit_returns_lift_like_explicit_unit();
 }

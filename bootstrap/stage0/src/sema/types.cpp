@@ -58,6 +58,7 @@ struct Value {
     Type type = Type::Deferred;
     Literal literal = Literal::None;
     bool context_pending = false; // a literal array still has an unknown concrete element anchor
+    bool concrete_anchor = false; // a literal array's type came from concrete elements, not numeric defaults
 };
 bool numeric(Value v) { return v.literal == Literal::Integer || v.literal == Literal::Float || numeric(v.type); }
 bool integer(Value v) { return v.literal == Literal::Integer || integer(v.type); }
@@ -1177,8 +1178,10 @@ private:
                     if (value_type.type == Type::Error) { element = Type::Error; break; }
                     if (value_type.type == Type::Never) continue;
                     context_pending |= unavailable(value_type) || value_type.context_pending;
-                    if (!known(element) && value_type.literal == Literal::None && known(value_type.type)) element = value_type.type;
+                    if (!known(element) && known(value_type.type) &&
+                        (value_type.literal == Literal::None || value_type.concrete_anchor)) element = value_type.type;
                 }
+                const bool concrete_anchor = known(element);
                 if (element != Type::Error) {
                     // Empty/Never-only siblings provide no anchor. An unknown
                     // concrete element, however, can still supply literal context.
@@ -1190,7 +1193,8 @@ private:
                     }
                 }
                 if (element == Type::Error) node.value = {Type::Error};
-                else node.value = {known(element) ? types_.intern({.kind = Type::Array, .element = element}) : Type{}, Literal::Array, context_pending && !known(element)};
+                else node.value = {known(element) ? types_.intern({.kind = Type::Array, .element = element}) : Type{},
+                                   Literal::Array, context_pending && !known(element), concrete_anchor};
                 break;
             }
             case ExprKind::Index: {

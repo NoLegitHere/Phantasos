@@ -511,10 +511,12 @@ Function compatibility compares parameters contravariantly and results
 covariantly before ruling out a possible conversion.
 
 Array literals take an expected `[T]` context when available, including nested
-and parenthesized literals. Otherwise a concrete element can anchor inference;
-numeric literals default to `Int`/`Float64`. Element types must match without
-implicit numeric conversion. `Never` elements do not anchor inference. Empty
-and `Never`-only nested literals can take context from a sibling; they do not
+and parenthesized literals. Otherwise a concrete element can anchor inference.
+Concrete anchors propagate through nested literals and take priority over
+numeric defaults from siblings. Numeric literals default to `Int`/`Float64`.
+Element types must match without implicit numeric conversion. `Never` elements
+do not anchor inference. Empty and `Never`-only nested literals can take context
+from a sibling; they do not
 suppress errors in that sibling. Without an anchor or expected type, the array
 remains deferred. Unresolved concrete element types also remain deferred.
 Overload probes inspect elements without changing them,

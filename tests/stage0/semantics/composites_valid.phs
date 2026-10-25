@@ -38,3 +38,6 @@ let neverLast = [1, stop()]
 let neverFirst = [stop(), 1]
 let nestedEmptyFirst = [[], [1]]
 let contravariant: fun(Int) -> Int = produceOptional()
+let byte: Int8 = 1
+let inferredLeft = [[1], [byte]]
+let inferredRight = [[byte], [1]]

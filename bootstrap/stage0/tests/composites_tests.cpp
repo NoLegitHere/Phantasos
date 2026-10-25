@@ -250,6 +250,37 @@ let pendingLast = [18446744073709551615, opaque<Int>()]
     independent.check("fun opaque<T>(): Int = 1\nlet values = [true, 1, opaque<Int>()]", {DiagCode::ScalarTypeMismatch});
 }
 
+void nested_concrete_anchors() {
+    Frontend f;
+    f.check(R"(
+let byte: Int8 = 1
+let left = [[1], [byte]]
+let right = [[byte], [1]]
+let parenthesized = [([1]), ([byte])]
+let deep = [[[1]], [[byte]]]
+let empty = [[], [[1]], [[byte]]]
+extern "C" { fun stop(): Never }
+let bottom = [[stop(), 1], [byte]]
+let wide: UInt64 = 18446744073709551615
+let maximum = [[18446744073709551615], [wide]]
+let single: Float32 = 1.0
+let floats = [[1.0], [single]]
+)");
+    CHECK(f.name(f.value("left")) == "[[Int8]]" && f.value("left") == f.value("right"));
+    CHECK(f.value("parenthesized") == f.value("left") && f.value("bottom") == f.value("left"));
+    CHECK(f.name(f.value("deep")) == "[[[Int8]]]" && f.value("empty") == f.value("deep"));
+    CHECK(f.name(f.value("maximum")) == "[[UInt64]]");
+    CHECK(f.name(f.value("floats")) == "[[Float32]]");
+    for (std::string_view array : {"[[128], [byte]]", "[[byte], [128]]"}) {
+        Frontend bad;
+        bad.check(std::format("let byte: Int8 = 1\nlet values = {}", array), {DiagCode::ScalarLiteralRange});
+    }
+    for (std::string_view array : {"[[byte], [wide]]", "[[wide], [byte]]"}) {
+        Frontend bad;
+        bad.check(std::format("let byte: Int8 = 1\nlet wide: Int16 = 1\nlet values = {}", array), {DiagCode::ScalarTypeMismatch});
+    }
+}
+
 void function_parameter_variance() {
     Frontend possible;
     possible.check("extern \"C\" { fun produce(): fun(Int?) -> Int }\nlet value: fun(Int) -> Int = produce()");
@@ -287,6 +318,7 @@ int main() {
     pointers_functions_and_deferred_features();
     stable_descriptors_and_deep_aliases();
     nested_array_defaults_and_never();
+    nested_concrete_anchors();
     function_parameter_variance();
     shared_descriptor_graph_relations();
 }

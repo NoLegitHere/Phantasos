@@ -29,7 +29,7 @@ bool floating(Type t) { return t == Type::Float32 || t == Type::Float64; }
 bool numeric(Type t) { return integer(t) || floating(t); }
 bool unsigned_integer(Type t) { return !t.optional_depth && ((t.kind >= Type::UInt8 && t.kind <= Type::UInt64) || t == Type::UInt); }
 bool known(Type t) { return t.kind != Type::Deferred && t.kind != Type::Error; }
-bool promotes(Type from, Type to) { return known(from) && known(to) && from.kind == to.kind && from.optional_depth <= to.optional_depth; }
+bool promotes(Type from, Type to) { return known(from) && known(to) && from.scalar() == to.scalar() && from.optional_depth <= to.optional_depth; }
 unsigned width(Type t) {
     switch (t.kind) {
         case Type::Int8: case Type::UInt8: return 8;
@@ -52,12 +52,12 @@ u64 integer_limit(Type type, bool negative) {
     return (u64{1} << (bits - 1)) - 1 + static_cast<u64>(negative);
 }
 
-enum class Literal : u8 { None, Integer, Float };
+enum class Literal : u8 { None, Integer, Float, Array };
 struct Value {
     Type type = Type::Deferred;
     Literal literal = Literal::None;
 };
-bool numeric(Value v) { return v.literal != Literal::None || numeric(v.type); }
+bool numeric(Value v) { return v.literal == Literal::Integer || v.literal == Literal::Float || numeric(v.type); }
 bool integer(Value v) { return v.literal == Literal::Integer || integer(v.type); }
 bool unavailable(Value v) { return v.literal == Literal::None && !known(v.type); }
 enum class OperandDomain : u8 { Numeric, Integer, Ordered };
@@ -123,6 +123,12 @@ std::string scalar_type_name(ScalarType type) {
         case Type::String: return "String";
         case Type::Unit: return "Unit";
         case Type::Never: return "Never";
+        case Type::Nominal: return "<nominal>";
+        case Type::Array: return "<array>";
+        case Type::Pointer: return "<pointer>";
+        case Type::Shared: return "<shared>";
+        case Type::Weak: return "<weak>";
+        case Type::Function: return "<function>";
     }
     unreachable();
     }();
@@ -143,6 +149,16 @@ public:
             result.bindings_.resize(resolution_.bindings().size());
             result.aliases_ = std::move(aliases_);
             return result;
+        }
+        for (auto& [id, fact] : aliases_.aliases_) {
+            (void)id;
+            if (!fact.syntax) continue;
+            const Type type = annotation(fact.syntax);
+            if (known(type)) {
+                fact.state = ExpansionState::Resolved;
+                fact.scalar = type;
+                fact.optional_depth = type.optional_depth;
+            }
         }
         // Binding nodes have the same indices as the resolver's BindingIds.
         nodes_.resize(resolution_.bindings().size());
@@ -238,19 +254,146 @@ public:
         result.calls_ = std::move(calls_);
         result.conversions_ = std::move(conversions_);
         result.aliases_ = std::move(aliases_);
+        result.types_ = std::move(types_);
         return result;
     }
 
 private:
+    std::string scalar_type_name(Type type) const { return types_.name(type, resolution_, names_); }
+
+    enum class Relation : u8 { Yes, No, Deferred };
+    bool protocol(Type type) const {
+        if (type.kind != Type::Nominal) return false;
+        const auto* d = types_.descriptor(type);
+        const auto& b = resolution_.binding(d->declaration);
+        if (b.kind == BindingKind::BuiltinType) return true;
+        const auto* item = cast_type_decl(b.item);
+        return item->kind == ItemKind::Interface;
+    }
+    bool inherited(Type type) const {
+        if (type.kind != Type::Nominal) return false;
+        const auto& b = resolution_.binding(types_.descriptor(type)->declaration);
+        return b.kind == BindingKind::Type && !cast_type_decl(b.item)->supers.empty();
+    }
+    Relation relation(Type from, Type to) const {
+        std::vector<std::pair<Type, Type>> pending{{from, to}};
+        Relation result = Relation::Yes;
+        while (!pending.empty()) {
+            const auto [source, target] = pending.back(); pending.pop_back();
+            if (promotes(source, target) || source == Type::Never) continue;
+            if (!known(source) || !known(target)) { result = Relation::Deferred; continue; }
+            if (protocol(target)) { result = Relation::Deferred; continue; }
+            if (source.optional_depth > target.optional_depth) return Relation::No;
+            if (source.kind == Type::Nominal && target.kind == Type::Nominal && (protocol(source) || inherited(source) || inherited(target))) {
+                result = Relation::Deferred; continue;
+            }
+            if (source.kind == Type::Function && target.kind == Type::Function) {
+                const auto* a = types_.descriptor(source);
+                const auto* b = types_.descriptor(target);
+                if (a->parameters.size() != b->parameters.size()) return Relation::No;
+                // Function variance/effect coercions are not established by
+                // this pass, even when their component types are compatible.
+                result = Relation::Deferred;
+                for (usize p = 0; p < a->parameters.size(); ++p) pending.push_back({a->parameters[p], b->parameters[p]});
+                pending.push_back({a->result, b->result});
+                if (a->throws && b->throws) pending.push_back({a->error, b->error});
+                continue;
+            }
+            if (source.kind == target.kind && (source.kind == Type::Shared || source.kind == Type::Weak)) {
+                result = Relation::Deferred;
+                pending.push_back({types_.descriptor(source)->element, types_.descriptor(target)->element});
+                continue;
+            }
+            return Relation::No;
+        }
+        return result;
+    }
+
+    Type nominal(BindingId id) {
+        const auto& b = resolution_.binding(id);
+        if (b.kind != BindingKind::Type && b.kind != BindingKind::BuiltinType) return Type::Deferred;
+        if (b.kind == BindingKind::Type && !cast_type_decl(b.item)->generics.empty()) return Type::Deferred;
+        for (auto scope = b.scope; scope.valid(); scope = resolution_.scopes()[scope.value].parent) {
+            if (resolution_.scopes()[scope.value].kind != ScopeKind::Generics) continue;
+            for (auto binding : resolution_.scopes()[scope.value].bindings)
+                if (resolution_.binding(binding).kind == BindingKind::GenericParameter) return Type::Deferred;
+        }
+        return types_.intern({.kind = Type::Nominal, .declaration = id});
+    }
+
     Type annotation(const TypeExpr* type) {
         if (!type) return Type::Deferred;
         if (const auto it = annotations_.find(type); it != annotations_.end()) return it->second;
-        const auto expanded = aliases_.type(type, resolution_);
-        if (!expanded.unknown_member.sym.empty())
-            diag_.error(DiagCode::UnknownType, expanded.unknown_member.span, "unknown type '{}' in '{}'",
-                        names_.str(expanded.unknown_member.sym), names_.str(resolution_.binding(expanded.member_owner).name.sym));
-        annotations_.emplace(type, expanded.type.scalar);
-        return expanded.type.scalar;
+        struct Frame { const TypeExpr* syntax; bool ready = false; const TypeExpr* redirect = nullptr; };
+        std::vector<Frame> work{{type}};
+        std::unordered_map<const TypeExpr*, bool> active;
+        const auto cached = [&](const TypeExpr* t) -> Type {
+            if (!t) return Type::Unit;
+            const auto it = annotations_.find(t);
+            return it == annotations_.end() ? Type{} : it->second;
+        };
+        while (!work.empty()) {
+            auto& frame = work.back();
+            const auto* syntax = frame.syntax;
+            if (annotations_.contains(syntax)) { work.pop_back(); continue; }
+            if (!frame.ready) {
+                frame.ready = true;
+                active[syntax] = true;
+                if (syntax->kind == TypeKind::Path || syntax->kind == TypeKind::Unit || syntax->kind == TypeKind::SelfType) {
+                    const auto expanded = aliases_.type(syntax, resolution_);
+                    if (!expanded.unknown_member.sym.empty())
+                        diag_.error(DiagCode::UnknownType, expanded.unknown_member.span, "unknown type '{}' in '{}'",
+                                    names_.str(expanded.unknown_member.sym), names_.str(resolution_.binding(expanded.member_owner).name.sym));
+                    Type value = expanded.type.scalar;
+                    if (!known(value) && expanded.type.state == ExpansionState::Resolved && expanded.type.target.valid()) {
+                        value = nominal(expanded.type.target);
+                        if (known(value)) value.optional_depth = expanded.type.optional_depth;
+                    }
+                    if (known(value) || value == Type::Error) { annotations_[syntax] = value; continue; }
+                    if (expanded.type.syntax && expanded.type.syntax != syntax) {
+                        frame.redirect = expanded.type.syntax;
+                        if (!active.contains(frame.redirect)) work.push_back({frame.redirect});
+                    } else annotations_[syntax] = Type::Deferred;
+                    continue;
+                }
+                std::vector<const TypeExpr*> children;
+                if (syntax->inner) children.push_back(syntax->inner);
+                if (syntax->throws_type) children.push_back(syntax->throws_type);
+                for (auto* child : syntax->args) children.push_back(child);
+                for (auto* child : children)
+                    if (!annotations_.contains(child) && !active.contains(child)) work.push_back({child});
+                continue;
+            }
+            Type value;
+            if (frame.redirect) value = cached(frame.redirect);
+            else if (syntax->kind == TypeKind::Optional) value = cached(syntax->inner).optional();
+            else if (syntax->kind == TypeKind::Fun) {
+                TypeDescriptor descriptor{.kind = Type::Function, .result = cached(syntax->inner), .throws = syntax->throws};
+                bool complete = known(descriptor.result);
+                for (auto* param : syntax->args) { descriptor.parameters.push_back(cached(param)); complete &= known(cached(param)); }
+                if (syntax->throws) {
+                    if (syntax->throws_type) descriptor.error = cached(syntax->throws_type);
+                    else for (usize i = 0; i < resolution_.bindings().size(); ++i) {
+                        const auto& b = resolution_.bindings()[i];
+                        if (b.kind == BindingKind::BuiltinType && names_.str(b.name.sym) == "Error") descriptor.error = nominal(BindingId{i});
+                    }
+                    complete &= known(descriptor.error);
+                }
+                if (complete) value = types_.intern(std::move(descriptor));
+            } else if (known(cached(syntax->inner))) {
+                Type::Kind kind;
+                switch (syntax->kind) {
+                    case TypeKind::Array: kind = Type::Array; break;
+                    case TypeKind::Pointer: kind = Type::Pointer; break;
+                    case TypeKind::Shared: kind = Type::Shared; break;
+                    case TypeKind::Weak: kind = Type::Weak; break;
+                    default: annotations_[syntax] = Type::Deferred; continue;
+                }
+                value = types_.intern({.kind = kind, .element = cached(syntax->inner), .mutable_pointer = syntax->is_mut});
+            }
+            annotations_[syntax] = value;
+        }
+        return annotations_.at(type);
     }
 
     std::span<const BindingId> callees(const Expr* expr) const {
@@ -460,12 +603,18 @@ private:
     Value compatible(usize index, Type expected, Span span) {
         Value actual = nodes_[index].value;
         if (!known(expected) || unavailable(actual)) return actual;
+        if (actual.literal == Literal::Array && expected.kind == Type::Array) {
+            const auto array = materialize(index, expected.scalar());
+            return !known(array.type) ? array : Value{expected};
+        }
         if ((actual.literal == Literal::Integer && integer(expected.scalar())) ||
             (actual.literal == Literal::Float && floating(expected.scalar()))) {
             const auto literal = materialize(index, expected.scalar());
             return literal.type == Type::Error ? literal : Value{expected};
         }
-        if (promotes(actual.type, expected)) return {expected};
+        if (relation(default_type(actual), expected) == Relation::Deferred &&
+            !(actual.literal == Literal::Array && expected.kind != Type::Array && !protocol(expected))) return {};
+        if (actual.literal == Literal::None && promotes(actual.type, expected)) return {expected};
         if (actual.type == Type::Never) return actual;
         diag_.error(DiagCode::ScalarTypeMismatch, span, "expected '{}', found '{}'",
                     scalar_type_name(expected), scalar_type_name(default_type(actual)));
@@ -483,6 +632,7 @@ private:
     }
 
     Value materialize(usize root, Type type) {
+        if (nodes_[root].value.literal == Literal::Array) return materialize_array(root, type);
         struct Pending { usize index; bool negative; };
         std::vector<Pending> pending{{root, false}};
         std::vector<usize> visited;
@@ -524,6 +674,46 @@ private:
         return nodes_[root].value;
     }
 
+    Value materialize_array(usize root, Type expected) {
+        struct Work { usize index; Type type; bool finish = false; };
+        std::vector<Work> work{{root, expected}};
+        while (!work.empty()) {
+            const auto next = work.back(); work.pop_back();
+            auto& node = nodes_[next.index];
+            if (const auto* paren = as<ParenExpr>(node.expr)) {
+                if (next.finish) node.value = value(paren->inner);
+                else {
+                    work.push_back({next.index, next.type, true});
+                    work.push_back({expressions_.at(paren->inner), next.type});
+                }
+                continue;
+            }
+            const auto* array = cast<ArrayExpr>(node.expr);
+            if (next.finish) {
+                for (auto* element : array->elems) {
+                    const auto child = value(element);
+                    if (child.type == Type::Error) node.value = {Type::Error};
+                    else if (unavailable(child) && node.value.type != Type::Error) node.value = {};
+                }
+                continue;
+            }
+            if (!known(next.type) || next.type.kind != Type::Array) { node.value = {}; continue; }
+            const auto element_type = types_.descriptor(next.type)->element;
+            node.value = {next.type.scalar()};
+            work.push_back({next.index, next.type, true});
+            for (auto* element : array->elems) {
+                const usize child = expressions_.at(element);
+                if (nodes_[child].value.literal == Literal::Array && element_type.kind == Type::Array) work.push_back({child, element_type});
+                else {
+                    const auto checked = compatible(child, element_type, element->span);
+                    if (checked.type == Type::Error) node.value = checked;
+                    else if (unavailable(checked) && node.value.type != Type::Error) node.value = {};
+                }
+            }
+        }
+        return nodes_[root].value;
+    }
+
     Value binary(const BinaryExpr& expr) {
         auto lhs = value(expr.lhs), rhs = value(expr.rhs);
         const bool logical = expr.op == BinOp::And || expr.op == BinOp::Or;
@@ -539,7 +729,8 @@ private:
         if (lhs.type == Type::Error || rhs.type == Type::Error) return {Type::Error};
         if (expr.op == BinOp::Coalesce || expr.op == BinOp::Range || expr.op == BinOp::RangeExcl) return {};
         const bool equality = expr.op == BinOp::Eq || expr.op == BinOp::Ne;
-        if (equality && (lhs.type.optional_depth || rhs.type.optional_depth)) return {};
+        if (equality && (lhs.type.optional_depth || rhs.type.optional_depth || lhs.type.kind >= Type::Nominal || rhs.type.kind >= Type::Nominal ||
+                         lhs.literal == Literal::Array || rhs.literal == Literal::Array)) return {};
         const bool ordering = expr.op >= BinOp::Lt && expr.op <= BinOp::Ge;
         const bool ints = expr.op == BinOp::Rem || expr.op == BinOp::WrapAdd || expr.op == BinOp::WrapSub ||
                           expr.op == BinOp::WrapMul || expr.op == BinOp::BitOr || expr.op == BinOp::BitXor ||
@@ -605,18 +796,57 @@ private:
         return true;
     }
 
-    bool argument_mapping(const CallExpr& expr, const FunItem& fun, std::vector<usize>& mapping) const {
-        std::vector<u8> used(fun.sig.params.size());
+    struct Probe {
+        bool matches = true, deferred = false, fits = true;
+        usize score = 0, lifts = 0;
+    };
+    Probe probe(usize root, Type expected) const {
+        Probe result;
+        std::vector<std::pair<usize, Type>> work{{root, expected}};
+        while (!work.empty()) {
+            const auto [index, target] = work.back(); work.pop_back();
+            const auto actual = nodes_[index].value;
+            if (!known(target) || unavailable(actual)) { result.deferred = true; continue; }
+            if (actual.type == Type::Never) continue;
+            if (actual.literal == Literal::Array) {
+                if (const auto* paren = as<ParenExpr>(nodes_[index].expr)) {
+                    work.push_back({expressions_.at(paren->inner), target}); continue;
+                }
+            }
+            if (actual.literal == Literal::Array && target.kind == Type::Array) {
+                result.lifts += target.optional_depth;
+                const auto element = types_.descriptor(target)->element;
+                for (auto* expr : cast<ArrayExpr>(nodes_[index].expr)->elems) work.push_back({expressions_.at(expr), element});
+            } else if ((actual.literal == Literal::Integer && integer(target.scalar())) ||
+                       (actual.literal == Literal::Float && floating(target.scalar()))) {
+                result.score += target.scalar() != default_type(actual);
+                result.lifts += target.optional_depth;
+                result.fits &= fits_literal_tree(index, target.scalar());
+            } else {
+                if (actual.literal == Literal::Array && target.kind != Type::Array && !protocol(target)) {
+                    result.matches = false; continue;
+                }
+                const auto match = relation(default_type(actual), target);
+                if (match == Relation::Deferred) result.deferred = true;
+                else if (match == Relation::No || actual.literal != Literal::None) result.matches = false;
+                else result.lifts += target.optional_depth - actual.type.optional_depth;
+            }
+        }
+        return result;
+    }
+
+    bool argument_mapping(const CallExpr& expr, List<Param> params, const std::unordered_map<u32, usize>& labels,
+                          std::vector<usize>& mapping) const {
+        std::vector<u8> used(params.size());
         usize positional = 0;
         bool labeled = false;
         for (const auto& arg : expr.args) {
             usize index;
             if (arg.label.sym.empty()) {
-                if (labeled || positional == fun.sig.params.size()) return false;
+                if (labeled || positional == params.size()) return false;
                 index = positional++;
             } else {
                 labeled = true;
-                const auto& labels = parameter_indices_.at(&fun);
                 const auto it = labels.find(arg.label.sym.id);
                 if (it == labels.end()) return false;
                 index = it->second;
@@ -626,7 +856,7 @@ private:
             mapping.push_back(index);
         }
         for (usize p = 0; p < used.size(); ++p)
-            if (!used[p] && !fun.sig.params[p].default_value) return false;
+            if (!used[p] && !params[p].default_value) return false;
         return true;
     }
 
@@ -722,8 +952,84 @@ private:
         return Value{kind == ConversionKind::Checked ? destination.optional() : destination};
     }
 
+    std::optional<Value> prepare_constructor(const CallExpr& expr) {
+        const auto entity = aliases_.entity(expr.callee, resolution_);
+        if (entity.state != ExpansionState::Resolved || !entity.target.valid() || entity.optional_depth) return std::nullopt;
+        const auto& binding = resolution_.binding(entity.target);
+        if (binding.kind != BindingKind::Type) return std::nullopt;
+        const auto* item = cast_type_decl(binding.item);
+        auto& record = calls_[&expr];
+        record.kind = CallKind::NominalConstructor;
+        record.target = entity.target;
+        const Type result = nominal(entity.target);
+        if (!known(result)) return Value{};
+        if (item->kind == ItemKind::Interface || has_modifier(item->mods, Modifier::Abstract)) {
+            diag_.error(DiagCode::NotConstructible, expr.span, "type '{}' cannot be constructed directly", scalar_type_name(result));
+            record.state = CallState::Error;
+            return Value{Type::Error};
+        }
+        if (item->kind == ItemKind::Enum) return Value{};
+        for (const Item* member : item->members)
+            if (const auto* init = as<InitItem>(member); init && init->has_params) return Value{};
+        std::unordered_map<u32, usize> labels;
+        std::vector<Type> parameters;
+        for (usize p = 0; p < item->ctor_params.size(); ++p) {
+            labels.emplace(item->ctor_params[p].name.sym.id, p);
+            parameters.push_back(annotation(item->ctor_params[p].type));
+        }
+        bool matches = argument_mapping(expr, item->ctor_params, labels, record.parameters), deferred = !item->where.empty(), fits = true;
+        for (const auto& arg : expr.args) if (value(arg.value).type == Type::Error) {
+            record.state = CallState::Error; return Value{Type::Error};
+        }
+        if (matches) for (usize a = 0; a < expr.args.size(); ++a) {
+            const auto p = probe(expressions_.at(expr.args[a].value), parameters[record.parameters[a]]);
+            matches &= p.matches; deferred |= p.deferred; fits &= p.fits;
+        }
+        if (!matches) {
+            auto& d = diag_.error(DiagCode::NoMatchingCall, expr.span, "arguments do not match the primary constructor of '{}'", scalar_type_name(result));
+            d.notes.push_back({binding.name.span, "type declared here"});
+            record.state = CallState::Error;
+            return Value{Type::Error};
+        }
+        if (deferred && fits) return Value{};
+        record.state = CallState::Resolved;
+        for (usize a = 0; a < expr.args.size(); ++a)
+            if (require(expr.args[a].value, parameters[record.parameters[a]], expr.args[a].value->span).type == Type::Error)
+                record.state = CallState::Error;
+        return Value{record.state == CallState::Error ? Type{Type::Error} : result};
+    }
+
+    Value prepare_indirect(const CallExpr& expr, Type function) {
+        const auto descriptor = *types_.descriptor(function);
+        auto& record = calls_[&expr];
+        record.kind = CallKind::IndirectFunction;
+        const auto ids = callees(expr.callee);
+        if (ids.size() == 1) record.target = ids.front();
+        bool matches = expr.args.size() == descriptor.parameters.size(), deferred = false, fits = true;
+        for (const auto& arg : expr.args) if (!arg.label.sym.empty()) matches = false;
+        for (const auto& arg : expr.args) if (value(arg.value).type == Type::Error) {
+            record.state = CallState::Error; return {Type::Error};
+        }
+        if (matches) for (usize a = 0; a < expr.args.size(); ++a) {
+            const auto p = probe(expressions_.at(expr.args[a].value), descriptor.parameters[a]);
+            matches &= p.matches; deferred |= p.deferred; fits &= p.fits;
+        }
+        if (!matches) {
+            diag_.error(DiagCode::NoMatchingCall, expr.span, "arguments do not match function type '{}'", scalar_type_name(function));
+            record.state = CallState::Error; return {Type::Error};
+        }
+        if (deferred && fits) return {};
+        record.state = CallState::Resolved;
+        for (usize a = 0; a < expr.args.size(); ++a) {
+            record.parameters.push_back(a);
+            if (require(expr.args[a].value, descriptor.parameters[a], expr.args[a].value->span).type == Type::Error) record.state = CallState::Error;
+        }
+        return {record.state == CallState::Error ? Type{Type::Error} : descriptor.result};
+    }
+
     Value prepare_call(const CallExpr& expr) {
         if (auto conversion = prepare_conversion(expr)) return *conversion;
+        if (auto constructor = prepare_constructor(expr)) return *constructor;
         auto& record = calls_[&expr];
         const Value callee = value(expr.callee);
         if (callee.type == Type::Error) { record.state = CallState::Error; return {Type::Error}; }
@@ -731,6 +1037,7 @@ private:
             if (value(arg.value).type == Type::Error) { record.state = CallState::Error; return {Type::Error}; }
         }
         if (callee.type == Type::Never) return {Type::Never};
+        if (callee.type.kind == Type::Function && !callee.type.optional_depth) return prepare_indirect(expr, callee.type);
         if (!unavailable(callee)) {
             diag_.error(DiagCode::NotCallable, expr.callee->span, "value of type '{}' is not callable",
                         scalar_type_name(default_type(callee)));
@@ -757,21 +1064,14 @@ private:
             const auto* fun = cast<FunItem>(resolution_.binding(id).item);
             const auto& signature = signatures_.at(id.value);
             Match match{.id = id, .deferred = signature.generic || !fun->sig.where.empty()};
-            if (!argument_mapping(expr, *fun, match.parameters)) continue;
+            if (!argument_mapping(expr, fun->sig.params, parameter_indices_.at(fun), match.parameters)) continue;
             bool compatible_args = true, fits = true;
             for (usize a = 0; a < expr.args.size(); ++a) {
-                const auto actual = value(expr.args[a].value);
                 const Type expected = signature.parameters[match.parameters[a]];
-                if (!known(expected) || unavailable(actual)) { match.deferred = true; continue; }
-                if (actual.type == Type::Never) continue;
-                if ((actual.literal == Literal::Integer && integer(expected.scalar())) ||
-                    (actual.literal == Literal::Float && floating(expected.scalar()))) {
-                    match.score += expected.scalar() != default_type(actual);
-                    match.lifts += expected.optional_depth;
-                    fits &= fits_literal_tree(expressions_.at(expr.args[a].value), expected.scalar());
-                } else if (actual.literal == Literal::None && promotes(actual.type, expected))
-                    match.lifts += expected.optional_depth - actual.type.optional_depth;
-                else compatible_args = false;
+                const auto p = probe(expressions_.at(expr.args[a].value), expected);
+                match.deferred |= p.deferred;
+                match.score += p.score; match.lifts += p.lifts;
+                fits &= p.fits; compatible_args &= p.matches;
             }
             if (!compatible_args) continue;
             if (fits) matches.push_back(std::move(match));
@@ -850,6 +1150,47 @@ private:
             case ExprKind::Char: node.value = {Type::Char}; break;
             case ExprKind::String: case ExprKind::Interp: node.value = {Type::String}; break;
             case ExprKind::Unit: node.value = {Type::Unit}; break;
+            case ExprKind::SelfValue: {
+                const auto* reference = resolution_.reference(expr->span);
+                if (reference && reference->state == ResolutionState::Resolved) {
+                    const auto ids = resolution_.candidates(reference->target);
+                    if (ids.size() == 1) node.value = {nominal(ids.front())};
+                }
+                break;
+            }
+            case ExprKind::Array: {
+                const auto* array = cast<ArrayExpr>(expr);
+                Type element;
+                for (auto* child : array->elems) {
+                    const auto value_type = value(child);
+                    if (value_type.type == Type::Error) { element = Type::Error; break; }
+                    if (value_type.literal == Literal::None && known(value_type.type)) { element = value_type.type; break; }
+                }
+                if (!known(element) && element != Type::Error && !array->elems.empty()) element = default_type(value(array->elems[0]));
+                if (element == Type::Error) node.value = {Type::Error};
+                else node.value = {known(element) ? types_.intern({.kind = Type::Array, .element = element}) : Type{}, Literal::Array};
+                break;
+            }
+            case ExprKind::Index: {
+                const auto& subscript = *cast<IndexExpr>(expr);
+                const auto base = value(subscript.base), index_value = value(subscript.index);
+                if (base.type == Type::Error || index_value.type == Type::Error) { node.value = {Type::Error}; break; }
+                if (base.type.kind != Type::Array && base.literal != Literal::Array) break;
+                const Expr* index_syntax = subscript.index;
+                while (const auto* paren = as<ParenExpr>(index_syntax)) index_syntax = paren->inner;
+                if (base.type.optional_depth || index_syntax->kind == ExprKind::None || !in_domain(index_value, OperandDomain::Integer)) {
+                    diag_.error(DiagCode::InvalidArrayIndex, expr->span, "array indexing requires a non-optional array and integer index");
+                    node.value = {Type::Error}; break;
+                }
+                if (base.type.kind != Type::Array) break;
+                if (unavailable(index_value)) break;
+                if (index_value.literal != Literal::None && materialize(expressions_.at(subscript.index), Type::Int).type == Type::Error) {
+                    node.value = {Type::Error}; break;
+                }
+                if (base.literal == Literal::Array && !known(materialize(expressions_.at(subscript.base), base.type).type)) break;
+                node.value = {types_.descriptor(base.type)->element};
+                break;
+            }
             case ExprKind::Name:
                 if (!node.deps.empty()) node.value = nodes_[node.deps.front()].value;
                 break;
@@ -891,6 +1232,7 @@ private:
     const Interner& names_;
     DiagEngine& diag_;
     AliasExpansion aliases_;
+    TypeTable types_;
     std::unordered_map<const TypeExpr*, Type> annotations_;
     std::vector<Node> nodes_;
     std::unordered_map<const Expr*, usize> expressions_;

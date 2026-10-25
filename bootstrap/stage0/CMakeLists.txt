@@ -55,6 +55,7 @@ add_library(phantasos_frontend STATIC
     src/sema/resolve.cpp
     src/sema/types.cpp
     src/sema/aliases.cpp
+    src/sema/type_table.cpp
 )
 add_library(Phantasos::Frontend ALIAS phantasos_frontend)
 target_include_directories(phantasos_frontend PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
@@ -73,7 +74,7 @@ phs_warnings(phantasos-stage0)
 
 include(CTest)
 if(BUILD_TESTING)
-    foreach(suite IN ITEMS support frontend sema resolve session types calls conversions aliases)
+    foreach(suite IN ITEMS support frontend sema resolve session types calls conversions aliases composites)
         add_executable(phantasos-${suite}-tests tests/${suite}_tests.cpp)
         target_link_libraries(phantasos-${suite}-tests PRIVATE Phantasos::Frontend)
         phs_warnings(phantasos-${suite}-tests)

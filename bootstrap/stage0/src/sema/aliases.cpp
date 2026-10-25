@@ -231,6 +231,7 @@ public:
                     if (lookup.pending.valid()) { deps.push_back(lookup.pending.value); continue; }
                     report_unknown(lookup);
                     fact = lookup.type;
+                    if (fact.state != ExpansionState::Error) fact.syntax = cast<TypeAliasItem>(bindings[frame.id].item)->type;
                 }
                 result_.progress_[frame.id] = 2;
                 stack.pop_back();

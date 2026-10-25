@@ -108,7 +108,7 @@ let constructor = Box.Number(1)
     CHECK(f.alias("Box").target == f.id("Holder", BindingKind::Type));
     CHECK(f.alias("Nested").target == f.id("Nested", BindingKind::Type));
     CHECK(f.alias("OptionalNominal").target == f.alias("Nested").target && f.alias("OptionalNominal").optional_depth == 1);
-    CHECK(f.alias("Nested").state == ExpansionState::Resolved && f.alias("Nested").scalar == Type::Deferred);
+    CHECK(f.alias("Nested").state == ExpansionState::Resolved && f.alias("Nested").scalar.kind == Type::Nominal);
     CHECK(f.alias("This").target == f.id("Holder", BindingKind::Type));
     CHECK(f.value("value") == Type::Int16 && f.value("converted") == Type::Int16 && f.value("constructor") == Type::Int16);
     const auto* alias = ast::cast<ast::TypeAliasItem>(f.result.resolution->binding(f.id("NumberAlias")).item);
@@ -170,7 +170,7 @@ void qualified_dependencies_inside_composites() {
         }
         Frontend acyclic;
         acyclic.check(std::format("type Outer = {}\nclass Box<T> {{}}\nclass C {{ type Back = Int }}\ntype Prefix = C", target));
-        CHECK(acyclic.alias("Outer").state == ExpansionState::Deferred);
+        CHECK(acyclic.alias("Outer").state == (target == "Box<Prefix.Back>" ? ExpansionState::Deferred : ExpansionState::Resolved));
         CHECK(acyclic.alias("Back").state == ExpansionState::Resolved);
     }
     Frontend missing;
@@ -210,9 +210,10 @@ struct Int8 {}
 type Shadow = Int8
 let nominal: Shadow = Shadow()
 )");
-    for (std::string_view name : {"Generic", "Recursive", "Applied", "Array", "Abstract", "Default", "RecursiveDefault", "Associated", "UnknownMember"})
+    for (std::string_view name : {"Generic", "Recursive", "Applied", "Abstract", "Default", "RecursiveDefault", "Associated", "UnknownMember"})
         CHECK(f.alias(name).state == ExpansionState::Deferred);
-    CHECK(f.alias("Shadow").state == ExpansionState::Resolved && f.alias("Shadow").scalar == Type::Deferred);
+    CHECK(f.alias("Array").scalar.kind == Type::Array);
+    CHECK(f.alias("Shadow").state == ExpansionState::Resolved && f.alias("Shadow").scalar.kind == Type::Nominal);
     CHECK(f.alias("Shadow").target == f.id("Int8", BindingKind::Type));
     Frontend value_shadow;
     value_shadow.check("type Small = Int8\nlet Small = true\nlet bad = Small(1)", {DiagCode::NotCallable});

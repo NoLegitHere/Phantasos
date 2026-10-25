@@ -1,0 +1,15 @@
+aliases_errors.phs:17:20: error[E0400]: expected 'Int8', found 'Bool'
+   17 | let wrong: Small = true
+      |                    ^^^^
+aliases_errors.phs:19:16: error[E0411]: arguments do not match any callable signature
+   19 | let argument = accept(false)
+      |                ^^^^^^^^^^^^^
+aliases_errors.phs:18:5: note: candidate 'accept(value: Int8)'
+   18 | fun accept(value: Small): Small = value
+      |     ^^^^^^
+aliases_errors.phs:20:17: error[E0422]: conversion from 'Int32' to 'Int8' may narrow; use an explicit narrowing operation
+   20 | let narrowing = Small(Int32(1))
+      |                 ^^^^^^^^^^^^^^^
+aliases_errors.phs:23:24: error[E0301]: unknown type 'Unknown' in 'Empty'
+   23 | fun missing(value: Box.Unknown) {}
+      |                        ^^^^^^^

@@ -33,6 +33,7 @@ Windows x64 and Linux x86_64:
 - [x] Initial scalar type checking, contextual literals and binding inference
 - [x] Scalar function signatures, return inference and direct call/overload checking
 - [x] Initial numeric conversions: widening, checked/truncating integers and optional result facts
+- [x] Non-generic alias expansion, cycle diagnostics and canonical type identities
 - [ ] Generic/indirect calls, remaining numeric policies, composite types, member lookup and ownership analysis
 - [ ] MIR, x86_64 codegen, COFF/ELF writers, linker, runtime
 - [ ] Workspace-aware build driver
@@ -53,9 +54,12 @@ retain the target and parameter mapping. Expression-bodied returns infer scalar
 types, including forward calls. `parse` continues to report syntax only.
 Numeric conversions validate built-in identity, arity, operand types and widening
 ranges. Checked integer conversions return `T?`, with optional type facts retained
-through bindings, signatures and calls. Generic/indirect calls, remaining numeric
-policies, receiver-dependent members, inheritance,
-alias expansion, composite types and ownership analysis remain
+through bindings, signatures and calls. Transparent non-generic aliases expand
+to built-ins, optional wrappers or nominal declaration identities. Expansion
+checks cycles before value typing and supports known direct alias-qualified
+type members and numeric conversion targets. Generic/indirect calls, generic
+aliases, associated requirements, remaining numeric policies, receiver-dependent
+members, inheritance, composite types and ownership analysis remain
 pending, so passing `check` does not yet establish program validity. Imports explicitly report that
 package loading is unavailable.
 
@@ -127,6 +131,10 @@ Function value bindings remain deferred; their return types live in signatures.
 `scalar_type_name` renders the complete fact. `conversion(CallExpr*)` records
 conversion mode and source/destination types. Intrinsic conversion call targets
 refer to built-in type bindings, while ordinary call targets refer to functions.
+`alias(BindingId)` exposes an alias's expansion state, canonical target ID,
+scalar fact and optional depth. `Resolved` for a nominal alias identifies its
+declaration; nominal value type checking remains pending. Alias definition errors
+retain these records and skip value checking for that file.
 `ScalarType::Deferred` means the type needs a later pass, while `Error` marks a
 diagnosed type failure. Numeric defaults are `Int` and `Float64`; a scalar
 annotation or a typed operator operand can constrain literals. Stage0 currently

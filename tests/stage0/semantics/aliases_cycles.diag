@@ -1,0 +1,18 @@
+aliases_cycles.phs:17:6: error[E0430]: cyclic type alias expansion involving 'First'
+   17 | type Second = First
+      |      ^^^^^^
+aliases_cycles.phs:16:14: note: alias 'First' expands here
+   16 | type First = Second?
+      |              ^^^^^^^
+aliases_cycles.phs:17:15: note: alias 'Second' expands here
+   17 | type Second = First
+      |               ^^^^^
+aliases_cycles.phs:21:6: error[E0430]: cyclic type alias expansion involving 'Back'
+   21 | type Outer = [Prefix.Back]
+      |      ^^^^^
+aliases_cycles.phs:19:23: note: alias 'Back' expands here
+   19 | class C { type Back = Outer }
+      |                       ^^^^^
+aliases_cycles.phs:21:14: note: alias 'Outer' expands here
+   21 | type Outer = [Prefix.Back]
+      |              ^^^^^^^^^^^^^

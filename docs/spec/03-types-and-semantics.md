@@ -275,8 +275,8 @@ nested types and type-qualified values. Receiver-dependent members, implicit
 lookup is also deferred, including an unqualified name that a base could
 provide before an outer scope is searched. A type's own generic parameters
 take precedence over that inherited lookup. Lexical lookup alone cannot
-select inherited members or check visibility. Alias cycles and initialization
-cycles remain later checks.
+select inherited members or check visibility. Non-generic alias expansion and
+cycles are checked by the type pass (3.17); initialization cycles remain pending.
 
 The bootstrap prelude supplies type names `Int8/16/32/64`, `UInt8/16/32/64`,
 `Int`, `UInt`, `Float32/64`, `Bool`, `Char`, `String`, `Unit`, `Never`, `Error`,
@@ -346,7 +346,7 @@ does not alter the syntax tree, and dependent expressions avoid cascading
 diagnostics. Parsing alone performs none of these checks.
 
 The scalar API explicitly returns `Deferred` for unsupported calls, callable values,
-composite/nominal/generic types, aliases, receiver-dependent members, optional
+composite/nominal/generic types, generic aliases, receiver-dependent members, optional
 bindings, casts, effect operators and block/branch results. It traverses their
 children to check supported scalar subexpressions. Forward variable references
 can infer scalar types. Numeric literals in deferred contextual positions keep
@@ -409,8 +409,8 @@ and use iterative dependency traversal, including long forward call chains.
 
 The numeric conversion APIs require exactly one positional argument. The callee
 must resolve to a built-in numeric type; declarations that shadow a built-in
-name keep their own meaning. Aliases need expansion before they can name these
-intrinsics. Conversion type checking does not execute conversions or fold their
+name keep their own meaning. Aliases expanded to plain built-in numeric types
+can name the same intrinsics. Conversion type checking does not execute conversions or fold their
 values; execution and lowering remain future compiler work.
 
 - `T(value)` is an identity or lossless widening conversion. Integers of the
@@ -450,3 +450,41 @@ a widening constructor. Existing literal range/operator diagnostics still apply.
 Conversion records retain the mode, source/destination types and checked state.
 Their call targets identify built-in types rather than functions; they introduce
 no function-return dependency. All facts remain cached and the AST is unchanged.
+
+## 3.17 Transparent alias expansion [Core]
+
+A non-generic `type Name = Target` is transparent: it does not create a new
+type identity. Stage0 expands chains in their declaration scopes using retained
+lexical bindings. Forward declarations and aliases nested in nominal types are
+supported. A use-site binding with the same spelling cannot capture names in
+an alias's definition.
+
+Expansion retains the terminal built-in or non-generic nominal declaration ID.
+Built-in facts and optional depths pass through aliases unchanged; aliases to
+the same type are identical for scalar annotations, calls and overloads.
+Nominal targets also retain optional wrappers, although checking nominal values
+is still pending. Aliases naming plain built-in numeric types support the
+conversion APIs in 3.16 and use the canonical built-in as the intrinsic target.
+Value bindings/functions still take precedence over type names at value uses.
+
+Known direct type members can be looked up through a nominal alias, including
+another alias. This lookup respects separate type/value namespaces and does not
+rewrite the lexical resolver's deferred references. Missing direct members of
+a non-inheriting nominal owner report `E0301`; inherited/dependent lookups stay
+deferred. Scalar annotation diagnostics are cached by syntax node, so generated
+parameter/field pairs do not duplicate them.
+
+Transparent aliases must be acyclic. `E0430` reports an expansion cycle with
+notes on its path, including cycles through optional, array, pointer, function
+and generic-argument syntax, or through a known alias-qualified member. Only
+non-generic transparent definitions participate in this initial cycle pass.
+Alias-qualified dependency discovery examines nested paths in all of these
+forms, even when the composite expansion result remains deferred.
+Dependent aliases retain an error fact without additional cycle diagnostics.
+Alias definition errors gate value checking for that file while retaining alias
+records; `parse` remains syntax-only. Traversal uses explicit work stacks.
+
+Generic aliases/instantiation, captured generic types, associated requirements
+and their overrideable defaults, and composite target expansion remain deferred.
+These forms are not unconditional transparent expansion edges in this pass.
+Unsupported forms still retain their declarations for later type checking.

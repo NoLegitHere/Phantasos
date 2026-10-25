@@ -33,9 +33,11 @@ foundation. Complete.
 - [x] Initial numeric conversions: lossless integer and floating widening,
   checked/truncating integers, diagnostics, retained conversion records and
   optional wrappers on built-in type facts.
-- [ ] **Next: alias expansion.** Resolve aliases, detect cycles and preserve
-  the identity of expanded types.
-- [ ] Complete type checking: aliases, composite types, generics, optionals,
+- [x] Initial alias expansion: non-generic chains, cycles, optional wrappers,
+  canonical built-in/nominal targets, direct qualified types and numeric aliases.
+- [ ] **Next: composite and nominal type checking.** Represent arrays, pointers,
+  function types and nominal instances, then type receiver-dependent members.
+- [ ] Complete type checking: generic aliases, generics, optionals,
   generic/indirect calls, remaining numeric policies, receiver-dependent members,
   inheritance, visibility, and typed errors.
 - [ ] Definite initialization, moves, borrows and destructor checks.
@@ -48,7 +50,7 @@ foundation. Complete.
 name resolution, initial scalar typing and direct scalar function calls.
 Unsupported type facts, including generic/indirect calls, remaining numeric policies and
 block/branch results, are explicitly deferred. Member lookup that
-needs receiver types, alias expansion or inheritance remains pending. A successful
+needs receiver types, generic substitution or inheritance remains pending. A successful
 check does **not** yet imply that all members exist, types match, ownership is valid,
 or executable code can be generated. Imports receive an explicit unsupported
 diagnostic until P2 package loading exists. `parse` remains syntax-only.

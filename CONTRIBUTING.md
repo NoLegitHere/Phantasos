@@ -71,6 +71,13 @@
   iterative, report cycle paths once, and do not mutate lexical resolution.
   Type queries cache diagnostics so shared constructor annotations are not
   diagnosed once for each generated parameter/field binding.
+  Composite/nominal facts carry result-local descriptor IDs; intern structural
+  keys so aliases share identity. Descriptor pointers must not survive interning
+  during a check. Completed result pointers remain stable. Type normalization,
+  formatting, array materialization and overload probes use explicit work stacks.
+  Defer possible inheritance/conformance instead of treating it as equality or
+  a proven mismatch. Primary constructors and typed indirect calls finish without
+  adding function-return dependencies; named-function value inference is pending.
   For low-level API calls, seed the interner with `seed_keywords` before lexing. Source
   managers, interners, and arenas must outlive the views/nodes referring to
   their storage. `DiagEngine::all()` exposes emission order;
@@ -125,6 +132,9 @@
   qualified names, declaration-scope capture, namespace shadowing, canonical
   nominal identity, conversion targets, diagnostic caching, file isolation,
   stable records, and 10,000 aliases with accumulated optional depth.
+  The `composites` suite covers canonical descriptors, contextual/parenthesized
+  arrays, indexing, nominal identity/constructors, pointer/function signatures,
+  typed indirect calls, deferred relations, stable records and deep type graphs.
 
 - Run `python tests/test_license_check.py` for license-fixer regressions,
   including encoding declarations, BOMs, line endings, and idempotence.

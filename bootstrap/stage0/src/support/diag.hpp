@@ -79,6 +79,8 @@ enum class DiagCode : u16 {
     ConversionOperand = 421,
     NarrowingConversion = 422,
     AliasCycle = 430,
+    InvalidArrayIndex = 440,
+    NotConstructible = 441,
 };
 
 constexpr std::string_view diag_code(DiagCode code) {
@@ -130,6 +132,8 @@ constexpr std::string_view diag_code(DiagCode code) {
         case DiagCode::ConversionOperand: return "E0421";
         case DiagCode::NarrowingConversion: return "E0422";
         case DiagCode::AliasCycle: return "E0430";
+        case DiagCode::InvalidArrayIndex: return "E0440";
+        case DiagCode::NotConstructible: return "E0441";
     }
     unreachable();
 }

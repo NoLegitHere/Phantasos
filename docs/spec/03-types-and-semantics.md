@@ -345,15 +345,15 @@ rules and retains expression/binding types. `E0400` reports mismatches,
 does not alter the syntax tree, and dependent expressions avoid cascading
 diagnostics. Parsing alone performs none of these checks.
 
-The scalar API explicitly returns `Deferred` for unsupported calls, callable values,
-composite/nominal/generic types, generic aliases, receiver-dependent members, optional
+The type API explicitly returns `Deferred` for unsupported calls, named-function values,
+generic types and aliases, receiver-dependent members, optional
 bindings, casts, effect operators and block/branch results. It traverses their
 children to check supported scalar subexpressions. Forward variable references
 can infer scalar types. Numeric literals in deferred contextual positions keep
 deferred types instead of defaulting prematurely (for example, an unchecked
 call argument could require `UInt64` rather than `Int`). Cyclic inference
 without an established type remains
-deferred. Generic/indirect calls, remaining numeric policies, initialization cycles,
+deferred. Generic calls, function-value inference, remaining numeric policies, initialization cycles,
 all-path returns, mutability, ownership and effects still need later passes.
 Successful `check` therefore continues to mean only that implemented checks
 found no errors, not that the program is valid or executable.
@@ -394,8 +394,8 @@ diagnostic.
 A potentially matching generic/constrained signature, unsupported parameter type or pending
 argument type keeps selection deferred, even if another scalar candidate fits.
 Independently provable shape/type mismatches still eliminate candidates. Calls
-through function values, methods, type-qualified members, constructors, generic
-instantiations remain deferred. Built-in numeric conversions follow section 3.16. The pass checks
+through methods, type-qualified members and generic instantiations remain deferred.
+Known function-typed calls and primary constructors follow 3.18. Built-in numeric conversions follow section 3.16. The pass checks
 their supported scalar children. Constraints, effects, conventions, visibility, duplicate
 signature validity and all-path returns require later checks.
 
@@ -462,8 +462,8 @@ an alias's definition.
 Expansion retains the terminal built-in or non-generic nominal declaration ID.
 Built-in facts and optional depths pass through aliases unchanged; aliases to
 the same type are identical for scalar annotations, calls and overloads.
-Nominal targets also retain optional wrappers, although checking nominal values
-is still pending. Aliases naming plain built-in numeric types support the
+Nominal targets also retain optional wrappers. Their canonical declaration IDs
+are used for initial nominal checking (3.18). Aliases naming plain built-in numeric types support the
 conversion APIs in 3.16 and use the canonical built-in as the intrinsic target.
 Value bindings/functions still take precedence over type names at value uses.
 
@@ -484,7 +484,73 @@ Dependent aliases retain an error fact without additional cycle diagnostics.
 Alias definition errors gate value checking for that file while retaining alias
 records; `parse` remains syntax-only. Traversal uses explicit work stacks.
 
-Generic aliases/instantiation, captured generic types, associated requirements
-and their overrideable defaults, and composite target expansion remain deferred.
+Generic aliases/instantiation, captured generic types and associated requirements
+and their overrideable defaults remain deferred. Fully known composite targets
+normalize into canonical type descriptors (3.18).
 These forms are not unconditional transparent expansion edges in this pass.
 Unsupported forms still retain their declarations for later type checking.
+
+## 3.18 Initial composite and nominal type checking [Core]
+
+Type facts use a result-local canonical descriptor table for arrays, pointers,
+`shared`/`weak` wrappers, function signatures and non-generic nominal instances.
+Descriptors refer to other type facts by ID, not recursive owning objects.
+Aliases reuse the same identities. Nominal identity is the canonical declaration
+ID, including its enclosing scope; equal spellings in different scopes do not
+create equal types. Optional wrappers preserve descriptor identity. Generic
+instances and types capturing generic parameters remain deferred.
+
+Fully known composite annotations, parameters and return types participate in
+exact matching and optional lifting. Arrays are invariant; pointer mutability
+is part of identity. Function descriptors include parameter/result/error types
+and the throws flag. Possible inheritance, interface conformance, function
+variance/effect coercions and ownership-wrapper conversions remain deferred;
+they are not assumed to succeed or treated as proven mismatches. Unrelated
+concrete nominal types and scalar-to-concrete-nominal mismatches are rejected.
+Function compatibility compares parameters contravariantly and results
+covariantly before ruling out a possible conversion.
+
+Array literals take an expected `[T]` context when available, including nested
+and parenthesized literals. Otherwise a concrete element can anchor inference.
+Concrete anchors propagate through nested literals and take priority over
+numeric defaults from siblings. Numeric literals default to `Int`/`Float64`.
+Element types must match without implicit numeric conversion. `Never` elements
+do not anchor inference. Empty and `Never`-only nested literals can take context
+from a sibling; they do not
+suppress errors in that sibling. Without an anchor or expected type, the array
+remains deferred. Unresolved concrete element types also remain deferred.
+Overload probes inspect elements without changing them,
+and only the selected signature contextualizes its literal arguments.
+Array equality remains deferred, but independently inferred literal operands
+still undergo element validation.
+
+Indexing a known non-optional array requires an integer index (or `Never`) and
+produces its element type. Invalid array/index combinations report `E0440`.
+This does not perform constant bounds evaluation; runtime bounds checks and
+lowering are pending. String, pointer and nominal indexing remain later work.
+
+Non-generic classes, structs and actors check primary constructor arguments,
+labels and defaults using the same type rules as function calls. The result is
+the nominal instance type. Abstract classes and interfaces cannot be constructed
+directly (`E0441`). Secondary constructor overloads, enum cases, constraints,
+initialization ordering, ownership and construction effects need later checks.
+Independently provable constructor shape/type/range errors are still diagnosed.
+
+Known non-optional function-typed values check positional argument count and
+types and retain the declared result type; such signatures have no argument
+labels or defaults. Named-function value inference and contextual overload
+selection for function values remain deferred. Direct named calls still select
+from argument facts before traversing only the chosen return dependency.
+
+Call records distinguish direct functions, numeric intrinsics, nominal primary
+constructors and typed indirect functions. The latter two finish without adding
+function-return dependencies. Indirect calls may identify a parameter/variable
+binding, or have no static binding ID for a computed callee. Type normalization,
+formatting, literal materialization and matching use explicit work stacks,
+including across long alias chains. Matching visits each directed descriptor
+pair once per comparison. Completed type/descriptor facts are cached;
+descriptor pointers are stable after checking, but not across mutable interning.
+
+Receiver-dependent field/method lookup, inheritance/conformance, smart casts,
+effects, unsafe checking and remaining optional operations are still pending.
+Passing `check` continues to establish only the implemented checks.

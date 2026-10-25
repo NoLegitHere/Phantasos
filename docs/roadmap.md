@@ -35,10 +35,13 @@ foundation. Complete.
   optional wrappers on built-in type facts.
 - [x] Initial alias expansion: non-generic chains, cycles, optional wrappers,
   canonical built-in/nominal targets, direct qualified types and numeric aliases.
-- [ ] **Next: composite and nominal type checking.** Represent arrays, pointers,
-  function types and nominal instances, then type receiver-dependent members.
+- [x] Initial composite/nominal checking: canonical arrays, pointers, ownership
+  wrappers, function types and non-generic nominal instances; array literals and
+  indexing, exact type matching, primary constructors and typed indirect calls.
+- [ ] **Next: receiver-dependent members.** Fields, methods, static/instance
+  access and inheritance/conformance-aware lookup and assignability.
 - [ ] Complete type checking: generic aliases, generics, optionals,
-  generic/indirect calls, remaining numeric policies, receiver-dependent members,
+  generic calls, function-value inference, remaining numeric policies, receiver-dependent members,
   inheritance, visibility, and typed errors.
 - [ ] Definite initialization, moves, borrows and destructor checks.
 - [ ] Typed intermediate representation and lowering.
@@ -48,7 +51,7 @@ foundation. Complete.
 
 `check` performs syntax, structural semantic validation, file-local lexical
 name resolution, initial scalar typing and direct scalar function calls.
-Unsupported type facts, including generic/indirect calls, remaining numeric policies and
+Unsupported type facts, including generic calls, function-value inference, remaining numeric policies and
 block/branch results, are explicitly deferred. Member lookup that
 needs receiver types, generic substitution or inheritance remains pending. A successful
 check does **not** yet imply that all members exist, types match, ownership is valid,

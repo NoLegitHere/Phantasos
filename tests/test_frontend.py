@@ -182,6 +182,20 @@ class FrontendTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("error[E0400]: expected 'Int8', found 'Bool'", stderr)
 
+    def test_composite_and_nominal_checks(self) -> None:
+        source = "let index = [1][false]\nabstract class A {}\nlet object = A()"
+        code, _, stderr = self.run_source(source, "parse")
+        self.assertEqual((code, stderr), (0, ""))
+        code, stdout, stderr = self.run_source(source, "check")
+        self.assertEqual((code, stdout), (1, ""))
+        self.assertEqual(stderr.count("error["), 2, stderr)
+        self.assertIn("error[E0440]", stderr)
+        self.assertIn("error[E0441]", stderr)
+        code, _, stderr = self.run_source(source + "\nlet invalid = unknown", "check")
+        self.assertEqual(code, 1)
+        self.assertIn("error[E0300]", stderr)
+        self.assertNotIn("error[E04", stderr)
+
     def test_check_resolves_names_after_validation(self) -> None:
         source = "fun f(x: Missing) = unknown(x)\n"
         code, _, stderr = self.run_source(source, "parse")

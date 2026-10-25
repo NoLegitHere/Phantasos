@@ -159,6 +159,7 @@ let instanceCall = Mixed().pick(true)
 void errors_and_deferred_receivers() {
     for (const auto& [source, code] : std::vector<std::pair<std::string_view, DiagCode>>{
         {"class C {}\nlet bad = C().missing", DiagCode::UnknownMember},
+        {"open class B {}\nclass D: B { fun local(): Int = 1 }\nlet bad = D.local(true)", DiagCode::InvalidMemberReceiver},
         {"class C {}\nlet bad = C().missing.next()", DiagCode::UnknownMember},
         {"class C(x: Int) {}\nlet bad = C(1).x", DiagCode::UnknownMember},
         {"struct C(x: Int) {}\nlet bad = C.x", DiagCode::InvalidMemberReceiver},
@@ -180,7 +181,6 @@ open class Base { let value: Int = 1 }
 class Derived: Base { fun local(): Int = 1 }
 let inherited = Derived().value
 let hierarchy = Derived().local()
-let inheritedReceiver = Derived.local(true)
 class Box<T>(let value: T) {}
 fun generic(box: Box<Int>, error: Error, sharedValue: shared Derived, optional: Derived?) {
     let dependent = box.value
@@ -197,9 +197,9 @@ class GenericMethods {
 }
 let genericCall = GenericMethods().pick(1)
 )");
-    CHECK(f.value("inherited") == Type::Deferred && f.value("saved") == Type::Deferred && f.value("pending") == Type::Deferred);
-    CHECK(f.value("hierarchy") == Type::Deferred);
-    CHECK(f.value("inheritedReceiver") == Type::Deferred && f.value("genericCall") == Type::Deferred);
+    CHECK(f.value("inherited") == Type::Int && f.value("saved") == Type::Deferred && f.value("pending") == Type::Deferred);
+    CHECK(f.value("hierarchy") == Type::Int);
+    CHECK(f.value("genericCall") == Type::Deferred);
     for (std::string_view name : {"dependent", "builtin", "wrapped", "maybe"}) CHECK(f.value(name, BindingKind::Local) == Type::Deferred);
 }
 

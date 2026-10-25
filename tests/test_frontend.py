@@ -209,6 +209,21 @@ class FrontendTests(unittest.TestCase):
         self.assertIn("...", stderr)
         self.assertLess(len(stderr.encode("utf-8")), 4096)
 
+    def test_hierarchy_contracts_and_phase_gating(self) -> None:
+        source = ('class Closed {}\nclass Child: Closed {}\n'
+                  'interface I { fun read(): Int }\nclass Missing: I {}')
+        code, _, stderr = self.run_source(source, "parse")
+        self.assertEqual((code, stderr), (0, ""))
+        code, stdout, stderr = self.run_source(source, "check")
+        self.assertEqual((code, stdout), (1, ""))
+        self.assertEqual(stderr.count("error["), 2, stderr)
+        self.assertIn("error[E0460]", stderr)
+        self.assertIn("error[E0463]", stderr)
+        code, _, stderr = self.run_source(source + "\nlet unknown = absent", "check")
+        self.assertEqual(code, 1)
+        self.assertIn("error[E0300]", stderr)
+        self.assertNotIn("error[E04", stderr)
+
     def test_receiver_member_checks_and_phase_gating(self) -> None:
         source = ('struct C(x: Int8) { fun read(): Int8 = self.x }\n'
                   'let missing = C(1).nope\nlet receiver = C.x\n'

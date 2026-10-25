@@ -222,8 +222,9 @@ signature cannot mention less-visible types.
   boundary. Throwing-call validation remains part of later effect analysis.
 
 Stage0 validates these structural constraints and the type-alias forms in
-chapter 2 before running the name resolver below. Typing, visibility,
-return-type, ownership and effect analysis remain on the [roadmap](../roadmap.md).
+chapter 2 before running the name resolver below. Initial typing and hierarchy
+checks follow in 3.14–3.20; remaining typing, visibility, all-path return,
+ownership and effect analysis remain on the [roadmap](../roadmap.md).
 
 ## 3.13 Lexical name resolution [Core]
 
@@ -263,8 +264,8 @@ return-type, ownership and effect analysis remain on the [roadmap](../roadmap.md
 - `Self` denotes the enclosing type. `self` requires an instance function,
   initializer or destructor body; `super` additionally requires a declared
   base type. Static bodies and parameter defaults do not have a receiver.
-  Initialization safety, inheritance validity and static/instance member
-  access restrictions are checked by later passes.
+  Static/instance access and initial inheritance checks run in the type pass
+  (3.19–3.20). Initialization safety remains later work.
 
 Stage0 retains immutable scope, declaration, overload-set and reference
 records separately from the AST. References are explicitly resolved,
@@ -471,8 +472,8 @@ Value bindings/functions still take precedence over type names at value uses.
 Known direct type members can be looked up through a nominal alias, including
 another alias. This lookup respects separate type/value namespaces and does not
 rewrite the lexical resolver's deferred references. Missing direct members of
-a non-inheriting nominal owner report `E0301`; inherited/dependent lookups stay
-deferred. Scalar annotation diagnostics are cached by syntax node, so generated
+a non-inheriting nominal owner report `E0301`; known inherited paths are checked
+in 3.20, while dependent lookups remain deferred. Annotation diagnostics are cached by syntax node, so generated
 parameter/field pairs do not duplicate them.
 
 Transparent aliases must be acyclic. `E0430` reports an expansion cycle with
@@ -504,7 +505,7 @@ instances and types capturing generic parameters remain deferred.
 Fully known composite annotations, parameters and return types participate in
 exact matching and optional lifting. Arrays are invariant; pointer mutability
 is part of identity. Function descriptors include parameter/result/error types
-and the throws flag. Possible inheritance, interface conformance, function
+and the throws flag. Nominal inheritance/conformance follows 3.20. Function
 variance/effect coercions and ownership-wrapper conversions remain deferred;
 they are not assumed to succeed or treated as proven mismatches. Unrelated
 concrete nominal types and scalar-to-concrete-nominal mismatches are rejected.
@@ -556,8 +557,8 @@ names end in `...`; smaller explicit API limits shorten that marker as needed.
 This prevents shared descriptor graphs from producing exponential diagnostics.
 Descriptor pointers are stable after checking, but not across mutable interning.
 
-Direct receiver-dependent field/method lookup follows 3.19. Inheritance/conformance, smart casts,
-effects, unsafe checking and remaining optional operations are still pending.
+Receiver-dependent field/method lookup follows 3.19–3.20. Generic conformance,
+smart casts, effects, unsafe checking and remaining optional operations are pending.
 Passing `check` continues to establish only the implemented checks.
 
 ## 3.19 Initial receiver-dependent members [Core]
@@ -582,11 +583,10 @@ rejected overloads cannot create inference cycles. A field of function type
 uses the positional indirect-call rules. Bound method values and explicit
 generic method instantiation remain deferred.
 
-`E0450` reports a missing direct receiver member when no inherited lookup is
-pending. `E0451` reports an incompatible static/instance receiver. Lexical
-type-qualified name errors retain the resolver's diagnostics. Inherited lookup,
-including potentially inherited method overloads, remains deferred. Generic
-owners/captured generic types, `super`, optional chaining, ownership-wrapper
+`E0450` reports a missing receiver member when lookup is complete. `E0451`
+reports an incompatible static/instance receiver. Lexical type-qualified name
+errors retain the resolver's diagnostics. Known inherited lookup and `super`
+follow 3.20. Generic owners/captured generic types, optional chaining, ownership-wrapper
 and built-in members, visibility, effects and smart casts still require later
 checking. Direct field facts of a derived owner can still be used.
 
@@ -596,3 +596,72 @@ Lexical reference states and the AST remain unchanged. `CallKind::Method`
 records retain selected targets and explicit instance receiver expressions;
 implicit/static receivers have no explicit expression. Lookups, entity caching
 and selected dependencies use explicit stacks, including long member/call chains.
+
+## 3.20 Initial inheritance and conformance checking [Core]
+
+Stage0 builds a canonical, file-local graph for non-generic nominal declarations.
+Classes may have one class superclass and any number of interfaces; interfaces
+extend interfaces, and structs, enums and actors may declare interface bases.
+A superclass must be `open`, `abstract` or `sealed`, and cannot be `final`.
+Sealed bases in this file are in the same package. Base arguments belong only
+to a superclass. Optional/scalar bases, repeated canonical bases, invalid type
+kinds and multiple class superclasses report `E0460`. Cycles report `E0461`
+with declaration notes. Invalid/incomplete bases propagate to descendants.
+
+Known inherited fields, nested types, aliases and method overloads participate
+in lookup. More-derived declarations hide matching inherited declarations;
+method input profiles include labels, parameter types and static/instance kind.
+Different profiles remain overloads. Diamonds share declaration identities.
+Class implementations take precedence over interface defaults, and a more
+specific interface declaration hides all of its ancestor declarations. Unrelated
+defaults remain ambiguous. Ambiguous non-method members report `E0452`.
+
+The type pass retries lexical references deferred at an inheritance barrier.
+It searches outer scopes only after complete inherited lookup finds nothing;
+thus inherited names still shadow outer names. Type and value namespaces remain
+separate. Inherited aliases and newly available base types normalize before
+callable signatures; newly exposed alias cycles still report `E0430`. These
+operations leave the AST and lexical reference states unchanged.
+
+Known ancestry permits nominal superclass/interface upcasts and optional
+lifting, while downcasts and unrelated known nominal assignments are rejected.
+Arrays remain invariant and numeric conversions remain explicit. Overloads
+prefer exact argument types; among equal literal/optional ranks, a signature
+whose supplied parameter types are uniformly more specific wins. Incomparable
+signatures remain ambiguous.
+
+A class override of an inherited input profile must say `override`, and its
+base method must be open/abstract (interface methods are implicitly virtual).
+Final methods cannot be overridden. Interface requirement implementations do
+not require `override`, but an explicit modifier is checked. New overloads are
+not overrides. Known result types may be covariant, throwing implementations
+cannot replace non-throwing requirements, and implementations cannot strengthen
+a read-only method into a `mut` method. Invalid overrides report `E0462`.
+
+Concrete types must supply a compatible body for each supported interface or
+abstract method requirement. A unique inherited default body can satisfy it;
+missing, incompatible or ambiguous implementations report `E0463`. Abstract
+types can retain unimplemented obligations. Calls still depend on only their
+selected method return, including inherited methods and defaults.
+
+`super.member` uses the immediate class superclass. Explicit superclass-head
+arguments check primary constructor labels, arity, types and literal ranges.
+Secondary constructor selection, implicit delegation, explicit `super(...)`
+delegation calls and initialization ordering remain deferred; those calls retain
+a known constructor target when available without claiming completed checking.
+
+`ScalarTypes::hierarchy` retains direct bases, the superclass, structural graph
+state, conformance state and requirement-to-implementation witnesses. A witness
+has an implementation ID only when resolved. Deferred state is not successful
+conformance. Generic/captured owners, `where` constraints, associated/property
+requirements, interface `Self` substitution, non-default receiver/parameter
+conventions and built-in `Copy`/`Sendable`/`Error` contracts need later checking.
+Unknown effect/type relations remain deferred; visibility, full effect rules,
+ownership, optional members and runtime dispatch/lowering are also pending.
+Nominal ancestry facts describe declared relationships; passing `check` still
+establishes only the implemented checks.
+
+Graph traversal is iterative. Lookup caches share results along inheritance
+chains and deduplicate diamonds; ancestry queries record visited declarations.
+Base/type normalization advances only newly known/error facts, preserving
+forward-declaration order and avoiding recursive owning type structures.

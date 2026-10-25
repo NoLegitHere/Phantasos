@@ -36,7 +36,8 @@ Windows x64 and Linux x86_64:
 - [x] Non-generic alias expansion, cycle diagnostics and canonical type identities
 - [x] Initial composite/nominal identities, arrays, primary constructors and typed indirect calls
 - [x] Direct nominal field/method lookup, static/instance access and member call targets
-- [ ] Generics, function-value inference, remaining numeric policies, inheritance and ownership analysis
+- [x] Initial inheritance graphs, inherited lookup, overrides, method conformance and nominal upcasts
+- [ ] Generics, dependent conformance, function-value inference, remaining numeric policies and ownership analysis
 - [ ] MIR, x86_64 codegen, COFF/ELF writers, linker, runtime
 - [ ] Workspace-aware build driver
 
@@ -65,9 +66,12 @@ non-generic nominal instances. Array literals/indexing, exact composite matches,
 primary constructor arguments and typed indirect calls are checked. Direct fields
 and methods on known nominal receivers retain declaration/overload identities;
 method calls check arguments and infer returns. Static/instance access is checked
-through types, aliases, ordinary instances and implicit receivers. Generics,
+through types, aliases, ordinary instances and implicit receivers. Non-generic
+hierarchies validate base kinds, finality and cycles. Inherited member/type lookup,
+method overrides, supported interface/abstract method requirements and nominal
+upcasts retain hierarchy and conformance-witness records. Generics,
 function-value inference, associated requirements, remaining numeric policies,
-inherited/dependent members, optional/ownership-wrapper member access and ownership analysis remain
+dependent/property contracts, optional/ownership-wrapper member access and ownership analysis remain
 pending, so passing `check` does not yet establish program validity. Imports explicitly report that
 package loading is unavailable.
 

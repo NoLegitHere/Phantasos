@@ -161,7 +161,7 @@ let result = echo(first)
     }) { Frontend bad; bad.check(test.first, {test.second}); }
     Frontend inherited;
     inherited.check("open class A {}\nclass B: A {}\nlet base: A = B()\nfun f(x: A) {}\nlet pending = f(B())");
-    CHECK(inherited.call("pending").state == CallState::Deferred);
+    CHECK(inherited.call("pending").state == CallState::Resolved && inherited.value("pending") == Type::Unit);
 }
 
 void pointers_functions_and_deferred_features() {

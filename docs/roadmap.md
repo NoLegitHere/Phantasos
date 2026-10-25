@@ -40,8 +40,10 @@ foundation. Complete.
   indexing, exact type matching, primary constructors and typed indirect calls.
 - [x] Initial receiver-dependent members: direct fields and methods on known
   non-generic nominal receivers, static/instance access, aliases and retained targets.
-- [ ] **Next: inheritance and conformance.** Hierarchy validation, inherited
-  member/overload lookup, overrides and inheritance/conformance-aware assignability.
+- [x] Initial inheritance/conformance: non-generic base graphs, cycles, inherited
+  member/type/overload lookup, overrides, method requirements and nominal upcasts.
+- [ ] **Next: generic type checking.** Instantiation/substitution, `where`
+  constraints, associated types and dependent conformance contracts.
 - [ ] Complete type checking: generic aliases, generics, optionals,
   generic calls, function-value inference, remaining numeric policies, receiver-dependent members,
   inheritance, visibility, and typed errors.
@@ -55,8 +57,10 @@ foundation. Complete.
 name resolution, initial scalar typing and direct scalar function calls.
 Unsupported type facts, including generic calls, function-value inference, remaining numeric policies and
 block/branch results, are explicitly deferred. Direct nominal field and method
-lookup runs after receiver inference. Generic substitution, inherited lookup,
-visibility, optional/ownership-wrapper members and bound method values remain pending. A successful
+lookup runs after receiver inference, including known inherited members and
+type aliases. Supported method requirements are checked with retained witnesses.
+Generic substitution, dependent/property contracts, visibility,
+optional/ownership-wrapper members and bound method values remain pending. A successful
 check does **not** yet imply that all members exist, types match, ownership is valid,
 or executable code can be generated. Imports receive an explicit unsupported
 diagnostic until P2 package loading exists. `parse` remains syntax-only.

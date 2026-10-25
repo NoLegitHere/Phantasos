@@ -83,6 +83,11 @@ enum class DiagCode : u16 {
     NotConstructible = 441,
     UnknownMember = 450,
     InvalidMemberReceiver = 451,
+    AmbiguousMember = 452,
+    InvalidBase = 460,
+    InheritanceCycle = 461,
+    InvalidOverride = 462,
+    MissingImplementation = 463,
 };
 
 constexpr std::string_view diag_code(DiagCode code) {
@@ -138,6 +143,11 @@ constexpr std::string_view diag_code(DiagCode code) {
         case DiagCode::NotConstructible: return "E0441";
         case DiagCode::UnknownMember: return "E0450";
         case DiagCode::InvalidMemberReceiver: return "E0451";
+        case DiagCode::AmbiguousMember: return "E0452";
+        case DiagCode::InvalidBase: return "E0460";
+        case DiagCode::InheritanceCycle: return "E0461";
+        case DiagCode::InvalidOverride: return "E0462";
+        case DiagCode::MissingImplementation: return "E0463";
     }
     unreachable();
 }

@@ -209,9 +209,10 @@ type UnknownMember = Inherited.Unknown
 struct Int8 {}
 type Shadow = Int8
 let nominal: Shadow = Shadow()
-)");
-    for (std::string_view name : {"Generic", "Recursive", "Applied", "Abstract", "Default", "RecursiveDefault", "Associated", "UnknownMember"})
+)", {DiagCode::UnknownType});
+    for (std::string_view name : {"Generic", "Recursive", "Applied", "Abstract", "Default", "RecursiveDefault", "Associated"})
         CHECK(f.alias(name).state == ExpansionState::Deferred);
+    CHECK(f.alias("UnknownMember").state == ExpansionState::Error);
     CHECK(f.alias("Array").scalar.kind == Type::Array);
     CHECK(f.alias("Shadow").state == ExpansionState::Resolved && f.alias("Shadow").scalar.kind == Type::Nominal);
     CHECK(f.alias("Shadow").target == f.id("Int8", BindingKind::Type));

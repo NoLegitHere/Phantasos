@@ -59,6 +59,12 @@
   only selected targets carry argument-to-parameter mappings. Keep speculative
   overload probes free of diagnostics and AST/type mutation; contextualize
   literals only after selecting a target.
+  `ScalarType` is a value containing a built-in kind and optional depth. Keep
+  optional identity through bindings, signatures and call matching; never
+  classify an optional numeric value as a numeric operand. `CallKind` separates
+  function targets from intrinsic numeric type targets. Conversion calls finish
+  immediately and must not create function-return dependencies. Conversion
+  records retain modes, source/destination facts, and deferred/error states.
   For low-level API calls, seed the interner with `seed_keywords` before lexing. Source
   managers, interners, and arenas must outlive the views/nodes referring to
   their storage. `DiagEngine::all()` exposes emission order;
@@ -106,6 +112,9 @@
   The `calls` suite covers signature/return inference, forward and recursive
   calls, positional/named arguments, defaults, overload and range selection,
   deferred candidates, diagnostics, stable results and long call chains.
+  The `conversions` suite covers widening boundaries, checked/truncating integer
+  APIs, optional result identity, promotion, arguments and operators, name
+  shadowing, deferred policies, cached facts and long forward dependencies.
 
 - Run `python tests/test_license_check.py` for license-fixer regressions,
   including encoding declarations, BOMs, line endings, and idempotence.

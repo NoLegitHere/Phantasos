@@ -195,10 +195,12 @@ interface Marker {}
 fun constrained(value: Int): Int where Int: Marker = value
 let constraint = constrained(1)
 )");
-    for (std::string_view name : {"genericCandidate", "unknownArgument", "aliasArgument", "indirect", "member", "conversion", "constraint"}) {
+    for (std::string_view name : {"genericCandidate", "unknownArgument", "aliasArgument", "indirect", "member", "constraint"}) {
         CHECK(deferred.call(name).state == CallState::Deferred && !deferred.call(name).target.valid());
         CHECK(deferred.type(name) == Type::Deferred);
     }
+    CHECK(deferred.type("conversion") == Type::Int64);
+    CHECK(deferred.call("conversion").kind == CallKind::NumericConversion);
     CHECK(deferred.result.scalar_types->expression(deferred.expr("genericCandidate")->args[0].value) == Type::Deferred);
     Frontend shape_eliminated;
     shape_eliminated.check("fun f(x: Int): Int = x\nfun f<T>(x: T, y: Int): T = x\nlet value = f(1)");

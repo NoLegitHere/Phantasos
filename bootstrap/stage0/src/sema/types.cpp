@@ -16,6 +16,7 @@
 #include "sema/types.hpp"
 
 #include <limits>
+#include <optional>
 #include <variant>
 
 namespace phs {
@@ -28,18 +29,27 @@ constexpr Type builtins[] = {
     Type::UInt32, Type::UInt64, Type::Int, Type::UInt, Type::Float32, Type::Float64,
     Type::Bool, Type::Char, Type::String, Type::Unit, Type::Never
 };
-bool integer(Type t) { return t >= Type::Int8 && t <= Type::UInt; }
+bool integer(Type t) { return !t.optional_depth && t.kind >= Type::Int8 && t.kind <= Type::UInt; }
 bool floating(Type t) { return t == Type::Float32 || t == Type::Float64; }
 bool numeric(Type t) { return integer(t) || floating(t); }
-bool unsigned_integer(Type t) { return (t >= Type::UInt8 && t <= Type::UInt64) || t == Type::UInt; }
-bool known(Type t) { return t != Type::Deferred && t != Type::Error; }
+bool unsigned_integer(Type t) { return !t.optional_depth && ((t.kind >= Type::UInt8 && t.kind <= Type::UInt64) || t == Type::UInt); }
+bool known(Type t) { return t.kind != Type::Deferred && t.kind != Type::Error; }
+bool promotes(Type from, Type to) { return known(from) && known(to) && from.kind == to.kind && from.optional_depth <= to.optional_depth; }
 unsigned width(Type t) {
-    switch (t) {
+    switch (t.kind) {
         case Type::Int8: case Type::UInt8: return 8;
         case Type::Int16: case Type::UInt16: return 16;
         case Type::Int32: case Type::UInt32: return 32;
         default: return 64;
     }
+}
+bool widening(Type from, Type to) {
+    if (from == Type::Never || from == to) return true;
+    if (integer(from) && integer(to)) {
+        if (unsigned_integer(from) == unsigned_integer(to)) return width(to) >= width(from);
+        return unsigned_integer(from) && !unsigned_integer(to) && width(to) > width(from);
+    }
+    return from == Type::Float32 && to == Type::Float64;
 }
 u64 integer_limit(Type type, bool negative) {
     const unsigned bits = width(type);
@@ -96,8 +106,9 @@ struct Walk {
 };
 }  // namespace
 
-std::string_view scalar_type_name(ScalarType type) {
-    switch (type) {
+std::string scalar_type_name(ScalarType type) {
+    const auto base = [&]() -> std::string_view {
+    switch (type.kind) {
         case Type::Deferred: return "<deferred>";
         case Type::Error: return "<error>";
         case Type::Int8: return "Int8";
@@ -119,6 +130,10 @@ std::string_view scalar_type_name(ScalarType type) {
         case Type::Never: return "Never";
     }
     unreachable();
+    }();
+    std::string result(base);
+    result.append(type.optional_depth, '?');
+    return result;
 }
 
 class ScalarChecker {
@@ -183,7 +198,7 @@ public:
                         node.call_prepared = true;
                         node.value = prepare_call(*call);
                         const auto& record = calls_.at(call);
-                        if (record.state == CallState::Resolved) {
+                        if (record.state == CallState::Resolved && record.kind == CallKind::Function) {
                             node.deps.push_back(function_nodes_.at(record.target.value));
                             continue;
                         }
@@ -219,13 +234,17 @@ public:
         for (auto& [id, sig] : signatures_) sig.result = nodes_[function_nodes_.at(id)].value.type;
         result.signatures_ = std::move(signatures_);
         result.calls_ = std::move(calls_);
+        result.conversions_ = std::move(conversions_);
         return result;
     }
 
 private:
     Type annotation(const TypeExpr* type) const {
         if (!type) return Type::Deferred;
-        if (type->kind == TypeKind::Unit) return Type::Unit;
+        u32 depth = 0;
+        while (type && type->kind == TypeKind::Optional) { ++depth; type = type->inner; }
+        if (!type) return Type::Deferred;
+        if (type->kind == TypeKind::Unit) return {Type::Unit, depth};
         if (type->kind != TypeKind::Path || !type->args.empty() || type->path.parts.empty()) return Type::Deferred;
         const auto* ref = resolution_.reference(type->path.parts.back().span);
         if (!ref || ref->state != ResolutionState::Resolved) return Type::Deferred;
@@ -234,7 +253,7 @@ private:
         const auto& binding = resolution_.binding(candidates.front());
         if (binding.kind != BindingKind::BuiltinType) return Type::Deferred;
         for (Type builtin : builtins)
-            if (names_.str(binding.name.sym) == scalar_type_name(builtin)) return builtin;
+            if (names_.str(binding.name.sym) == scalar_type_name(builtin)) return {builtin.kind, depth};
         return Type::Deferred;
     }
 
@@ -445,9 +464,13 @@ private:
     Value compatible(usize index, Type expected, Span span) {
         Value actual = nodes_[index].value;
         if (!known(expected) || unavailable(actual)) return actual;
-        if ((actual.literal == Literal::Integer && integer(expected)) ||
-            (actual.literal == Literal::Float && floating(expected))) return materialize(index, expected);
-        if (default_type(actual) == expected || actual.type == Type::Never) return actual;
+        if ((actual.literal == Literal::Integer && integer(expected.scalar())) ||
+            (actual.literal == Literal::Float && floating(expected.scalar()))) {
+            const auto literal = materialize(index, expected.scalar());
+            return literal.type == Type::Error ? literal : Value{expected};
+        }
+        if (promotes(actual.type, expected)) return {expected};
+        if (actual.type == Type::Never) return actual;
         diag_.error(DiagCode::ScalarTypeMismatch, span, "expected '{}', found '{}'",
                     scalar_type_name(expected), scalar_type_name(default_type(actual)));
         if (actual.literal != Literal::None) materialize(index, default_type(actual));
@@ -456,11 +479,11 @@ private:
     }
     Value require(const Expr* expr, Type expected, Span span) {
         if (expr) return compatible(expressions_.at(expr), expected, span);
-        if (known(expected) && expected != Type::Unit) {
+        if (known(expected) && !promotes(Type::Unit, expected)) {
             diag_.error(DiagCode::ScalarTypeMismatch, span, "expected '{}', found 'Unit'", scalar_type_name(expected));
             return {Type::Error};
         }
-        return {Type::Unit};
+        return {known(expected) ? expected : Type{Type::Unit}};
     }
 
     Value materialize(usize root, Type type) {
@@ -520,6 +543,7 @@ private:
         if (lhs.type == Type::Error || rhs.type == Type::Error) return {Type::Error};
         if (expr.op == BinOp::Coalesce || expr.op == BinOp::Range || expr.op == BinOp::RangeExcl) return {};
         const bool equality = expr.op == BinOp::Eq || expr.op == BinOp::Ne;
+        if (equality && (lhs.type.optional_depth || rhs.type.optional_depth)) return {};
         const bool ordering = expr.op >= BinOp::Lt && expr.op <= BinOp::Ge;
         const bool ints = expr.op == BinOp::Rem || expr.op == BinOp::WrapAdd || expr.op == BinOp::WrapSub ||
                           expr.op == BinOp::WrapMul || expr.op == BinOp::BitOr || expr.op == BinOp::BitXor ||
@@ -626,7 +650,85 @@ private:
         }
     }
 
+    std::optional<Value> prepare_conversion(const CallExpr& expr) {
+        const Expr* callee = expr.callee;
+        while (const auto* paren = as<ParenExpr>(callee)) callee = paren->inner;
+        ConversionKind kind = ConversionKind::Widening;
+        const Expr* target = callee;
+        if (const auto* member = as<MemberExpr>(callee)) {
+            const auto name = names_.str(member->name.sym);
+            if (name == "checked") kind = ConversionKind::Checked;
+            else if (name == "truncating") kind = ConversionKind::Truncating;
+            else return std::nullopt;
+            target = member->base;
+        }
+        const auto candidates = callees(target);
+        if (candidates.size() != 1) return std::nullopt;
+        const auto& binding = resolution_.binding(candidates.front());
+        if (binding.kind != BindingKind::BuiltinType) return std::nullopt;
+        Type destination;
+        for (Type builtin : builtins)
+            if (names_.str(binding.name.sym) == scalar_type_name(builtin)) destination = builtin;
+        if (!numeric(destination)) return std::nullopt;
+
+        auto& conversion = conversions_[&expr];
+        conversion.kind = kind;
+        conversion.destination = destination;
+        auto& record = calls_[&expr];
+        record.kind = CallKind::NumericConversion;
+        record.target = candidates.front();
+        const auto fail = [&]() -> Value {
+            conversion.state = record.state = CallState::Error;
+            return {Type::Error};
+        };
+        if (expr.args.size() != 1 || !expr.args[0].label.sym.empty()) {
+            diag_.error(DiagCode::ConversionArguments, expr.span, "numeric conversion requires one positional argument");
+            return fail();
+        }
+        record.parameters = {0};
+        const Expr* arg = expr.args[0].value;
+        Value source = value(arg);
+        if (source.literal == Literal::None) conversion.source = source.type;
+        if (source.type == Type::Error) return fail();
+        const Expr* syntax = arg;
+        while (const auto* paren = as<ParenExpr>(syntax)) syntax = paren->inner;
+        if (syntax->kind == ExprKind::None || syntax->kind == ExprKind::Array) {
+            diag_.error(DiagCode::ConversionOperand, arg->span,
+                        "numeric conversion requires a non-optional numeric operand, found '{}'",
+                        syntax->kind == ExprKind::None ? "none" : "array");
+            return fail();
+        }
+        if (unavailable(source)) return Value{};
+        if (!numeric(source) && source.type != Type::Never) {
+            diag_.error(DiagCode::ConversionOperand, arg->span, "numeric conversion requires a non-optional numeric operand, found '{}'",
+                        scalar_type_name(default_type(source)));
+            return fail();
+        }
+        // Integer/floating interchange and floating narrowing are deliberately
+        // deferred until their rounding and failure policies are specified.
+        if (kind != ConversionKind::Widening && floating(destination)) return Value{};
+        if (source.type != Type::Never) {
+            const bool source_integer = integer(source);
+            if (source_integer != integer(destination)) return Value{};
+        }
+        if (source.literal != Literal::None) {
+            const Type context = kind == ConversionKind::Widening ? destination : default_type(source);
+            source = materialize(expressions_.at(arg), context);
+            if (source.type == Type::Error) return fail();
+        }
+        conversion.source = source.type;
+        if (kind == ConversionKind::Widening && !widening(source.type, destination)) {
+            diag_.error(DiagCode::NarrowingConversion, expr.span,
+                        "conversion from '{}' to '{}' may narrow; use an explicit narrowing operation",
+                        scalar_type_name(source.type), scalar_type_name(destination));
+            return fail();
+        }
+        conversion.state = record.state = CallState::Resolved;
+        return Value{kind == ConversionKind::Checked ? destination.optional() : destination};
+    }
+
     Value prepare_call(const CallExpr& expr) {
+        if (auto conversion = prepare_conversion(expr)) return *conversion;
         auto& record = calls_[&expr];
         const Value callee = value(expr.callee);
         if (callee.type == Type::Error) { record.state = CallState::Error; return {Type::Error}; }
@@ -652,6 +754,7 @@ private:
             BindingId id;
             std::vector<usize> parameters;
             usize score = 0;
+            usize lifts = 0;
             bool deferred = false;
         };
         std::vector<Match> matches, out_of_range;
@@ -666,11 +769,14 @@ private:
                 const Type expected = signature.parameters[match.parameters[a]];
                 if (!known(expected) || unavailable(actual)) { match.deferred = true; continue; }
                 if (actual.type == Type::Never) continue;
-                if ((actual.literal == Literal::Integer && integer(expected)) ||
-                    (actual.literal == Literal::Float && floating(expected))) {
-                    match.score += expected != default_type(actual);
-                    fits &= fits_literal_tree(expressions_.at(expr.args[a].value), expected);
-                } else if (actual.literal != Literal::None || actual.type != expected) compatible_args = false;
+                if ((actual.literal == Literal::Integer && integer(expected.scalar())) ||
+                    (actual.literal == Literal::Float && floating(expected.scalar()))) {
+                    match.score += expected.scalar() != default_type(actual);
+                    match.lifts += expected.optional_depth;
+                    fits &= fits_literal_tree(expressions_.at(expr.args[a].value), expected.scalar());
+                } else if (actual.literal == Literal::None && promotes(actual.type, expected))
+                    match.lifts += expected.optional_depth - actual.type.optional_depth;
+                else compatible_args = false;
             }
             if (!compatible_args) continue;
             if (fits) matches.push_back(std::move(match));
@@ -689,10 +795,12 @@ private:
             selected = &out_of_range.front();
         } else {
             for (const auto& match : matches) if (match.deferred) return {};
-            usize best = std::numeric_limits<usize>::max(), ties = 0;
+            auto best = std::pair{std::numeric_limits<usize>::max(), std::numeric_limits<usize>::max()};
+            usize ties = 0;
             for (auto& match : matches) {
-                if (match.score < best) { best = match.score; selected = &match; ties = 1; }
-                else if (match.score == best) ++ties;
+                const auto rank = std::pair{match.score, match.lifts};
+                if (rank < best) { best = rank; selected = &match; ties = 1; }
+                else if (rank == best) ++ties;
             }
             if (ties != 1) {
                 auto& d = diag_.error(DiagCode::AmbiguousCall, expr.span, "call is ambiguous between matching signatures");
@@ -752,6 +860,12 @@ private:
                 break;
             case ExprKind::Paren: node.value = value(cast<ParenExpr>(expr)->inner); break;
             case ExprKind::Binary: node.value = binary(*cast<BinaryExpr>(expr)); break;
+            case ExprKind::Unwrap: {
+                const auto operand = value(cast<UnwrapExpr>(expr)->operand);
+                if (operand.type.optional_depth) node.value = {operand.type.element()};
+                else if (operand.type == Type::Error) node.value = operand;
+                break;
+            }
             case ExprKind::Call: {
                 auto& record = calls_.at(cast<CallExpr>(expr));
                 PHS_ASSERT(node.call_prepared && record.state == CallState::Resolved);
@@ -790,6 +904,7 @@ private:
     std::unordered_map<usize, ScalarSignature> signatures_;
     std::unordered_map<const FunItem*, std::unordered_map<u32, usize>> parameter_indices_;
     std::unordered_map<const ast::CallExpr*, CheckedCall> calls_;
+    std::unordered_map<const ast::CallExpr*, CheckedConversion> conversions_;
     std::vector<Walk> walk_;
     std::vector<Requirement> requirements_;
     std::vector<const Expr*> defaults_;

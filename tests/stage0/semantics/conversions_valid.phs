@@ -1,0 +1,32 @@
+// Copyright 2026 The Phantasos Authors
+// SPDX-License-Identifier: Apache-2.0
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+let small: Int8 = -128
+let widened = Int64(small)
+let unsigned: UInt8 = 255
+let changedSign = Int16(unsigned)
+let literal = Int8(-128)
+let maximum = UInt64(18446744073709551615)
+let checked = Int8.checked(widened)
+let truncated = Int8.truncating(maximum)
+let optional: Int8? = checked
+let lifted: Int8? = small
+let unwrapped = checked!
+fun preserve(value: Int8?): Int8? = value
+let returned = preserve(checked)
+let fraction: Float32 = 1.0
+let floatWidening = Float64(fraction)
+fun optionalUnit(): Unit? { return }
+fun explicitUnit(): Unit? { return () }

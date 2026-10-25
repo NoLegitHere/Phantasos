@@ -208,7 +208,7 @@ fun optional(x: Int?) { if let value = x { value + 1 } }
 fun names(x: Int8) { let x = x + 1; if true { let x = "inner"; x }; x }
 )");
     CHECK(f.binding("alias") == Type::Deferred && f.binding("nominal") == Type::Deferred);
-    CHECK(f.binding("wideAlias") == Type::Deferred && f.binding("wideOptional") == Type::Deferred);
+    CHECK(f.binding("wideAlias") == Type::Deferred && f.binding("wideOptional") == Type{Type::UInt64}.optional());
     CHECK(f.binding("wideArray") == Type::Deferred && f.binding("wideCall") == Type::UInt64);
     CHECK(f.binding("wideBranch") == Type::UInt64);
     CHECK(f.binding("cyclicA") == Type::Deferred && f.binding("cyclicB") == Type::Deferred);

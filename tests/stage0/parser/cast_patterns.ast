@@ -54,3 +54,30 @@ File
           Int 0
         Arm _
           Int 1
+  Fun controls
+    Param x: Value
+    Body
+      Block
+        If
+          Cond
+            Cast is Box<Int>
+              Name x
+          Block
+        While
+          Cond
+            Cast is Box<Outer<Int>>?
+              Name x
+          Block
+        For item
+          Cast as Box<Int>
+            Name x
+          Block
+        Let result
+          Match
+            Cast as Box<Int>
+              Name x
+            Arm _
+              Guard
+                Cast is Box<Int>
+                  Name x
+              Int 0

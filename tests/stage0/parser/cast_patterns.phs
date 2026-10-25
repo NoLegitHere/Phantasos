@@ -25,3 +25,9 @@ fun alternatives(x: Int) = match x {
     3 -> 0
     _ -> 1
 }
+fun controls(x: Value) {
+    if x is Box<Int> {}
+    while x is Box<Outer<Int>>? {}
+    for item in x as Box<Int> {}
+    let result = match x as Box<Int> { _ if x is Box<Int> -> 0 }
+}

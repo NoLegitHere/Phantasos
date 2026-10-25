@@ -321,6 +321,35 @@ void cast_type_context_and_follow_tokens() {
     }
 }
 
+void generic_cast_control_flow_delimiters() {
+    for (std::string_view op : {"is", "as"}) {
+        for (std::string_view type : {"Box<Int>", "Box<Outer<Int>>", "Box<Int> ? ?", "fun(A) -> Box<Int>"}) {
+            Frontend f;
+            const auto* file = f.parse(std::format(
+                "fun f(x: Int) {{\nif x {} {} {{}}\nwhile x {} {} {{}}\nfor element in x {} {} {{}}\n"
+                "let result = match x {} {} {{ _ if x {} {} -> 0 }}\n}}",
+                op, type, op, type, op, type, op, type, op, type));
+            if (f.diag.has_errors(file->file)) f.diag.render(stderr);
+            CHECK(!f.diag.has_errors(file->file));
+            const auto* body = cast<BlockExpr>(cast<FunItem>(file->items[0])->body);
+            CHECK(body->stmts.size() == 4);
+            const auto* branch = cast<IfExpr>(cast<ExprStmt>(body->stmts[0])->expr);
+            const auto* loop = cast<WhileStmt>(body->stmts[1]);
+            const auto* iteration = cast<ForStmt>(body->stmts[2]);
+            const auto* match = cast<MatchExpr>(cast<VarStmt>(body->stmts[3])->init);
+            CHECK(match->arms.size() == 1 && match->arms[0].guard);
+            for (const auto* expr : {branch->cond.expr, loop->cond.expr, iteration->iter, match->scrutinee, match->arms[0].guard}) {
+                const auto* conversion = cast<CastExpr>(expr);
+                CHECK(conversion->op == (op == "is" ? CastOp::Is : CastOp::As));
+                const auto* target = conversion->type;
+                if (target->kind == TypeKind::Fun) target = target->inner;
+                while (target->kind == TypeKind::Optional) target = target->inner;
+                CHECK(target->kind == TypeKind::Path && target->args.size() == 1);
+            }
+        }
+    }
+}
+
 void multiline_alternative_patterns() {
     for (std::string_view newline : {"\n", "\r\n", "\r"}) {
         Frontend f;
@@ -334,6 +363,7 @@ void multiline_alternative_patterns() {
 int main() {
     ast_casts_and_modifiers();
     cast_type_context_and_follow_tokens();
+    generic_cast_control_flow_delimiters();
     multiline_alternative_patterns();
     lexer_values_and_spans();
     block_comment_newlines();

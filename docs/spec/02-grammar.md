@@ -183,7 +183,8 @@ leading dot (`.Empty`) or qualified (`ParseError.Empty`).
    is a comparison, while `x as List<Int>` is a generic type.
    The token after `>` and any optional `?` suffix must end or continue the
    type operand: the closing/separating tokens in rule 1, a binary operator, `is`/`as`,
-   or `throws` following a function result type. An identifier, literal or
+   `throws` following a function result type, `{` opening a control-flow body,
+   or `->` following a match guard. An identifier, literal or
    operand-opening `(` or `.` forces comparison parsing instead. Postfix calls
    or member access on a cast result require parentheses around the expression.
    Thus `f(x as Int < y, z > w)` has two comparison

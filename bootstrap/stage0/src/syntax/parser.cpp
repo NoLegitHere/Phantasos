@@ -1222,6 +1222,7 @@ private:
         if (next == Tok::LParen || next == Tok::Dot || next == Tok::QuestionDot) return false;
         if (generic_follow(next)) return true;
         switch (next) {
+            case Tok::LBrace: case Tok::Arrow: // control-flow body or match-guard terminator
             case Tok::Plus: case Tok::Minus: case Tok::Star: case Tok::Slash: case Tok::Percent:
             case Tok::AmpPlus: case Tok::AmpMinus: case Tok::AmpStar:
             case Tok::Amp: case Tok::Pipe: case Tok::Caret: case Tok::Shl: case Tok::Shr:

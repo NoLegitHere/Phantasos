@@ -79,6 +79,8 @@ fun main(): Int {
     return n + Int(wide(narrow(4)))
 }
 )");
+    Frontend parens;
+    parens.gate("fun pick(c: Bool): Int = ((if c { 1 } else { 2 }))\nfun main(): Int {\n    (if true { pick(false) } else { 0 })\n    return (pick(true))\n}\n");
     Frontend unit;
     unit.gate("fun main() {}\n");
     Frontend never;

@@ -272,9 +272,11 @@ private:
         if (const auto* name = as<NameExpr>(&expr)) {
             if (const auto id = target(*name); id.valid() && rejected_.contains(id.value)) return;
         }
-        // A control expression's value is that of its tails, which are checked
+        // A control expression's value, even in parentheses, is that of its tails, which are checked
         // in their own right; its own type is only recorded when discarded.
-        const bool control = expr.kind == ExprKind::If || expr.kind == ExprKind::Block;
+        const Expr* inner = &expr;
+        while (const auto* paren = as<ParenExpr>(inner)) inner = paren->inner;
+        const bool control = inner->kind == ExprKind::If || inner->kind == ExprKind::Block;
         const auto actual = types_.expression(&expr);
         // A type deferred only because of an already rejected local is not reported again.
         if (!control && actual.kind == ScalarType::Deferred && mentions_rejected(expr)) return;
@@ -282,7 +284,7 @@ private:
         switch (expr.kind) {
             case ExprKind::Int: case ExprKind::Bool: case ExprKind::Unit: return;
             case ExprKind::Name: name(*cast<NameExpr>(&expr)); return;
-            case ExprKind::Paren: work.push_back({cast<ParenExpr>(&expr)->inner, true}); return;
+            case ExprKind::Paren: work.push_back({cast<ParenExpr>(&expr)->inner, used}); return;
             case ExprKind::Unary: work.push_back({cast<UnaryExpr>(&expr)->operand, true}); return;
             case ExprKind::Binary: {
                 const auto& binary = *cast<BinaryExpr>(&expr);

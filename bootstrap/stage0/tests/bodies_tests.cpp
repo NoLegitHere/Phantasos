@@ -269,10 +269,17 @@ fun takeProjected<T: I>(x: T, y: T.Item): T.Item = y
 let inferredProjected = takeProjected(ProjectionConformer(), 1)
 interface GenericEcho<A> { fun echo(x: A): A }
 fun forwardParamEcho<T: GenericEcho<U.Item>, U: Premise>(x: T, y: U.Item): U.Item = x.echo(y)
+class CtorOwner<T>(a: LeafBox<T>, let x: T) { fun ctorRead(): Int = x.read() }
+class UnrelatedQualified { type Item = Int; fun f(x: I.Item): I.Item = x }
+let deferredUnrelated = UnrelatedQualified().f(true)
+fun symId<T, U>(x: T): T where T: U = x
+fun symForward<T, U>(x: T): T where T: U = symId<T, U>(x)
+fun useInterfaceProp(x: Has): Int = readHas(x)
 )");
     CHECK(f.value("inferred") == Type::Int && f.value("echoed") == Type::Int && f.value("leafEchoed") == Type::Int);
     CHECK(f.name(f.value("passed")) == "Target" && f.value("forwardRead") == Type::Int && f.value("inferredReqValue") == Type::Int);
     CHECK(f.name(f.value("constructedSelf")) == "ChainBox<Int>" && f.value("inferredProjected") == Type::Int);
+    CHECK(f.value("deferredUnrelated") == Type::Deferred);
     for (std::string_view name : {"echoed", "leafEchoed"}) {
         const auto& call = f.call(name); // the class implementation, not the bodiless requirement
         CHECK(call.state == CallState::Resolved && ast::cast<ast::FunItem>(f.result.resolution->binding(call.target).item)->body);
@@ -280,6 +287,8 @@ fun forwardParamEcho<T: GenericEcho<U.Item>, U: Premise>(x: T, y: U.Item): U.Ite
     CHECK(body(f, "nested").state == ExpansionState::Resolved && body(f, "chained").state == ExpansionState::Resolved);
     CHECK(body(f, "multiProjectedWhere").state == ExpansionState::Resolved && body(f, "multiProjectedParam").state == ExpansionState::Resolved);
     CHECK(body(f, "reversedIncomingWhere").state == ExpansionState::Resolved && body(f, "forwardParamEcho").state == ExpansionState::Resolved);
+    CHECK(body(f, "ctorRead").state == ExpansionState::Resolved);
+    CHECK(body(f, "symId").state == ExpansionState::Resolved && body(f, "symForward").state == ExpansionState::Deferred);
     CHECK(body(f, "redeclaredAssoc").state == ExpansionState::Resolved && body(f, "redeclaredAssocBound").state == ExpansionState::Resolved);
     const auto* signature = f.result.scalar_types->signature(f.id("nested", BindingKind::Function));
     CHECK(signature && signature->result.kind == Type::Nominal);

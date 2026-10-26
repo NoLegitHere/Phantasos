@@ -542,10 +542,10 @@ private:
             const auto& binding = resolution_.binding(id);
             if (binding.kind != BindingKind::Function && binding.kind != BindingKind::Type && binding.kind != BindingKind::TypeAlias) continue;
             List<WhereClause> where;
-            if (const auto* fun = as<FunItem>(binding.item)) where = fun->sig.where;
-            else if (const auto* type = as_type_decl(binding.item)) where = type->where;
-            const auto* fun = as<FunItem>(binding.item);
-            if (!generic_parameters(id).empty() || !where.empty() || (fun && !fun->sig.generics.empty())) {
+            List<Param> incoming_params;
+            if (const auto* fun = as<FunItem>(binding.item)) { where = fun->sig.where; incoming_params = fun->sig.params; }
+            else if (const auto* type = as_type_decl(binding.item)) { where = type->where; incoming_params = type->ctor_params; }
+            if (!generic_parameters(id).empty() || !where.empty()) {
                 // Incoming parameter bounds or nested projections may be needed to
                 // resolve later parameters and multi-step where-clause subjects.
                 added_uncertain.clear();
@@ -570,10 +570,10 @@ private:
                             binding.item->kind == ItemKind::Interface && clause.type->kind == TypeKind::SelfType;
                         for (const auto* bound : clause.bounds) deferred |= !add(id, source, bound, 0, !self_clause);
                     }
-                    if (fun && !fun->sig.generics.empty()) {
+                    if (!generic_parameters(id).empty() && !incoming_params.empty()) {
                         std::unordered_set<usize> visited;
                         std::vector<Type> work;
-                        for (const auto& param : fun->sig.params) {
+                        for (const auto& param : incoming_params) {
                             const auto type = annotation(param.type);
                             deferred |= !known(type);
                             work.push_back(type);
@@ -586,7 +586,7 @@ private:
                             if (type.kind == Type::Nominal) {
                                 const auto params = generic_parameters(descriptor.declaration);
                                 if (params.size() == descriptor.arguments.size()) {
-                                    const auto context = application(descriptor.declaration, descriptor.arguments, 0, fun->name.span).context;
+                                    const auto context = application(descriptor.declaration, descriptor.arguments, 0, binding.name.span).context;
                                     for (usize p = 0; p < params.size(); ++p)
                                         for (const auto* bound : params[p].bounds)
                                             deferred |= !add(id, descriptor.arguments[p], bound, context);
@@ -946,12 +946,14 @@ private:
                 if (id.valid() && resolution_.binding(id).kind == BindingKind::TypeAlias && associated_alias(id) && syntax->args.empty()) {
                     const auto self = context_self(env);
                     auto owner = member_owner(id);
-                    if (ref) {
+                    if (ref && syntax->path.parts.size() == 1) {
                         const auto lexical = enclosing_owner(ref->scope);
                         if (lexical.valid() && resolution_.binding(lexical).item->kind == ItemKind::Interface && ancestry(lexical, owner) == Relation::Yes) owner = lexical;
                     }
-                    if (known(self) || syntax->path.parts.size() == 1)
-                        cache(env)[syntax] = project(known(self) ? self : schema_self(owner), id);
+                    const bool applicable = known(self) && !self.optional_depth &&
+                        (known(bound_view(self, owner)) || (self.kind == Type::Nominal && ancestry(types_.descriptor(self)->declaration, owner) == Relation::Yes));
+                    if (applicable || syntax->path.parts.size() == 1)
+                        cache(env)[syntax] = project(applicable ? self : schema_self(owner), id);
                     else cache(env)[syntax] = Type::Deferred;
                     continue;
                 }
@@ -1484,6 +1486,7 @@ private:
         if (owner.kind != Type::Nominal) return Type::Deferred;
         const auto declaration = types_.descriptor(owner)->declaration;
         if (resolution_.binding(declaration).kind != BindingKind::Type || resolution_.binding(declaration).item->kind == ItemKind::Interface) return Type::Deferred;
+        if (ancestry(declaration, member_owner(requirement)) != Relation::Yes) return Type::Deferred;
         const TypeDescriptor key{.kind = Type::Projection, .element = owner, .declaration = requirement};
         if (!active_projections_.insert(key).second) return Type::Deferred;
         const auto found = lookup_member(declaration, resolution_.binding(requirement).name.sym, true);
@@ -1537,13 +1540,14 @@ private:
         const auto& binding = resolution_.binding(requirement);
         if (receiver.kind != Type::Nominal) return Relation::Deferred;
         const auto source = types_.descriptor(receiver)->declaration;
+        const auto* source_item = resolution_.binding(source).item;
+        const bool abstract = source_item->kind == ItemKind::Interface || has_modifier(source_item->mods, Modifier::Abstract);
         const auto found = lookup_member(source, binding.name.sym, binding.kind == BindingKind::TypeAlias);
         if (found->state != ExpansionState::Resolved) return Relation::Deferred;
         if (found->ids.size() != 1) return Relation::No;
         const auto candidate = found->ids.front();
         if (binding.kind == BindingKind::TypeAlias) {
-            if (associated_alias(candidate)) return cast<TypeAliasItem>(binding.item)->type ||
-                has_modifier(resolution_.binding(source).item->mods, Modifier::Abstract) ? Relation::Deferred : Relation::No;
+            if (associated_alias(candidate)) return cast<TypeAliasItem>(binding.item)->type || abstract ? Relation::Deferred : Relation::No;
             type = project(receiver, requirement);
             if (!known(type)) return Relation::Deferred;
             Relation result = Relation::Yes;
@@ -1560,7 +1564,7 @@ private:
             (mutable_field(requirement) && !mutable_field(candidate))) return Relation::No;
         if (interface_owner(candidate)) {
             const auto* field = cast<VarItem>(resolution_.binding(candidate).item);
-            if (!field->init && !has_modifier(resolution_.binding(source).item->mods, Modifier::Abstract)) return Relation::No;
+            if (!field->init && !abstract) return Relation::No;
             return Relation::Deferred;
         }
         const auto from_context = owner_context(member_owner(candidate), receiver);
@@ -1616,7 +1620,9 @@ private:
     // requirement signatures must have compatible implementations as well.
     Relation satisfies(Type source, Type bound) {
         if (!known(source) || !known(bound)) return Relation::Deferred;
-        if (bound.kind != Type::Nominal || bound.optional_depth) return Relation::No;
+        if (bound.optional_depth) return Relation::No;
+        if (symbolic(bound)) return Relation::Deferred;
+        if (bound.kind != Type::Nominal) return Relation::No;
         const auto target = types_.descriptor(bound)->declaration;
         if (resolution_.binding(target).kind != BindingKind::BuiltinType && resolution_.binding(target).item->kind != ItemKind::Interface) return Relation::No;
         if (resolution_.binding(target).kind == BindingKind::BuiltinType && source.optional_depth) return Relation::Deferred;

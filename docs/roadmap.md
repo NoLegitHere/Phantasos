@@ -55,7 +55,7 @@ foundation. Complete.
 - [x] Initial flow checks: all-path returns, definite initialization of locals,
   `let`/parameter immutability, and contextual branch results, including `T?`
   for an `if` without `else`.
-- [ ] **Next: native scalar vertical slice.** Compile a scalar Core subset
+- [x] **Native scalar vertical slice (M1).** Compile a scalar Core subset
   (functions, locals, loops, calls, checked integer arithmetic) through a typed
   IR and naive x86_64 code to a static Linux x86_64 executable that returns its
   exit code. Constructs outside the subset receive a diagnostic.
@@ -73,8 +73,12 @@ foundation. Complete.
   inheritance, visibility, and typed errors.
 - [ ] Field/receiver initialization, moves, borrows and destructor checks.
 - [ ] Typed intermediate representation and lowering.
-- [ ] x86_64 code generation and COFF/ELF object writers.
-- [ ] Native PE/ELF linker, minimal runtime and entry points.
+- [ ] x86_64 code generation and COFF/ELF object writers. Stage0 has naive
+  x86_64 code for the scalar subset and writes ELF executables directly; COFF
+  and relocatable ELF objects remain.
+- [ ] Native PE/ELF linker, minimal runtime and entry points. Stage0 links
+  static Linux executables with its own `_start` and panic stub; PE, the
+  Windows entry point and a general runtime remain.
 - [ ] Native hello-world executables on Windows x64 and Linux x86_64.
 
 `check` performs syntax, structural semantic validation, file-local lexical

@@ -34,3 +34,24 @@ let defaulted: Bool = WithDefault().value()
 open class Names { type Small = Int8 }
 class Types: Names {}
 let number: Types.Small = 1
+
+class Container { class Nested {} }
+type Maybe = Container?
+let pending: Maybe.Nested = true
+class Holder { type Owner = Maybe }
+let alsoPending: Holder.Owner.Nested = false
+
+interface First { fun choose(): Int = 1 }
+interface Other { fun choose(): Int = 2 }
+interface MoreSpecific: First { fun choose(): Int }
+interface Combined: Other, MoreSpecific {}
+class Stable: First, Other, MoreSpecific {}
+class ThroughCombined: First, Combined {}
+let chosen: Int = Stable().choose()
+let combined: Int = ThroughCombined().choose()
+
+class Overloaded {
+    fun select(x: Int): Int = x
+    fun select<T>(x: T, y: T): T = x
+}
+let selected: Int = Overloaded().select(1)

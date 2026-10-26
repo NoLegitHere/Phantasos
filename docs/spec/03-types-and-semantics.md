@@ -615,6 +615,10 @@ Different profiles remain overloads. Diamonds share declaration identities.
 Class implementations take precedence over interface defaults, and a more
 specific interface declaration hides all of its ancestor declarations. Unrelated
 defaults remain ambiguous. Ambiguous non-method members report `E0452`.
+Specificity is applied before default-body preference, including through cached
+intermediate bases: a bodyless redeclaration still suppresses its ancestor's
+default when an unrelated interface supplies the selected body. Base-list order
+does not change this suppression.
 
 The type pass retries lexical references deferred at an inheritance barrier.
 It searches outer scopes only after complete inherited lookup finds nothing;
@@ -622,6 +626,8 @@ thus inherited names still shadow outer names. Type and value namespaces remain
 separate. Inherited aliases and newly available base types normalize before
 callable signatures; newly exposed alias cycles still report `E0430`. These
 operations leave the AST and lexical reference states unchanged.
+Qualified type paths cannot traverse an optional alias owner; such paths remain
+deferred, including when inherited lookup would otherwise expose a nested type.
 
 Known ancestry permits nominal superclass/interface upcasts and optional
 lifting, while downcasts and unrelated known nominal assignments are rejected.
@@ -629,6 +635,10 @@ Arrays remain invariant and numeric conversions remain explicit. Overloads
 prefer exact argument types; among equal literal/optional ranks, a signature
 whose supplied parameter types are uniformly more specific wins. Incomparable
 signatures remain ambiguous.
+Structurally complete method lookup retains dependent overload candidates.
+Calls discard candidates with incompatible argument counts/labels before
+deferring selection for applicable generic or otherwise dependent signatures;
+an inapplicable generic overload does not suppress checks on a known call.
 
 A class override of an inherited input profile must say `override`, and its
 base method must be open/abstract (interface methods are implicitly virtual).

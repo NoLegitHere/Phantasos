@@ -34,3 +34,15 @@ hierarchy_errors.phs:27:19: error[E0400]: expected 'Child', found 'Root'
 hierarchy_errors.phs:29:21: error[E0402]: integer literal is out of range for 'Int8'
    29 | class BadArgs: Args(128) {}
       |                     ^^^
+hierarchy_errors.phs:35:22: error[E0400]: expected 'Bool', found 'Int'
+   35 | let mismatch: Bool = Overloaded().select(1)
+      |                      ^^^^^^^^^^^^^^^^^^^^^^
+hierarchy_errors.phs:36:15: error[E0411]: arguments do not match any callable signature
+   36 | let noMatch = Overloaded().select(true)
+      |               ^^^^^^^^^^^^^^^^^^^^^^^^^
+hierarchy_errors.phs:32:9: note: candidate 'select(x: Int)'
+   32 |     fun select(x: Int): Int = x
+      |         ^^^^^^
+hierarchy_errors.phs:33:9: note: candidate 'select(x: <deferred>, y: <deferred>)'
+   33 |     fun select<T>(x: T, y: T): T = x
+      |         ^^^^^^

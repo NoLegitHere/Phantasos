@@ -27,3 +27,10 @@ class Child: Root {}
 let down: Child = Root()
 open class Args(x: Int8) {}
 class BadArgs: Args(128) {}
+
+class Overloaded {
+    fun select(x: Int): Int = x
+    fun select<T>(x: T, y: T): T = x
+}
+let mismatch: Bool = Overloaded().select(1)
+let noMatch = Overloaded().select(true)

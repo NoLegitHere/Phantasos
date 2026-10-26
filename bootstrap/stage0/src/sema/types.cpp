@@ -599,37 +599,48 @@ private:
         const auto owner = member_owner(id);
         return owner.valid() && resolution_.binding(owner).item->kind == ItemKind::Interface;
     }
+    bool contains_self_type(const TypeExpr* root) const {
+        if (!root) return false;
+        std::vector<const TypeExpr*> work{root};
+        while (!work.empty()) {
+            const auto* type = work.back(); work.pop_back();
+            if (type->kind == TypeKind::SelfType) return true;
+            if (type->inner) work.push_back(type->inner);
+            if (type->throws_type) work.push_back(type->throws_type);
+            for (const auto* arg : type->args) work.push_back(arg);
+        }
+        return false;
+    }
     bool method_inputs_known(BindingId id) const {
         const auto* fun = cast<FunItem>(resolution_.binding(id).item);
         const auto& sig = signatures_.at(id.value);
         if (sig.generic || !fun->sig.where.empty()) return false;
         for (const auto param : sig.parameters) if (!known(param)) return false;
-        std::vector<const TypeExpr*> work;
+        const bool interface = interface_owner(id);
         for (const auto& param : fun->sig.params) {
             if (param.conv != Convention::Default) return false;
-            if (param.type) work.push_back(param.type);
+            if (interface && contains_self_type(param.type)) return false;
         }
-        if (fun->sig.ret) work.push_back(fun->sig.ret);
-        if (fun->sig.throws_type) work.push_back(fun->sig.throws_type);
-        while (!work.empty()) {
-            const auto* type = work.back(); work.pop_back();
-            if (interface_owner(id) && type->kind == TypeKind::SelfType) return false;
-            if (type->inner) work.push_back(type->inner);
-            if (type->throws_type) work.push_back(type->throws_type);
-            for (const auto* arg : type->args) work.push_back(arg);
-        }
+        if (interface && (contains_self_type(fun->sig.ret) || contains_self_type(fun->sig.throws_type))) return false;
+        return true;
+    }
+    bool same_method_shape(BindingId a, BindingId b) const {
+        if (static_member(a) != static_member(b)) return false;
+        const auto x = cast<FunItem>(resolution_.binding(a).item)->sig.params;
+        const auto y = cast<FunItem>(resolution_.binding(b).item)->sig.params;
+        if (x.size() != y.size()) return false;
+        for (usize p = 0; p < x.size(); ++p) if (x[p].name.sym != y[p].name.sym) return false;
         return true;
     }
     bool same_method_inputs(BindingId a, BindingId b) const {
-        if (!method_inputs_known(a) || !method_inputs_known(b) || static_member(a) != static_member(b)) return false;
-        if (signatures_.at(a.value).parameters != signatures_.at(b.value).parameters) return false;
-        const auto x = cast<FunItem>(resolution_.binding(a).item)->sig.params;
-        const auto y = cast<FunItem>(resolution_.binding(b).item)->sig.params;
-        for (usize p = 0; p < x.size(); ++p) if (x[p].name.sym != y[p].name.sym || x[p].conv != y[p].conv) return false;
-        return true;
+        return same_method_shape(a, b) && method_inputs_known(a) && method_inputs_known(b) &&
+               signatures_.at(a.value).parameters == signatures_.at(b.value).parameters;
     }
     struct MemberLookup {
         ExpansionState state = ExpansionState::Resolved;
+        // Keep reabstracting declarations even when a peer default supplies
+        // the visible implementation. Descendants still need their blockers.
+        std::vector<BindingId> declarations;
         std::vector<BindingId> ids;
     };
     std::vector<BindingId> direct_members(BindingId owner, Symbol name, bool types_only) const {
@@ -649,18 +660,28 @@ private:
             if (x.kind != BindingKind::Function || y.kind != BindingKind::Function)
                 return ancestry(member_owner(a), member_owner(b)) == Relation::Yes;
             if (!same_method_inputs(a, b)) return false;
-            const bool a_interface = interface_owner(a), b_interface = interface_owner(b);
-            if (!a_interface && b_interface) return true;
-            if (a_interface && !b_interface) return false;
-            if (ancestry(member_owner(a), member_owner(b)) == Relation::Yes) return true;
-            if (ancestry(member_owner(b), member_owner(a)) == Relation::Yes) return false;
-            return cast<FunItem>(x.item)->body && !cast<FunItem>(y.item)->body;
+            return ancestry(member_owner(a), member_owner(b)) == Relation::Yes;
         };
         for (const auto candidate : incoming) {
             if (std::ranges::any_of(result, [&](BindingId id) { return hides(id, candidate); })) continue;
             std::erase_if(result, [&](BindingId id) { return hides(candidate, id); });
             result.push_back(candidate);
         }
+    }
+    std::vector<BindingId> preferred_members(std::span<const BindingId> declarations) const {
+        std::vector<BindingId> result;
+        for (const auto candidate : declarations) {
+            const bool hidden = std::ranges::any_of(declarations, [&](BindingId other) {
+                if (candidate == other || resolution_.binding(candidate).kind != BindingKind::Function ||
+                    resolution_.binding(other).kind != BindingKind::Function || !same_method_inputs(other, candidate)) return false;
+                const bool candidate_interface = interface_owner(candidate), other_interface = interface_owner(other);
+                if (!other_interface && candidate_interface) return true;
+                return other_interface && candidate_interface && cast<FunItem>(resolution_.binding(other).item)->body &&
+                       !cast<FunItem>(resolution_.binding(candidate).item)->body;
+            });
+            if (!hidden) result.push_back(candidate);
+        }
+        return result;
     }
     std::shared_ptr<const MemberLookup> lookup_member(BindingId owner, Symbol name, bool types_only = false) {
         const u64 key = (static_cast<u64>(name.id) << 1) | types_only;
@@ -676,7 +697,7 @@ private:
                 (!own.empty() && resolution_.binding(own.front()).kind != BindingKind::Function)) {
                 auto result = std::make_shared<MemberLookup>();
                 result->state = hierarchy == hierarchies_.end() ? ExpansionState::Deferred : hierarchy->second.state;
-                if (result->state != ExpansionState::Error && !own.empty()) { result->state = ExpansionState::Resolved; result->ids = own; }
+                if (result->state != ExpansionState::Error && !own.empty()) { result->state = ExpansionState::Resolved; result->ids = own; result->declarations = own; }
                 cache[frame.id.value] = result; stack.pop_back(); continue;
             }
             const auto& fact = hierarchy->second;
@@ -690,16 +711,14 @@ private:
             } else {
                 auto result = std::make_shared<MemberLookup>();
                 result->state = fact.state;
-                result->ids = own;
+                result->declarations = own;
                 for (const auto base : fact.bases) {
                     const auto& parent = *cache.at(base.value);
                     if (parent.state == ExpansionState::Error) result->state = ExpansionState::Error;
                     else if (parent.state == ExpansionState::Deferred && result->state != ExpansionState::Error) result->state = ExpansionState::Deferred;
-                    merge_members(result->ids, parent.ids);
+                    merge_members(result->declarations, parent.declarations);
                 }
-                for (const auto id : result->ids)
-                    if (resolution_.binding(id).kind == BindingKind::Function && !method_inputs_known(id) && result->state != ExpansionState::Error)
-                        result->state = ExpansionState::Deferred;
+                result->ids = preferred_members(result->declarations);
                 cache[frame.id.value] = result;
             }
             stack.pop_back();
@@ -708,6 +727,7 @@ private:
     }
 
     Relation method_contract(BindingId implementation, BindingId requirement) {
+        if (!same_method_shape(implementation, requirement)) return Relation::No;
         if (!method_inputs_known(implementation) || !method_inputs_known(requirement)) return Relation::Deferred;
         if (!same_method_inputs(implementation, requirement)) return Relation::No;
         const auto* a = cast<FunItem>(resolution_.binding(implementation).item);
@@ -789,9 +809,10 @@ private:
                 for (const auto base : fact.bases) {
                     const auto inherited = lookup_member(base, b.name.sym);
                     pending |= inherited->state != ExpansionState::Resolved;
-                    pending |= !inherited->ids.empty() && !method_inputs_known(id);
                     for (const auto parent : inherited->ids) {
-                        if (resolution_.binding(parent).kind != BindingKind::Function || !same_method_inputs(id, parent)) continue;
+                        if (resolution_.binding(parent).kind != BindingKind::Function || !same_method_shape(id, parent)) continue;
+                        pending |= !method_inputs_known(id) || !method_inputs_known(parent);
+                        if (!same_method_inputs(id, parent)) continue;
                         found = true;
                         const auto* declaration = cast<FunItem>(resolution_.binding(parent).item);
                         const auto* parent_owner = cast_type_decl(resolution_.binding(member_owner(parent)).item);
@@ -877,6 +898,7 @@ private:
     ExpandedType inherited_type(const TypeExpr* syntax) {
         ExpandedType current;
         for (usize p = 0; p < syntax->path.parts.size(); ++p) {
+            if (p && current.optional_depth) return {};
             const auto name = syntax->path.parts[p];
             const auto* reference = resolution_.reference(name.span);
             std::vector<BindingId> ids;
@@ -1681,10 +1703,14 @@ private:
         for (BindingId id : candidates) {
             const auto* fun = cast<FunItem>(resolution_.binding(id).item);
             const auto& signature = signatures_.at(id.value);
-            Match match{.id = id, .deferred = signature.generic || !fun->sig.where.empty()};
+            Match match{.id = id, .deferred = signature.generic || !fun->sig.where.empty() ||
+                        (member_owner(id).valid() && !method_inputs_known(id))};
             if (!argument_mapping(expr, fun->sig.params, parameter_indices_.at(fun), match.parameters)) continue;
             bool compatible_args = true, fits = true;
             for (usize a = 0; a < expr.args.size(); ++a) {
+                if (interface_owner(id) && contains_self_type(fun->sig.params[match.parameters[a]].type)) {
+                    match.deferred = true; continue; // receiver Self substitution is still pending
+                }
                 const Type expected = signature.parameters[match.parameters[a]];
                 const auto p = probe(expressions_.at(expr.args[a].value), expected);
                 match.deferred |= p.deferred;

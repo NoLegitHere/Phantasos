@@ -16,6 +16,7 @@
 #include "test_support.hpp"
 
 #include <algorithm>
+#include <array>
 #include <initializer_list>
 #include <string>
 
@@ -255,6 +256,69 @@ class PendingBorrow: Borrowed {}
     CHECK(f.result.scalar_types->hierarchy(f.id("Identity", BindingKind::Type)) == fact);
 }
 
+void optional_owner_barriers() {
+    Frontend f;
+    f.check(R"(
+class C { open class Nested {} }
+type Maybe = C?
+type Pending = Maybe.Nested
+let value: Maybe.Nested = true
+class Derived: Maybe.Nested {}
+class Holder { type Owner = Maybe }
+let nested: Holder.Owner.Nested = false
+type Direct = C.Nested
+let direct: Direct = C.Nested()
+class Known: C.Nested {}
+)");
+    CHECK(f.value("value") == Type::Deferred && f.value("nested") == Type::Deferred);
+    CHECK(f.result.scalar_types->alias(f.id("Pending", BindingKind::TypeAlias))->state == ExpansionState::Deferred);
+    CHECK(f.hierarchy("Derived").state == ExpansionState::Deferred && f.hierarchy("Derived").bases.empty());
+    CHECK(f.hierarchy("Known").superclass == f.id("Nested", BindingKind::Type) && f.value("direct").kind == Type::Nominal);
+}
+
+void base_order_independent_reabstraction() {
+    const std::string declarations = R"(
+interface A { fun f(): Int = 1 }
+interface B { fun f(): Int = 2 }
+interface C: A { fun f(): Int }
+)";
+    std::array<std::string_view, 3> bases{"A", "B", "C"};
+    do {
+        Frontend f;
+        f.check(declarations + std::format("class X: {}, {}, {} {{}}\nlet value = X().f()", bases[0], bases[1], bases[2]));
+        CHECK(f.value("value") == Type::Int && f.call("value").target == f.method("B", "f"));
+        CHECK(f.hierarchy("X").conformance == ExpansionState::Resolved);
+        for (const auto& witness : f.hierarchy("X").witnesses) CHECK(witness.state == ExpansionState::Resolved && witness.implementation == f.method("B", "f"));
+    } while (std::next_permutation(bases.begin(), bases.end()));
+    for (std::string_view order : {"A, Combined", "Combined, A"}) {
+        Frontend f;
+        f.check(declarations + "interface Combined: B, C {}\nclass X: " + std::string(order) + " {}\nlet value = X().f()");
+        CHECK(f.call("value").target == f.method("B", "f") && f.hierarchy("X").conformance == ExpansionState::Resolved);
+    }
+}
+
+void inapplicable_generic_member_overloads() {
+    for (std::string_view declarations : {
+        "class C { fun f(x: Int): Int = x; fun f<T>(x: T, y: T): T = x }\n",
+        "open class Base { fun f(x: Int): Int = x; fun f<T>(x: T, y: T): T = x }\nclass C: Base {}\n"}) {
+        Frontend f;
+        f.check(std::string(declarations) + "let value = C().f(1)");
+        CHECK(f.value("value") == Type::Int && f.call("value").state == CallState::Resolved);
+        const auto* call = cast<CallExpr>(f.init("value"));
+        const auto* members = f.result.scalar_types->member(call->callee); CHECK(members);
+        CHECK(members->state == ResolutionState::Resolved && members->candidates.size() == 2);
+        Frontend mismatch;
+        mismatch.check(std::string(declarations) + "let bad: Bool = C().f(1)", {DiagCode::ScalarTypeMismatch});
+        Frontend rejected;
+        rejected.check(std::string(declarations) + "let bad = C().f(true)", {DiagCode::NoMatchingCall});
+    }
+    Frontend pending;
+    pending.check("class C { fun f(x: Int): Int = x; fun f<T>(x: T): T = x }\nlet value = C().f(1)");
+    CHECK(pending.value("value") == Type::Deferred && pending.call("value").state == CallState::Deferred);
+    Frontend missing;
+    missing.check("interface I { fun f(x: Int): Int }\nclass C: I { fun f<T>(x: T, y: T): T = x }", {DiagCode::MissingImplementation});
+}
+
 void long_hierarchies_and_diamonds() {
     Frontend f;
     std::string source = "open class N0 { let value: Int = 1; fun read(): Int = value }\n";
@@ -272,6 +336,9 @@ void long_hierarchies_and_diamonds() {
 } // namespace
 
 int main() {
+    optional_owner_barriers();
+    base_order_independent_reabstraction();
+    inapplicable_generic_member_overloads();
     inherited_members_and_assignability();
     defaults_and_abstract_requirements();
     inherited_types_and_forward_base_aliases();

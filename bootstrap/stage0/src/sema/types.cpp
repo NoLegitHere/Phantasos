@@ -2313,6 +2313,77 @@ private:
         return expr && (expr->kind == ExprKind::If || expr->kind == ExprKind::Block || expr->kind == ExprKind::Unsafe ||
                         expr->kind == ExprKind::Match) ? expr : nullptr;
     }
+    // Whether a `break` leaves this loop. Nested loop bodies and cleanups
+    // have their own targets; nested conditions and iterables do not.
+    static bool breaks_out(const LoopStmt& loop) {
+        std::vector<const Stmt*> stmts;
+        std::vector<const Expr*> exprs{loop.body};
+        while (!exprs.empty() || !stmts.empty()) {
+            if (!stmts.empty()) {
+                const Stmt* stmt = stmts.back();
+                stmts.pop_back();
+                switch (stmt->kind) {
+                    case StmtKind::Break: return true;
+                    case StmtKind::Var: exprs.push_back(cast<VarStmt>(stmt)->init); break;
+                    case StmtKind::Return: exprs.push_back(cast<ReturnStmt>(stmt)->value); break;
+                    case StmtKind::Throw: exprs.push_back(cast<ThrowStmt>(stmt)->value); break;
+                    case StmtKind::Expr: exprs.push_back(cast<ExprStmt>(stmt)->expr); break;
+                    case StmtKind::Assign:
+                        exprs.push_back(cast<AssignStmt>(stmt)->target);
+                        exprs.push_back(cast<AssignStmt>(stmt)->value);
+                        break;
+                    case StmtKind::While: exprs.push_back(cast<WhileStmt>(stmt)->cond.expr); break;
+                    case StmtKind::For: exprs.push_back(cast<ForStmt>(stmt)->iter); break;
+                    case StmtKind::Loop: case StmtKind::Defer: case StmtKind::Continue: break;
+                }
+                continue;
+            }
+            const Expr* expr = exprs.back();
+            exprs.pop_back();
+            if (!expr) continue;
+            switch (expr->kind) {
+                case ExprKind::Block: for (const Stmt* stmt : cast<BlockExpr>(expr)->stmts) stmts.push_back(stmt); break;
+                case ExprKind::Unsafe: exprs.push_back(cast<UnsafeExpr>(expr)->block); break;
+                case ExprKind::Paren: exprs.push_back(cast<ParenExpr>(expr)->inner); break;
+                case ExprKind::Unary: exprs.push_back(cast<UnaryExpr>(expr)->operand); break;
+                case ExprKind::Binary:
+                    exprs.push_back(cast<BinaryExpr>(expr)->lhs);
+                    exprs.push_back(cast<BinaryExpr>(expr)->rhs);
+                    break;
+                case ExprKind::Call:
+                    exprs.push_back(cast<CallExpr>(expr)->callee);
+                    for (const auto& arg : cast<CallExpr>(expr)->args) exprs.push_back(arg.value);
+                    break;
+                case ExprKind::If: {
+                    const auto& branch = *cast<IfExpr>(expr);
+                    exprs.push_back(branch.cond.expr);
+                    exprs.push_back(branch.then_block);
+                    exprs.push_back(branch.else_branch);
+                    break;
+                }
+                case ExprKind::Match:
+                    exprs.push_back(cast<MatchExpr>(expr)->scrutinee);
+                    for (const auto& arm : cast<MatchExpr>(expr)->arms) {
+                        exprs.push_back(arm.guard);
+                        exprs.push_back(arm.body);
+                    }
+                    break;
+                case ExprKind::Member: exprs.push_back(cast<MemberExpr>(expr)->base); break;
+                case ExprKind::OptMember: exprs.push_back(cast<OptMemberExpr>(expr)->base); break;
+                case ExprKind::Index:
+                    exprs.push_back(cast<IndexExpr>(expr)->base);
+                    exprs.push_back(cast<IndexExpr>(expr)->index);
+                    break;
+                case ExprKind::Cast: exprs.push_back(cast<CastExpr>(expr)->operand); break;
+                case ExprKind::Unwrap: exprs.push_back(cast<UnwrapExpr>(expr)->operand); break;
+                case ExprKind::GenericInst: exprs.push_back(cast<GenericInstExpr>(expr)->base); break;
+                case ExprKind::Array: for (const Expr* e : cast<ArrayExpr>(expr)->elems) exprs.push_back(e); break;
+                case ExprKind::Interp: for (const Expr* e : cast<InterpExpr>(expr)->exprs) exprs.push_back(e); break;
+                default: break;
+            }
+        }
+        return false;
+    }
     static void tails(const Expr* root, std::vector<Tail>& out) {
         std::vector<const Expr*> work{root};
         while (!work.empty()) {
@@ -2324,7 +2395,8 @@ private:
                 if (const auto* tail = last ? as<ExprStmt>(last) : nullptr) work.push_back(tail->expr);
                 else if (!last || (last->kind != StmtKind::Return && last->kind != StmtKind::Throw &&
                                    last->kind != StmtKind::Break && last->kind != StmtKind::Continue &&
-                                   last->kind != StmtKind::Loop)) out.push_back({Tail::Unit, block});
+                                   !(last->kind == StmtKind::Loop && !breaks_out(*cast<LoopStmt>(last)))))
+                    out.push_back({Tail::Unit, block});
             } else if (const auto* unsafe = as<UnsafeExpr>(expr)) work.push_back(unsafe->block);
             else if (const auto* branch = as<IfExpr>(expr)) {
                 if (branch->else_branch) work.push_back(branch->else_branch);

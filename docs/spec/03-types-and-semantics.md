@@ -864,8 +864,8 @@ to establish only the implemented rules.
 where a type is expected (an annotation, an argument, an explicit return or an
 expression body with a declared result), each branch must produce that type.
 A block produces its final expression statement; a block ending in `return`,
-`throw`, `break`, `continue` or `loop` produces no value on that path; any
-other block produces `Unit`. Literals in each branch take the expected type.
+`throw`, `break`, `continue` or a `loop` without a `break` out of it produces
+no value on that path; any other block produces `Unit`. Literals in each branch take the expected type.
 An `if` without `else` produces no value when its condition is false:
 
 ```phantasos

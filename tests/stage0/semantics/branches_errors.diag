@@ -10,3 +10,6 @@ branches_errors.phs:18:36: error[E0400]: expected 'Int', found 'Unit'
 branches_errors.phs:19:30: error[E0402]: integer literal is out of range for 'UInt8'
    19 | let range: UInt8 = if true { 300 } else { 2 }
       |                              ^^^
+branches_errors.phs:20:27: error[E0400]: expected 'Int', found 'Unit'
+   20 | fun exits(): Int = unsafe { loop { break } }
+      |                           ^^^^^^^^^^^^^^^^^^

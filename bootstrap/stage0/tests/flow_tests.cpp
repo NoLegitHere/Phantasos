@@ -209,7 +209,20 @@ fun missing(d: Bool): Int = if d { 5 }
 fun mismatch(a: Int): Int = if a > 0 { true } else { 2 }
 let unit: Int = if true { 1 } else { }
 let range: UInt8 = if true { 300 } else { 2 }
-)", {DiagCode::IfWithoutElse, DiagCode::ScalarTypeMismatch, DiagCode::ScalarTypeMismatch, DiagCode::ScalarLiteralRange});
+fun exits(): Int = unsafe { loop { break } }
+)", {DiagCode::IfWithoutElse, DiagCode::ScalarTypeMismatch, DiagCode::ScalarTypeMismatch, DiagCode::ScalarLiteralRange,
+     DiagCode::ScalarTypeMismatch});
+
+    Frontend loops;
+    loops.check(R"(
+fun forever(): Int = unsafe { loop {} }
+fun inner(c: Bool): Int = unsafe {
+    loop {
+        while c { break }
+        loop { break }
+    }
+}
+)");
 }
 
 void gated_by_type_errors() {

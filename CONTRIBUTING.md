@@ -196,6 +196,9 @@
   x86_64 it also loads the generated code into executable memory and checks
   that it agrees with the MIR interpreter on fixed programs and 400 random
   integer expressions, including which trap they reach.
+  The `elf` suite checks the ELF headers, symbol table and link errors. On
+  Linux x86_64 it also writes executables, runs them and checks their exit
+  status and stderr, including both panics.
 
 - Run `python tests/test_license_check.py` for license-fixer regressions,
   including encoding declarations, BOMs, line endings, and idempotence.

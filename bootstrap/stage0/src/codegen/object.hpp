@@ -31,6 +31,7 @@ struct Symbol {
     bool defined = false;  // false: resolved by the linker (runtime entry points)
     u64 offset = 0;        // within .text when defined
     u64 size = 0;
+    bool data = false;  // read-only bytes in .text rather than code
 };
 
 // A 32-bit PC-relative reference: the linker writes S + A - P at offset,

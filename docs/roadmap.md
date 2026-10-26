@@ -63,7 +63,7 @@ foundation. Complete.
     subset (`E0600`) and checks the `main` entry point (`E0601`).
   - [x] Typed MIR with strictly left-to-right lowering and a `mir` dump.
   - [x] Naive x86_64 code with overflow and division traps.
-  - [ ] Static ELF writer, stage0 `_start` and panic stub.
+  - [x] Static ELF writer, stage0 `_start` and panic stub.
   - [ ] `build` command and run tests in Linux CI.
 - [ ] Generic base substitution and built-in traits. Instantiate
   generic base/interface graphs, derive `Copy`/`Sendable`/`Error`, and complete

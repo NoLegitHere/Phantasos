@@ -211,6 +211,56 @@ public:
     }
     void ud2() { raw({0x0F, 0x0B}, "ud2"); }
 
+    // ------------------------------------------------------------ runtime
+
+    void mov32_imm(Reg dst, u32 value) {
+        const auto start = begin();
+        rex(false, 0, dst);
+        byte(static_cast<u8>(0xB8 + (dst & 7)));
+        put(value);
+        end(start, std::format("mov {}, {}", kDword[dst], value));
+    }
+    void mov32(Reg dst, Reg src) {
+        const auto start = begin();
+        rex(false, src, dst);
+        byte(0x89);
+        byte(modrm(src, dst));
+        end(start, std::format("mov {}, {}", kDword[dst], kDword[src]));
+    }
+    void zero32(Reg r) {
+        const auto start = begin();
+        rex(false, r, r);
+        byte(0x31);
+        byte(modrm(r, r));
+        end(start, std::format("xor {}, {}", kDword[r], kDword[r]));
+    }
+    void cmp32_imm8(Reg r, u8 value) {
+        const auto start = begin();
+        rex(false, 0, r);
+        byte(0x83);
+        byte(modrm(7, r));
+        byte(value);
+        end(start, std::format("cmp {}, {}", kDword[r], value));
+    }
+    // lea dst, [rip + symbol]
+    void lea(Reg dst, u32 symbol) {
+        const auto start = begin();
+        rex(true, dst, 0);
+        byte(0x8D);
+        byte(static_cast<u8>((dst & 7) << 3 | 5));
+        object_.relocations.push_back({here(), symbol, -4});
+        put(0u);
+        end(start, std::format("lea {}, [rip+{}]", name(dst), object_.symbols[symbol].name));
+    }
+    void syscall() { raw({0x0F, 0x05}, "syscall"); }
+    void bytes(std::string_view data) {
+        const auto start = begin();
+        for (const char c : data) byte(static_cast<u8>(c));
+        std::string text = "db \"";
+        for (const char c : data) text += c == '\n' ? std::string("\\n") : std::string(1, c);
+        end(start, text + '"');
+    }
+
 private:
     static constexpr u64 kUnplaced = std::numeric_limits<u64>::max();
     struct Line {
@@ -494,6 +544,87 @@ private:
     u32 trap_ = 0;
 };
 
+// Linux x86_64 system call numbers.
+constexpr u32 kSysWrite = 1;
+constexpr u32 kSysExitGroup = 231;
+
+class Runtime {
+public:
+    Runtime(const mir::Program& program, obj::Object& object, std::string* listing)
+        : program_(program), object_(object), as_(object, listing) {}
+
+    void run() {
+        const auto& main = program_.functions[program_.main];
+        const u32 start = symbol(std::string(kEntrySymbol), true);
+        const u32 trap = symbol(std::string(kTrapSymbol), true);
+        const u32 main_symbol = symbol(symbol_name(main), false);
+        const u32 overflow = symbol("__phantasos_overflow_message", true, true);
+        const u32 divide = symbol("__phantasos_divide_message", true, true);
+        static constexpr std::string_view kOverflow = "panic: arithmetic overflow\n";
+        static constexpr std::string_view kDivide = "panic: division by zero\n";
+
+        // The kernel enters with rsp 16-byte aligned, so the call leaves main
+        // with the alignment System V expects.
+        begin(start, "process entry");
+        as_.zero32(RBP);
+        as_.call(main_symbol);
+        if (mir::bit_width(main.result) != 0) as_.mov32(RDI, RAX);
+        else as_.zero32(RDI);
+        exit();
+        end(start);
+
+        begin(trap, "edi holds the trap code");
+        const auto write = as_.label();
+        as_.cmp32_imm8(RDI, static_cast<u8>(Trap::DivideByZero));
+        as_.lea(RSI, overflow);
+        as_.mov32_imm(RDX, static_cast<u32>(kOverflow.size()));
+        as_.jcc(NE, write);
+        as_.lea(RSI, divide);
+        as_.mov32_imm(RDX, static_cast<u32>(kDivide.size()));
+        as_.place(write);
+        as_.mov32_imm(RDI, 2);  // stderr
+        as_.mov32_imm(RAX, kSysWrite);
+        as_.syscall();
+        as_.mov32_imm(RDI, kPanicExitStatus);
+        exit();
+        as_.patch();
+        end(trap);
+
+        message(overflow, kOverflow);
+        message(divide, kDivide);
+    }
+
+    std::string listing() const { return as_.render(); }
+
+private:
+    u32 symbol(std::string name, bool defined, bool data = false) {
+        object_.symbols.push_back({std::move(name), defined, 0, 0, data});
+        return static_cast<u32>(object_.symbols.size() - 1);
+    }
+    void begin(u32 index, std::string_view comment) {
+        while (object_.text.size() % 16) object_.text.push_back(0xCC);
+        object_.symbols[index].offset = as_.here();
+        as_.note(std::format("{}:  ; {}", object_.symbols[index].name, comment));
+        as_.reset();
+    }
+    void end(u32 index) { object_.symbols[index].size = as_.here() - object_.symbols[index].offset; }
+    void exit() {
+        as_.mov32_imm(RAX, kSysExitGroup);
+        as_.syscall();
+        as_.ud2();
+    }
+    void message(u32 index, std::string_view text) {
+        object_.symbols[index].offset = as_.here();
+        as_.note(std::format("{}:", object_.symbols[index].name));
+        as_.bytes(text);
+        end(index);
+    }
+
+    const mir::Program& program_;
+    obj::Object& object_;
+    Assembler as_;
+};
+
 }  // namespace
 
 std::string symbol_name(const mir::Function& function) {
@@ -505,6 +636,14 @@ obj::Object emit(const mir::Program& program, std::string* listing) {
     Emitter emitter(program, object, listing);
     emitter.run();
     if (listing) *listing = emitter.listing();
+    return object;
+}
+
+obj::Object runtime(const mir::Program& program, std::string* listing) {
+    obj::Object object;
+    Runtime runtime(program, object, listing);
+    runtime.run();
+    if (listing) *listing = runtime.listing();
     return object;
 }
 

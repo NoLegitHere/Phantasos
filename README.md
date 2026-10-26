@@ -97,6 +97,8 @@ functions, locals, loops, calls and integer arithmetic, and needs a
 `mir <file.phs>` prints the typed MIR for a file that passes `gate`. The MIR
 has basic blocks, typed registers and checked arithmetic, and it lowers code
 strictly left to right (spec 3.26).
+`asm <file.phs>` prints the x86_64 code that stage0 generates from that MIR as
+an assembly listing, with checks that trap on overflow and division by zero.
 
 ## Repository layout
 
@@ -142,6 +144,7 @@ python tests/fuzz_frontend.py --stage0 build/stage0/phantasos-stage0   # crash/h
 python tests/fuzz_frontend.py --stage0 build/stage0/phantasos-stage0 --command check # semantic-path fuzzing
 python tests/fuzz_frontend.py --stage0 build/stage0/phantasos-stage0 --command gate  # code-generation-gate fuzzing
 python tests/fuzz_frontend.py --stage0 build/stage0/phantasos-stage0 --command mir   # MIR lowering fuzzing
+python tests/fuzz_frontend.py --stage0 build/stage0/phantasos-stage0 --command asm   # x86_64 code generation fuzzing
 python tools/license-check/license_check.py                            # license headers
 ```
 
@@ -210,6 +213,7 @@ build/stage0/phantasos-stage0 parse tests/stage0/parser/showcase.phs   # print t
 build/stage0/phantasos-stage0 lex   tests/stage0/lexer/literals.phs    # print the token stream
 build/stage0/phantasos-stage0 gate  tests/stage0/codegen/gate_fib.phs  # check a program for code generation
 build/stage0/phantasos-stage0 mir   tests/stage0/mir/fib.phs          # print its MIR
+build/stage0/phantasos-stage0 asm   tests/stage0/asm/fib.phs          # print its x86_64 code
 ```
 
 ## License

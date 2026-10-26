@@ -1,0 +1,280 @@
+// Copyright 2026 The Phantasos Authors
+// SPDX-License-Identifier: Apache-2.0
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+#include "test_support.hpp"
+
+#include <cstring>
+#include <format>
+#include <random>
+#include <string>
+#include <vector>
+
+#include "codegen/x86_64.hpp"
+#include "frontend/session.hpp"
+#include "mir_interpreter.hpp"
+
+#if defined(__linux__) && defined(__x86_64__)
+#include <csetjmp>
+#include <sys/mman.h>
+#define PHS_JIT 1
+#endif
+
+using namespace phs;
+using test::Outcome;
+
+namespace {
+
+struct Compiled {
+    FrontendSession session;
+    const mir::Program* program = nullptr;
+    obj::Object object;
+    std::string listing;
+
+    explicit Compiled(std::string_view source) {
+        const auto id = session.sources().add("x86.phs", source);
+        CHECK(id);
+        program = session.lower(*id);
+        if (!program) {
+            session.diagnostics().render(stderr);
+            std::println(stderr, "{}", source);
+        }
+        CHECK(program);
+        object = x86_64::emit(*program, &listing);
+    }
+};
+
+#ifdef PHS_JIT
+// Loads the object into executable memory, links its relocations and calls
+// main. The trap entry long-jumps back here.
+std::jmp_buf trap_target;
+u32 trap_code = 0;
+extern "C" [[noreturn]] void on_trap(u32 code) {
+    trap_code = code;
+    std::longjmp(trap_target, 1);
+}
+
+Outcome run_native(const Compiled& compiled) {
+    const auto& object = compiled.object;
+    const usize trampoline = (object.text.size() + 15) / 16 * 16;
+    const usize size = trampoline + 16;
+    void* memory = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(memory != MAP_FAILED);
+    auto* base = static_cast<u8*>(memory);
+    std::memcpy(base, object.text.data(), object.text.size());
+    // movabs rax, on_trap; jmp rax
+    const auto handler = reinterpret_cast<u64>(&on_trap);
+    base[trampoline] = 0x48;
+    base[trampoline + 1] = 0xB8;
+    std::memcpy(base + trampoline + 2, &handler, 8);
+    base[trampoline + 10] = 0xFF;
+    base[trampoline + 11] = 0xE0;
+    for (const auto& reloc : object.relocations) {
+        const auto& symbol = object.symbols[reloc.symbol];
+        const auto target = reinterpret_cast<i64>(base) + static_cast<i64>(symbol.defined ? symbol.offset : trampoline);
+        const i64 value = target + reloc.addend - (reinterpret_cast<i64>(base) + static_cast<i64>(reloc.offset));
+        CHECK(value >= INT32_MIN && value <= INT32_MAX);
+        const auto field = static_cast<i32>(value);
+        std::memcpy(base + reloc.offset, &field, 4);
+    }
+    CHECK(mprotect(memory, size, PROT_READ | PROT_EXEC) == 0);
+    using Entry = u64 (*)();
+    Entry entry = nullptr;
+    const auto address = reinterpret_cast<uintptr_t>(base + object.symbols[compiled.program->main].offset);
+    std::memcpy(&entry, &address, sizeof entry);
+    Outcome outcome;
+    if (setjmp(trap_target) == 0) outcome.value = entry();
+    else outcome = {true, 0, trap_code};
+    CHECK(munmap(memory, size) == 0);
+    return outcome;
+}
+#endif
+
+// Native code must agree with the MIR interpreter: the same value, or the same trap.
+void agrees(std::string_view source) {
+    Compiled compiled(source);
+    const auto expected = test::Interpreter(*compiled.program).run();
+#ifdef PHS_JIT
+    const auto actual = run_native(compiled);
+    const bool value = mir::bit_width(compiled.program->functions[compiled.program->main].result) != 0;
+    if (actual.trap != expected.trap || (!expected.trapped && value && actual.value != expected.value)) {
+        std::println(stderr, "{}\nexpected trap {} value {}, got trap {} value {}\n{}", source, expected.trap,
+                     expected.value, actual.trap, actual.value, compiled.listing);
+        CHECK(false);
+    }
+#else
+    (void)expected;
+#endif
+}
+
+void object_layout() {
+    Compiled c(R"(
+fun fib(n: Int): Int {
+    if n < 2 { return n }
+    return fib(n - 1) + fib(n - 2)
+}
+fun main(): Int = fib(10)
+)");
+    const auto& object = c.object;
+    CHECK(object.symbols.size() == 3);
+    CHECK(object.symbols[0].name == "_P3fib" && object.symbols[0].defined);
+    CHECK(object.symbols[1].name == "_P4main" && object.symbols[1].defined);
+    CHECK(object.symbols[2].name == x86_64::kTrapSymbol && !object.symbols[2].defined);
+    for (const auto& symbol : object.symbols)
+        if (symbol.defined) {
+            CHECK(symbol.offset % 16 == 0);
+            CHECK(symbol.size > 0 && symbol.offset + symbol.size <= object.text.size());
+        }
+    // Three calls to fib, the trap entry from fib's overflow checks, and none from main.
+    usize to_fib = 0, to_trap = 0;
+    for (const auto& reloc : object.relocations) {
+        CHECK(reloc.addend == -4 && reloc.offset + 4 <= object.text.size());
+        CHECK(object.text[reloc.offset - 1] == 0xE8);
+        to_fib += reloc.symbol == 0;
+        to_trap += reloc.symbol == 2;
+    }
+    CHECK(to_fib == 3 && to_trap == 1);
+    CHECK(c.listing.contains("_P3fib:  ; fib\n    0000  55                     push rbp\n"));
+    CHECK(c.listing.contains("call _P3fib"));
+    CHECK(c.listing.contains("; trap: overflow"));
+}
+
+void programs() {
+    agrees(R"(
+fun fib(n: Int): Int {
+    if n < 2 { return n }
+    return fib(n - 1) + fib(n - 2)
+}
+fun sumTo(limit: Int): Int {
+    var total = 0
+    var i = 1
+    while i <= limit {
+        if i % 3 == 0 || i % 5 == 0 { total += i }
+        i += 1
+    }
+    return total
+}
+fun main(): Int {
+    return fib(10) - sumTo(9) + 10
+}
+)");
+    agrees(R"(
+fun many(a: Int8, b: Int16, c: Int32, d: Int64, e: UInt8, f: UInt16, g: UInt32, h: UInt64, i: Bool): Int64 {
+    if !i { return 0 }
+    return Int64(a) * 1000000 + Int64(b) * 10000 + Int64(c) * 100 + d + Int64(e) + Int64(f) + Int64(g) + Int64.truncating(h)
+}
+fun main(): Int = Int(many(-3, -200, 70000, -5, 250, 65000, 4000000000, 7, true))
+)");
+    agrees(R"(
+fun classify(x: Int): Int {
+    if x < 0 { return -1 } else if x == 0 { return 0 } else if x < 10 { return 1 }
+    return 2
+}
+fun loops(n: Int): Int {
+    var total = 0
+    var i = 0
+    loop {
+        i += 1
+        if i > n { break }
+        if i % 2 == 0 { continue }
+        while total < i && !(total == 3) { total += 1 }
+    }
+    return total
+}
+fun main(): Int {
+    let x: Int
+    if loops(3) == 3 { x = 100 } else { x = 200 }
+    let y: Int = if x > 150 { 1 } else if x > 50 { 2 } else { 3 }
+    return x + y + classify(-4) + classify(5) * 10 + loops(9)
+}
+)");
+    agrees("fun main() {}\n");
+    agrees("fun main(): Int = -9223372036854775807 - 1 + 9223372036854775807\n");
+    agrees("fun main(): Int {\n    var x: Int8 = 127\n    x += 1\n    return 0\n}\n");
+    agrees("fun main(): Int {\n    let x: UInt = 0\n    let y = x - 1\n    return 0\n}\n");
+    agrees("fun big(): UInt64 = 18446744073709551615\nfun main(): Int {\n    let x = big() * 2\n    return 0\n}\n");
+    agrees("fun zero(): Int = 0\nfun main(): Int = 5 / zero()\n");
+    agrees("fun zero(): UInt8 = 0\nfun main(): Int = Int(UInt8(5) % zero())\n");
+    agrees("fun minus(): Int = -1\nfun main(): Int = (-9223372036854775807 - 1) % minus()\n");
+    agrees("fun minus(): Int16 = -1\nfun main(): Int = Int(Int16(-32768) / minus())\n");
+    agrees("fun main(): Int {\n    let x: Int32 = -2147483647 - 1\n    return Int(-x)\n}\n");
+    agrees("fun boom(): Bool = 1 / 0 == 1\nfun main(): Int {\n    let a = false && boom()\n    let b = true || boom()\n    if a || !b { return 1 }\n    return 0\n}\n");
+}
+
+// Random integer expressions over every type, compared with the interpreter.
+struct Generator {
+    std::mt19937_64 rng{20261026};
+
+    struct Kind {
+        std::string_view name;
+        bool sign;
+        u32 width;
+    };
+    static constexpr Kind kKinds[] = {{"Int8", true, 8},   {"Int16", true, 16},  {"Int32", true, 32},  {"Int64", true, 64},
+                                      {"UInt8", false, 8}, {"UInt16", false, 16}, {"UInt32", false, 32}, {"UInt64", false, 64}};
+
+    u64 pick(u64 limit) { return std::uniform_int_distribution<u64>(0, limit)(rng); }
+
+    std::string literal(const Kind& kind) {
+        const u64 max = kind.sign ? (u64{1} << (kind.width - 1)) - 1 : kind.width == 64 ? ~u64{0} : (u64{1} << kind.width) - 1;
+        // Favor small values and the edges of the range.
+        u64 value = pick(3) == 0 ? max - pick(2) : pick(4) == 0 ? pick(max) : pick(9);
+        if (value > max) value = max;
+        if (kind.sign && pick(1)) return std::format("({}(-{}))", kind.name, value);
+        return std::format("{}({})", kind.name, value);
+    }
+
+    std::string expression(const Kind& kind, int depth, usize params) {
+        if (depth == 0 || pick(3) == 0) return params && pick(1) ? std::format("p{}", pick(params - 1)) : literal(kind);
+        static constexpr std::string_view kOps[] = {"+", "-", "*", "/", "%", "&+", "&-", "&*", "&", "|", "^"};
+        const auto op = kOps[pick(std::size(kOps) - 1)];
+        if (pick(5) == 0) return std::format("(~{})", expression(kind, depth - 1, params));
+        if (kind.sign && pick(6) == 0) return std::format("(-{})", expression(kind, depth - 1, params));
+        return std::format("({} {} {})", expression(kind, depth - 1, params), op, expression(kind, depth - 1, params));
+    }
+
+    // An if only gets its type from context, so ifs appear where a type is expected: the initializer and the
+    // tails of other ifs.
+    std::string typed(const Kind& kind, int depth, usize params) {
+        if (depth == 0 || pick(2) != 0) return expression(kind, depth, params);
+        return std::format("if {} < {} {{ {} }} else {{ {} }}", expression(kind, depth - 1, params),
+                           expression(kind, depth - 1, params), typed(kind, depth - 1, params),
+                           typed(kind, depth - 1, params));
+    }
+
+    std::string program() {
+        const auto& kind = kKinds[pick(std::size(kKinds) - 1)];
+        const usize params = pick(8);
+        std::string source = std::format("fun f(");
+        for (usize i = 0; i < params; ++i) source += std::format("{}p{}: {}", i ? ", " : "", i, kind.name);
+        source += std::format("): {} {{\n    let v: {} = {}\n    return v\n}}\n", kind.name, kind.name, typed(kind, 4, params));
+        source += std::format("fun main(): Int {{\n    let r = f(");
+        for (usize i = 0; i < params; ++i) source += std::format("{}{}", i ? ", " : "", literal(kind));
+        source += ")\n    return Int.truncating(r)\n}\n";
+        return source;
+    }
+};
+
+void random_expressions() {
+    Generator generator;
+    for (int i = 0; i < 400; ++i) agrees(generator.program());
+}
+}  // namespace
+
+int main() {
+    object_layout();
+    programs();
+    random_expressions();
+    std::println("x86_64 tests passed");
+}

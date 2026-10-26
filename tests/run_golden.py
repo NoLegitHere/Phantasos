@@ -45,6 +45,7 @@ SUITES = {
     "semantics": ("check", None),
     "codegen": ("gate", None),
     "mir": ("mir", ".mir"),
+    "asm": ("asm", ".lst"),
 }
 CHECK_SUITES = ("diagnostics", "semantics", "codegen")
 

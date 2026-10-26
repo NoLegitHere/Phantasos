@@ -79,7 +79,7 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--stage0", required=True, type=Path)
     ap.add_argument("--cases", type=int, default=500)
     ap.add_argument("--seed", type=int, default=1234)
-    ap.add_argument("--command", choices=("parse", "check", "gate", "mir"), default="parse")
+    ap.add_argument("--command", choices=("parse", "check", "gate", "mir", "asm"), default="parse")
     ap.add_argument("--timeout", type=float, default=5.0)
     ap.add_argument("--out", type=Path, default=None, help="directory for failing inputs")
     args = ap.parse_args(argv)

@@ -192,6 +192,10 @@
   The `mir` suite runs lowered programs on a small reference interpreter. It
   checks results, overflow, division and negation traps, short-circuit
   evaluation, argument order and long or nested trees.
+  The `x86_64` suite checks symbols, relocations and the listing. On Linux
+  x86_64 it also loads the generated code into executable memory and checks
+  that it agrees with the MIR interpreter on fixed programs and 400 random
+  integer expressions, including which trap they reach.
 
 - Run `python tests/test_license_check.py` for license-fixer regressions,
   including encoding declarations, BOMs, line endings, and idempotence.
@@ -211,6 +215,8 @@
 - `tests/stage0/mir/` runs `mir` and compares stdout with `*.mir`. Like the
   lexer and parser fixtures, a case is positive unless its `.diag` baseline
   has an error header.
+- `tests/stage0/asm/` runs `asm` and compares stdout with `*.lst` under the
+  same rules.
 - Regenerate them with `python tests/run_golden.py --stage0 <exe> --update`
   and review the diff before committing.
   Lexer/parser fixtures are positive unless an existing `.diag` baseline has
@@ -220,5 +226,5 @@
 - Run `python tests/test_frontend.py --stage0 <exe>` for deterministic nesting,
   long AST/token traversal, and parser-state regression tests. These run on both
   platforms and in the sanitizer job, alongside the mutation fuzzer.
-- Run the mutation fuzzer with `--command check`, `--command gate` and
-  `--command mir` as well as its default `parse` mode to exercise semantic validation after successful parses.
+- Run the mutation fuzzer with `--command check`, `--command gate`,
+  `--command mir` and `--command asm` as well as its default `parse` mode to exercise semantic validation after successful parses.

@@ -95,8 +95,10 @@ def main(argv: list[str]) -> int:
     out_dir = args.out or Path(tempfile.mkdtemp(prefix="phs-fuzz-"))
     out_dir.mkdir(parents=True, exist_ok=True)
     work = out_dir / "case.phs"
-    # `build` writes an executable; it is never run, since mutated loops need not end.
-    output = ["-o", str(out_dir / "case")] if args.command == "build" else []
+    # `build` writes an executable into its own directory; it is never run,
+    # since mutated loops need not end.
+    build_dir = tempfile.TemporaryDirectory(prefix="phs-fuzz-build-") if args.command == "build" else None
+    output = ["-o", str(Path(build_dir.name) / "case")] if build_dir else []
     rng = random.Random(args.seed)
     failures = 0
     for i in range(args.cases):
@@ -119,7 +121,8 @@ def main(argv: list[str]) -> int:
             saved.write_bytes(text)
             print(f"FAIL case {i}: {reason} -> {saved}")
     work.unlink(missing_ok=True)
-    (out_dir / "case").unlink(missing_ok=True)
+    if build_dir:
+        build_dir.cleanup()
     print(f"fuzz ({args.command}): {args.cases} cases, {failures} failure(s), seed {args.seed}")
     return 1 if failures else 0
 

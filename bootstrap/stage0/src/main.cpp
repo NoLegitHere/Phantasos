@@ -94,10 +94,17 @@ int build(std::string_view path, std::filesystem::path out) {
         return 1;
     }
     if (out.empty()) out = std::filesystem::path(path).stem();
+    // Never truncate the source, including through a link to it.
+    std::error_code same_ec;
+    if (std::filesystem::equivalent(out, path, same_ec) && !same_ec) {
+        std::println(stderr, "error: output '{}' is the source file", out.string());
+        return 2;
+    }
     {
         std::ofstream stream(out, std::ios::binary | std::ios::trunc);
         stream.write(reinterpret_cast<const char*>(image->data()), static_cast<std::streamsize>(image->size()));
-        if (!stream) {
+        stream.close();  // a failed flush only shows up here
+        if (stream.fail()) {
             std::println(stderr, "error: cannot write '{}'", out.string());
             return 2;
         }

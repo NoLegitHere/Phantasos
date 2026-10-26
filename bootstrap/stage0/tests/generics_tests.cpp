@@ -174,7 +174,7 @@ void pending_contracts() {
     Frontend f;
     f.check(R"(
 interface I { fun read(): Int }
-class Box<T>(let value: T) where T: I {}
+class Box<T>(let value: T) where T: Copy {}
 let constrained = Box<Int>(1)
 fun bound<T: Copy>(x: T): T = x
 let bounded = bound<Int>(1)
@@ -190,7 +190,8 @@ class Derived<T>: Base<T> {}
 let inherited: Derived<Int>
 let dependent = inherited.value
 )");
-    for (std::string_view name : {"constrained", "bounded", "inference", "noneArgument", "defaulted", "captured", "dependent"})
+    CHECK(f.value("inference") == Type::Int && f.call("inference").inferred_type_arguments);
+    for (std::string_view name : {"constrained", "bounded", "noneArgument", "defaulted", "captured", "dependent"})
         CHECK(f.value(name) == Type::Deferred);
 }
 

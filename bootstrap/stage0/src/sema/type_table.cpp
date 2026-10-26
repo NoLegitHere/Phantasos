@@ -77,6 +77,8 @@ std::string TypeTable::name(ScalarType root, const Resolution& resolution, const
         const auto* d = descriptor(type);
         if (!d) { append(scalar_type_name(type)); continue; }
         switch (d->kind) {
+            case ScalarType::TypeParameter:
+                append(names.str(resolution.binding(d->declaration).name.sym)); break;
             case ScalarType::Nominal: {
                 std::vector<std::string_view> parts{names.str(resolution.binding(d->declaration).name.sym)};
                 auto scope = resolution.binding(d->declaration).scope;

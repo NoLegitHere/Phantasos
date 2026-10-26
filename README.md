@@ -38,7 +38,8 @@ Windows x64 and Linux x86_64:
 - [x] Direct nominal field/method lookup, static/instance access and member call targets
 - [x] Initial inheritance graphs, inherited lookup, overrides, method conformance and nominal upcasts
 - [x] Initial explicit generic applications and alias/signature/member substitution
-- [ ] Generic inference/constraints, dependent conformance, function-value inference, remaining numeric policies and ownership analysis
+- [x] Initial argument-based generic inference and concrete interface/where constraints
+- [ ] Generic bodies, dependent conformance, function-value inference, remaining numeric policies and ownership analysis
 - [ ] MIR, x86_64 codegen, COFF/ELF writers, linker, runtime
 - [ ] Workspace-aware build driver
 
@@ -73,7 +74,10 @@ method overrides, supported interface/abstract method requirements and nominal
 upcasts retain hierarchy and conformance-witness records. Explicit concrete generic
 applications substitute transparent aliases, constructor/function signatures and
 direct fields/methods of owners without bases; nominal arguments are invariant.
-Generic inference, bounds/body validation, generic inheritance,
+Supplied arguments infer type parameters for functions, methods and nominal
+primary constructors. Concrete interface bounds and `where` clauses require
+declared ancestry and compatible supported implementations. Generic bodies,
+general inference/bound solving, generic inheritance,
 function-value inference, associated requirements, remaining numeric policies,
 dependent/property contracts, optional/ownership-wrapper member access and ownership analysis remain
 pending, so passing `check` does not yet establish program validity. Imports explicitly report that
@@ -142,9 +146,11 @@ valid until the session is destroyed. `CheckResult::scalar_types` is non-null
 when scalar checking ran; query expression and binding facts through it.
 Its `signature(BindingId)` and `call(CallExpr*)` queries expose scalar parameter
 and return types, selected function IDs, and argument-to-parameter mappings.
-Selected calls retain explicit function type arguments and substituted parameter
+Selected calls retain explicit/inferred type arguments and substituted parameter
 types; member records retain their concrete receiver type. Declaration signatures
 remain shared and are never overwritten by an application's types.
+`constraints()` retains resolved, deferred or erroneous application contracts,
+including concrete type applications outside calls. Failed constraints report E0471.
 Function value bindings remain deferred; their return types live in signatures.
 `ScalarType` stores `kind`, `optional_depth` and a result-local descriptor ID.
 Use `descriptor(type)` for structural components and

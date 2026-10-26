@@ -1,0 +1,34 @@
+// Copyright 2026 The Phantasos Authors
+// SPDX-License-Identifier: Apache-2.0
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+interface Read { fun read(): Int }
+interface Flag { fun flag(): Bool }
+class Value: Read, Flag { fun read() = 1; fun flag(): Bool = true }
+fun identity<T>(value: T): T = value
+fun same<T>(first: T, second: T): T = first
+fun bounded<T: Read & Flag>(value: T): T = value
+fun constrained<T>(value: T): T where T: Read = value
+class Box<T: Read>(let value: T) {}
+let byte: Int8 = 1
+let first: Int8 = same(1, byte)
+let last: Int8 = same(byte, 1)
+let array: [Int8] = same([1], [byte])
+let inferred: Bool = identity(true)
+let checked: Value = bounded(Value())
+let whereChecked: Value = constrained(Value())
+let box: Box<Value> = Box(Value())
+fun choose(value: Int): Bool = true
+fun choose<T>(value: T): T = value
+let preferred: Bool = choose(1)

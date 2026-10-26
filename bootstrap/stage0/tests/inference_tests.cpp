@@ -1,0 +1,250 @@
+// Copyright 2026 The Phantasos Authors
+// SPDX-License-Identifier: Apache-2.0
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+#include "test_support.hpp"
+
+#include <algorithm>
+#include <initializer_list>
+#include <string>
+
+#include "frontend/session.hpp"
+#include "syntax/ast_dump.hpp"
+
+using namespace phs;
+using Type = ScalarType;
+
+namespace {
+struct Frontend {
+    FrontendSession session;
+    CheckResult result{};
+    void check(std::string_view source, std::initializer_list<DiagCode> expected = {}, bool dump = true) {
+        const auto id = session.sources().add("inference.phs", source); CHECK(id);
+        const auto* syntax = session.parse(*id);
+        if (session.diagnostics().has_errors(*id)) session.diagnostics().render(stderr);
+        CHECK(!session.diagnostics().has_errors(*id));
+        const auto before = dump ? dump_ast(*syntax, session.names()) : std::string{};
+        result = session.check(*id); CHECK(result.scalar_types);
+        if (dump) CHECK(dump_ast(*syntax, session.names()) == before);
+        std::vector<DiagCode> actual, wanted(expected);
+        for (const auto& d : session.diagnostics().all()) actual.push_back(d.code);
+        std::ranges::sort(actual); std::ranges::sort(wanted);
+        if (actual != wanted) session.diagnostics().render(stderr);
+        CHECK(actual == wanted);
+        const auto errors = session.diagnostics().error_count();
+        CHECK(session.check(*id).scalar_types == result.scalar_types && session.diagnostics().error_count() == errors);
+    }
+    BindingId id(std::string_view name, BindingKind kind = BindingKind::Variable) const {
+        for (usize i = 0; i < result.resolution->bindings().size(); ++i) {
+            const auto& b = result.resolution->bindings()[i];
+            if (b.kind == kind && session.names().str(b.name.sym) == name) return BindingId{i};
+        }
+        CHECK(false); return {};
+    }
+    Type value(std::string_view name) const { return result.scalar_types->binding(id(name)); }
+    const ast::CallExpr* invocation(std::string_view name) const {
+        return ast::cast<ast::CallExpr>(ast::cast<ast::VarItem>(result.resolution->binding(id(name)).item)->init);
+    }
+    const CheckedCall& call(std::string_view name) const {
+        const auto* record = result.scalar_types->call(invocation(name)); CHECK(record); return *record;
+    }
+    std::string name(Type type) const { return result.scalar_types->type_name(type, *result.resolution, session.names()); }
+};
+
+void inferred_arguments_and_literals() {
+    Frontend f;
+    f.check(R"(
+fun identity<T>(value: T): T = value
+fun same<T>(a: T, b: T): T = a
+type Values<T> = [T]
+fun head<T>(values: Values<T>): T = values[0]
+class Box<T>(let value: T) { fun echo<U>(value: U): U = value }
+let byte: Int8 = 1
+let integer = identity(1)
+let boolean = identity(true)
+let first = same(1, byte)
+let last = same(byte, 1)
+let array = identity([1, 2])
+let element = head([byte, 2])
+let empty = same([], [byte])
+let box = Box(byte)
+let method = box.echo(true)
+let rows = same([[1]], [[byte]])
+let lifted: Int8? = 1
+fun optional<T>(value: T?): T? = value
+let optionalValue = optional(lifted)
+let promoted = optional(byte)
+let optionalFirst = same(lifted, byte)
+let optionalLast = same(byte, lifted)
+open class Parent {}
+class Child: Parent {}
+let parent: Parent = Child()
+let joined = same(Child(), parent)
+let reversed = same(parent, Child())
+fun callback<T>(cb: fun(T) -> T, value: T): T = value
+let cb: fun(Int8) -> Int8
+let callbackResult = callback(cb, 1)
+fun address<T>(value: *T): *T = value
+let ptr: *Int8
+let pointer = address(ptr)
+fun labels<T, U>(first: T, second: U): T = first
+let reordered = labels(second: 1, first: true)
+)");
+    CHECK(f.value("integer") == Type::Int && f.value("boolean") == Type::Bool);
+    for (std::string_view name : {"first", "last", "element", "callbackResult"}) CHECK(f.value(name) == Type::Int8);
+    CHECK(f.name(f.value("array")) == "[Int]" && f.name(f.value("empty")) == "[Int8]");
+    CHECK(f.name(f.value("rows")) == "[[Int8]]" && f.name(f.value("box")) == "Box<Int8>");
+    CHECK(f.value("method") == Type::Bool && f.name(f.value("pointer")) == "*Int8");
+    CHECK(f.value("optionalValue") == Type{Type::Int8}.optional() && f.value("promoted") == f.value("optionalValue"));
+    CHECK(f.value("optionalFirst") == f.value("optionalValue") && f.value("optionalLast") == f.value("optionalValue"));
+    CHECK(f.name(f.value("joined")) == "Parent" && f.value("joined") == f.value("reversed"));
+    CHECK(f.value("reordered") == Type::Bool && f.call("reordered").parameters == (std::vector<usize>{1, 0}));
+    CHECK(f.call("first").type_arguments == std::vector<Type>{Type::Int8} && f.call("first").inferred_type_arguments);
+    CHECK(f.call("box").type_arguments == std::vector<Type>{Type::Int8} && f.call("box").inferred_type_arguments);
+    const auto* signature = f.result.scalar_types->signature(f.id("identity", BindingKind::Function));
+    CHECK(signature && signature->parameters == std::vector<Type>{Type::Deferred});
+}
+
+void checked_bounds_and_where() {
+    const std::string declarations = R"(
+interface Read { fun read(): Int }
+interface Flag { fun flag(): Bool }
+interface Refined: Read {}
+class Good: Refined, Flag { fun read() = 1; fun flag(): Bool = true }
+fun bounded<T: Read & Flag>(value: T): T = value
+fun constrained<T>(value: T): T where T: Read & Flag = value
+fun closed(value: Good): Good where Good: Read = value
+class Box<T: Read>(let value: T) where T: Flag { fun take<U: Read>(value: U): U = value }
+class Closed where Good: Read { fun read(): Int = 1 }
+)", calls = R"(
+let inferred = bounded(Good())
+let explicitValue = bounded<Good>(Good())
+let whereValue = constrained(Good())
+let closedValue = closed(Good())
+let box = Box(Good())
+let explicitBox = Box<Good>(Good())
+let method = box.take(Good())
+let annotation: Box<Good>
+let closedMember = Closed().read()
+)";
+    for (bool forward : {false, true}) {
+        Frontend f;
+        f.check(forward ? calls + declarations : declarations + calls);
+        for (std::string_view name : {"inferred", "explicitValue", "whereValue", "closedValue", "method"})
+            CHECK(f.name(f.value(name)) == "Good" && f.call(name).state == CallState::Resolved);
+        CHECK(f.value("box") == f.value("explicitBox") && f.value("annotation") == f.value("box"));
+        CHECK(f.value("closedMember") == Type::Int);
+        CHECK(!f.result.scalar_types->constraints().empty());
+        for (const auto& contract : f.result.scalar_types->constraints()) CHECK(contract.state == ExpansionState::Resolved);
+        const auto* retained = f.result.scalar_types->constraints().data();
+        for (int i = 0; i < 32; ++i) {
+            const auto file = f.session.sources().add("extra.phs", "let x = 1"); CHECK(file);
+            CHECK(f.session.check(*file).scalar_types);
+        }
+        CHECK(f.result.scalar_types->constraints().data() == retained);
+    }
+    Frontend abstract;
+    abstract.check("interface I { fun read(): Int }\nfun f<T: I>(value: T): T = value\nlet view: I\nlet result = f(view)");
+    CHECK(abstract.call("result").state == CallState::Resolved);
+}
+
+void overloads_and_rejected_constraints() {
+    Frontend f;
+    f.check(R"(
+interface I {}
+class Good: I {}
+fun choose(value: Int): Bool = true
+fun choose<T>(value: T): T = value
+let concrete = choose(1)
+fun exact(value: I): Bool = true
+fun exact<T>(value: T): T = value
+let generic = exact(Good())
+fun filtered<T: I>(value: T): Bool = true
+fun filtered(value: Int): Int = value
+let filteredValue = filtered(1)
+)");
+    CHECK(f.value("concrete") == Type::Bool && !f.call("concrete").inferred_type_arguments);
+    CHECK(f.name(f.value("generic")) == "Good" && f.call("generic").inferred_type_arguments);
+    CHECK(f.value("filteredValue") == Type::Int);
+    for (const auto& [source, code] : std::vector<std::pair<std::string_view, DiagCode>>{
+        {"fun same<T>(a: T, b: T): T = a\nlet byte: Int8 = 1\nlet bad = same(byte, true)", DiagCode::NoMatchingCall},
+        {"fun same<T>(a: T, b: T): T = a\nlet byte: Int8 = 1\nlet bad = same(128, byte)", DiagCode::ScalarLiteralRange},
+        {"fun identity<T>(x: T): T = x\nlet bad: Int8 = identity(1)", DiagCode::ScalarTypeMismatch},
+        {"interface I {}\nclass Bad {}\nfun f<T: I>(x: T): T = x\nlet bad = f(Bad())", DiagCode::GenericConstraint},
+        {"interface I {}\nclass Bad {}\nfun f<T>(x: T): T where T: I = x\nlet bad = f<Bad>(Bad())", DiagCode::GenericConstraint},
+        {"interface I {}\nclass Bad {}\nclass Box<T: I>(let value: T) {}\nlet bad = Box(Bad())", DiagCode::GenericConstraint},
+        {"interface I {}\nclass Bad {}\nclass Box<T: I> {}\nlet bad: Box<Bad>", DiagCode::GenericConstraint},
+        {"interface I {}\ntype Alias<T: I> = T\nlet bad: Alias<Int>", DiagCode::GenericConstraint},
+        {"fun f<T>(x: T): T where T: Int = x\nlet bad = f(1)", DiagCode::GenericConstraint}
+    }) { Frontend bad; bad.check(source, {code}); }
+    Frontend wrong;
+    wrong.check("interface I { fun f(): Int }\nclass Bad: I { fun f(): Bool = true }\nfun use<T: I>(x: T): T = x\nlet value = use(Bad())",
+                {DiagCode::MissingImplementation, DiagCode::GenericConstraint});
+    Frontend annotation;
+    annotation.check("interface I {}\nclass Bad {}\nclass Box<T: I> {}\nlet value: Box<Bad>", {DiagCode::GenericConstraint});
+    CHECK(annotation.result.scalar_types->constraints().size() == 1 &&
+          annotation.result.scalar_types->constraints().front().state == ExpansionState::Error);
+}
+
+void dependent_inference_and_constraints() {
+    Frontend f;
+    f.check(R"(
+fun make<T>(): T { loop {} }
+let missing = make()
+fun first<T>(values: [T]): T = values[0]
+let empty = first([])
+fun optional<T>(value: T?): T? = value
+let absent = optional(none)
+fun identity<T>(value: T): T = value
+extern "C" { fun stop(): Never }
+let bottom = identity(stop())
+fun copying<T: Copy>(value: T): T = value
+let builtin = copying(1)
+interface Associated { type Item }
+class Pending: Associated {}
+fun associated<T: Associated>(value: T): T = value
+let property = associated(Pending())
+class Wrapper<T>(let value: T) {}
+interface Plain {}
+fun generic<T: Plain>(value: T): T = value
+let hierarchy = generic(Wrapper(1))
+)");
+    for (std::string_view name : {"missing", "empty", "absent", "bottom", "builtin", "property", "hierarchy"})
+        CHECK(f.value(name) == Type::Deferred && f.call(name).state == CallState::Deferred);
+    for (const auto& contract : f.result.scalar_types->constraints()) CHECK(contract.state == ExpansionState::Deferred);
+}
+
+void shared_patterns_and_deep_bounds() {
+    Frontend shared;
+    std::string source;
+    for (int i = 0; i < 40; ++i) source += std::format("type F{}<T> = fun(F{}<T>) -> F{}<T>\n", i, i + 1, i + 1);
+    source += "type F40<T> = T\nfun leaf<T>(value: F0<T>): T { loop {} }\nlet value: F0<Int>\nlet result = leaf(value)";
+    shared.check(source, {}, false);
+    CHECK(shared.value("result") == Type::Int);
+    Frontend bounds;
+    source = "interface I0 { fun read(): Int }\n";
+    for (int i = 1; i < 5000; ++i) source += std::format("interface I{}: I{} {{}}\n", i, i - 1);
+    source += "class C: I4999 { fun read(): Int = 1 }\nfun accept<T: I0 & I4999>(value: T): T = value\nlet value = accept(C())";
+    bounds.check(source, {}, false);
+    CHECK(bounds.name(bounds.value("value")) == "C" && bounds.call("value").state == CallState::Resolved);
+}
+} // namespace
+
+int main() {
+    inferred_arguments_and_literals();
+    checked_bounds_and_where();
+    overloads_and_rejected_constraints();
+    dependent_inference_and_constraints();
+    shared_patterns_and_deep_bounds();
+}

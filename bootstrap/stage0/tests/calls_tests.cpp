@@ -178,7 +178,7 @@ void deferred_and_noncallable() {
     Frontend deferred;
     deferred.check(R"(
 fun f(x: Int): Int = x
-fun f<T>(x: T): T = x
+fun f<T: Copy>(x: T): T = x
 let genericCandidate = f(1)
 fun opaque<T>(): Int = 1
 fun concrete(x: Int): Int = x
@@ -192,7 +192,7 @@ class Box { static fun make(): Int = 1 }
 let member = Box.make()
 let conversion = Int64(1)
 interface Marker {}
-fun constrained(value: Int): Int where Int: Marker = value
+fun constrained(value: Int): Int where Int: Copy = value
 let constraint = constrained(1)
 )");
     for (std::string_view name : {"genericCandidate", "unknownArgument", "indirect", "constraint"}) {

@@ -313,7 +313,7 @@ void inapplicable_generic_member_overloads() {
         rejected.check(std::string(declarations) + "let bad = C().f(true)", {DiagCode::NoMatchingCall});
     }
     Frontend pending;
-    pending.check("class C { fun f(x: Int): Int = x; fun f<T>(x: T): T = x }\nlet value = C().f(1)");
+    pending.check("class C { fun f(x: Int): Int = x; fun f<T: Copy>(x: T): T = x }\nlet value = C().f(1)");
     CHECK(pending.value("value") == Type::Deferred && pending.call("value").state == CallState::Deferred);
     Frontend missing;
     missing.check("interface I { fun f(x: Int): Int }\nclass C: I { fun f<T>(x: T, y: T): T = x }", {DiagCode::MissingImplementation});

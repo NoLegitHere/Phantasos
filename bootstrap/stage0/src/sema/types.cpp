@@ -155,19 +155,20 @@ public:
             result.aliases_ = std::move(aliases_);
             return result;
         }
-        normalize_aliases();
         // Binding nodes have the same indices as the resolver's BindingIds.
         for (usize i = 0; i < resolution_.bindings().size(); ++i) {
             const auto& b = resolution_.bindings()[i];
+            if (b.kind == BindingKind::GenericParameter) generic_bindings_[b.name.span.lo] = BindingId{i};
             if (b.members.valid()) member_owners_.emplace(b.members.value, BindingId{i});
             if (resolution_.scopes()[b.scope.value].kind == ScopeKind::Members &&
                 b.kind != BindingKind::Type && b.kind != BindingKind::TypeAlias)
                 member_values_[b.scope.value][b.name.sym.id].push_back(BindingId{i});
         }
+        normalize_aliases();
         build_hierarchies();
         hierarchy_ready_ = true;
         complete_hierarchy_types();
-        std::erase_if(annotations_, [](const auto& entry) { return entry.second == Type::Deferred; });
+        clear_deferred_annotations();
         nodes_.resize(resolution_.bindings().size());
         for (usize i = 0; i < resolution_.bindings().size(); ++i) {
             const auto& b = resolution_.bindings()[i];
@@ -231,6 +232,13 @@ public:
                         node.call_prepared = true;
                         node.value = prepare_call(*call);
                         const auto& record = calls_.at(call);
+                        if (record.state == CallState::Deferred && !default_dependencies_.empty()) {
+                            // Resume only after the consulted declaration defaults
+                            // have available facts. Active cycles remain deferred.
+                            node.deps.insert(node.deps.end(), default_dependencies_.begin(), default_dependencies_.end());
+                            node.call_prepared = false;
+                            continue;
+                        }
                         if (record.state == CallState::Resolved && (record.kind == CallKind::Function || record.kind == CallKind::Method)) {
                             node.deps.push_back(function_nodes_.at(record.target.value));
                             continue;
@@ -309,6 +317,10 @@ private:
             }
             if (source.optional_depth > target.optional_depth) return Relation::No;
             if (source.kind == Type::Nominal && target.kind == Type::Nominal) {
+                const auto* a = types_.descriptor(source);
+                const auto* b = types_.descriptor(target);
+                if (a->declaration == b->declaration) return Relation::No; // different invariant arguments
+                if (!a->arguments.empty() || !b->arguments.empty()) { result = Relation::Deferred; continue; }
                 const auto match = ancestry(types_.descriptor(source)->declaration, types_.descriptor(target)->declaration);
                 if (match == Relation::No) return Relation::No;
                 if (match == Relation::Deferred) result = Relation::Deferred;
@@ -349,63 +361,188 @@ private:
         return types_.intern({.kind = Type::Nominal, .declaration = id});
     }
 
-    Type annotation(const TypeExpr* type) {
+    List<GenericParam> generic_parameters(BindingId id) const {
+        const auto* item = resolution_.binding(id).item;
+        if (const auto* type = as_type_decl(item)) return type->generics;
+        if (const auto* fun = as<FunItem>(item)) return fun->sig.generics;
+        if (const auto* alias = as<TypeAliasItem>(item)) return alias->generics;
+        return {};
+    }
+    bool constrained(BindingId id) const {
+        for (const auto& param : generic_parameters(id)) if (!param.bounds.empty()) return true;
+        const auto* item = resolution_.binding(id).item;
+        if (const auto* type = as_type_decl(item)) return !type->where.empty();
+        if (const auto* fun = as<FunItem>(item)) return !fun->sig.where.empty();
+        return false;
+    }
+    struct Environment {
+        BindingId declaration;
+        std::vector<Type> arguments;
+        usize parent = 0;
+    };
+    Type substituted(BindingId parameter, usize context) const {
+        while (context) {
+            const auto& env = environments_[context];
+            const auto params = generic_parameters(env.declaration);
+            for (usize p = 0; p < params.size(); ++p)
+                if (generic_bindings_.at(params[p].name.span.lo) == parameter) return env.arguments[p];
+            context = env.parent;
+        }
+        return Type::Deferred;
+    }
+    struct Application { ExpansionState state = ExpansionState::Deferred; usize context = 0; };
+    Application application(BindingId id, std::vector<Type> args, usize parent, Span span) {
+        if (args.size() != generic_parameters(id).size()) {
+            if (reported_applications_.insert(span.lo).second)
+                diag_.error(DiagCode::GenericArguments, span, "type argument count does not match '{}'", names_.str(resolution_.binding(id).name.sym));
+            return {ExpansionState::Error};
+        }
+        for (auto arg : args) if (arg == Type::Error) return {ExpansionState::Error};
+        for (auto arg : args) if (!known(arg)) return {};
+        if (resolution_.scopes()[resolution_.binding(id).scope.value].kind == ScopeKind::File) parent = 0;
+        if (args.empty()) return {ExpansionState::Resolved, parent};
+        const TypeDescriptor key{.kind = Type::Nominal, .declaration = id, .arguments = args};
+        auto& cache = environment_ids_[parent];
+        if (const auto it = cache.find(key); it != cache.end()) return {ExpansionState::Resolved, it->second};
+        const auto context = environments_.size();
+        cache.emplace(key, context);
+        environments_.push_back({id, std::move(args), parent});
+        substituted_annotations_.emplace_back();
+        return {ExpansionState::Resolved, context};
+    }
+    bool associated_alias(BindingId id) const {
+        const auto owner = member_owner(id);
+        return owner.valid() && resolution_.binding(owner).item->kind == ItemKind::Interface;
+    }
+    Type instance(BindingId id, usize context) {
+        const auto params = generic_parameters(id);
+        if (params.empty()) return nominal(id);
+        // Captured nominal owners need an enclosing-instance identity as well.
+        for (auto scope = resolution_.binding(id).scope; scope.valid(); scope = resolution_.scopes()[scope.value].parent)
+            if (resolution_.scopes()[scope.value].kind == ScopeKind::Generics && !resolution_.scopes()[scope.value].bindings.empty()) return Type::Deferred;
+        std::vector<Type> args;
+        for (const auto& param : params) {
+            const auto type = substituted(generic_bindings_.at(param.name.span.lo), context);
+            if (!known(type)) return type;
+            args.push_back(type);
+        }
+        return types_.intern({.kind = Type::Nominal, .declaration = id, .arguments = std::move(args)});
+    }
+
+    Type annotation(const TypeExpr* type, usize context = 0) {
         if (!type) return Type::Deferred;
-        if (const auto it = annotations_.find(type); it != annotations_.end()) return it->second;
-        struct Frame { const TypeExpr* syntax; bool ready = false; const TypeExpr* redirect = nullptr; };
-        std::vector<Frame> work{{type}};
-        std::unordered_map<const TypeExpr*, bool> active;
-        const auto cached = [&](const TypeExpr* t) -> Type {
-            if (!t) return Type::Unit;
-            const auto it = annotations_.find(t);
-            return it == annotations_.end() ? Type{} : it->second;
+        const auto cache = [&](usize env) -> auto& { return env ? substituted_annotations_[env] : annotations_; };
+        const auto cached = [&](const TypeExpr* syntax, usize env) -> Type {
+            if (!syntax) return Type::Unit;
+            const auto it = cache(env).find(syntax);
+            return it == cache(env).end() ? Type{} : it->second;
         };
+        struct Frame {
+            const TypeExpr* syntax;
+            usize context;
+            bool ready = false;
+            const TypeExpr* redirect = nullptr;
+            usize redirect_context = 0;
+            BindingId alias;
+        };
+        std::vector<Frame> work{{type, context}};
+        std::unordered_set<usize> active_aliases;
         while (!work.empty()) {
             auto& frame = work.back();
             const auto* syntax = frame.syntax;
-            if (annotations_.contains(syntax)) { work.pop_back(); continue; }
+            const auto env = frame.context;
+            if (cache(env).contains(syntax)) {
+                if (frame.alias.valid()) active_aliases.erase(frame.alias.value);
+                work.pop_back(); continue;
+            }
             if (!frame.ready) {
                 frame.ready = true;
-                active[syntax] = true;
-                if (syntax->kind == TypeKind::Path || syntax->kind == TypeKind::Unit || syntax->kind == TypeKind::SelfType) {
-                    auto expanded = aliases_.type(syntax, resolution_);
-                    if (hierarchy_ready_ && expanded.type.state == ExpansionState::Deferred && syntax->kind == TypeKind::Path && syntax->args.empty())
-                        expanded.type = inherited_type(syntax);
-                    if (!expanded.unknown_member.sym.empty())
-                        diag_.error(DiagCode::UnknownType, expanded.unknown_member.span, "unknown type '{}' in '{}'",
-                                    names_.str(expanded.unknown_member.sym), names_.str(resolution_.binding(expanded.member_owner).name.sym));
-                    Type value = expanded.type.scalar;
-                    if (!known(value) && expanded.type.state == ExpansionState::Resolved && expanded.type.target.valid()) {
-                        value = nominal(expanded.type.target);
-                        if (known(value)) value.optional_depth = expanded.type.optional_depth;
-                    }
-                    if (known(value) || value == Type::Error) { annotations_[syntax] = value; continue; }
-                    if (expanded.type.syntax && expanded.type.syntax != syntax) {
-                        frame.redirect = expanded.type.syntax;
-                        if (!annotations_.contains(frame.redirect) && active.contains(frame.redirect)) {
-                            diag_.error(DiagCode::AliasCycle, syntax->span, "cyclic type alias expansion through inherited lookup");
-                            for (const auto& entry : work) annotations_[entry.syntax] = Type::Error;
-                        } else if (!active.contains(frame.redirect)) work.push_back({frame.redirect});
-                    } else annotations_[syntax] = Type::Deferred;
-                    continue;
-                }
-                std::vector<const TypeExpr*> children;
-                if (syntax->inner) children.push_back(syntax->inner);
-                if (syntax->throws_type) children.push_back(syntax->throws_type);
-                for (auto* child : syntax->args) children.push_back(child);
-                for (auto* child : children)
-                    if (!annotations_.contains(child) && !active.contains(child)) work.push_back({child});
+                if (syntax->inner) work.push_back({syntax->inner, env});
+                if (syntax->throws_type) work.push_back({syntax->throws_type, env});
+                for (auto* arg : syntax->args) work.push_back({arg, env});
                 continue;
             }
             Type value;
-            if (frame.redirect) value = cached(frame.redirect);
-            else if (syntax->kind == TypeKind::Optional) value = cached(syntax->inner).optional();
+            if (frame.redirect) value = cached(frame.redirect, frame.redirect_context);
+            else if (syntax->kind == TypeKind::Path || syntax->kind == TypeKind::Unit || syntax->kind == TypeKind::SelfType) {
+                BindingId id;
+                const auto* ref = syntax->kind == TypeKind::Path && !syntax->path.parts.empty()
+                    ? resolution_.reference(syntax->path.parts.back().span) : resolution_.reference(syntax->span);
+                if (ref && ref->state == ResolutionState::Resolved) {
+                    const auto ids = resolution_.candidates(ref->target);
+                    if (ids.size() == 1) id = ids.front();
+                }
+                if (!id.valid() && syntax->kind == TypeKind::Path && !syntax->args.empty()) {
+                    const auto qualified = inherited_type(syntax, &id);
+                    if (qualified.state == ExpansionState::Error) { cache(env)[syntax] = Type::Error; continue; }
+                }
+                if (id.valid() && resolution_.binding(id).kind == BindingKind::GenericParameter) {
+                    if (!syntax->args.empty()) {
+                        (void)application(id, std::vector<Type>(syntax->args.size()), env, syntax->span);
+                        cache(env)[syntax] = Type::Error;
+                    } else cache(env)[syntax] = substituted(id, env);
+                    continue;
+                }
+                const auto kind = id.valid() ? resolution_.binding(id).kind : BindingKind::Import;
+                if (id.valid() && (kind == BindingKind::Type || kind == BindingKind::TypeAlias || kind == BindingKind::BuiltinType) &&
+                    (!syntax->args.empty() || env)) {
+                    std::vector<Type> args;
+                    for (auto* arg : syntax->args) args.push_back(cached(arg, env));
+                    if (syntax->args.empty() && !generic_parameters(id).empty()) {
+                        cache(env)[syntax] = syntax->kind == TypeKind::SelfType ? instance(id, env) : Type{};
+                        continue;
+                    }
+                    const auto applied = application(id, std::move(args), env, syntax->span);
+                    if (applied.state != ExpansionState::Resolved) {
+                        cache(env)[syntax] = applied.state == ExpansionState::Error ? Type::Error : Type::Deferred; continue;
+                    }
+                    if (kind != BindingKind::TypeAlias) {
+                        cache(env)[syntax] = kind == BindingKind::BuiltinType ? aliases_.binding(id, resolution_).type.scalar : instance(id, applied.context);
+                        continue;
+                    }
+                    const auto* alias = cast<TypeAliasItem>(resolution_.binding(id).item);
+                    if (!alias->type || associated_alias(id) || constrained(id)) { cache(env)[syntax] = Type::Deferred; continue; }
+                    if (!active_aliases.insert(id.value).second) {
+                        diag_.error(DiagCode::AliasCycle, syntax->span, "cyclic generic type alias expansion");
+                        for (const auto& entry : work) cache(entry.context)[entry.syntax] = Type::Error;
+                        continue;
+                    }
+                    frame.alias = id;
+                    frame.redirect = alias->type;
+                    frame.redirect_context = applied.context;
+                    work.push_back({alias->type, applied.context});
+                    continue;
+                }
+                auto expanded = aliases_.type(syntax, resolution_);
+                if (hierarchy_ready_ && expanded.type.state == ExpansionState::Deferred && syntax->kind == TypeKind::Path && syntax->args.empty())
+                    expanded.type = inherited_type(syntax);
+                if (!expanded.unknown_member.sym.empty())
+                    diag_.error(DiagCode::UnknownType, expanded.unknown_member.span, "unknown type '{}' in '{}'",
+                                names_.str(expanded.unknown_member.sym), names_.str(resolution_.binding(expanded.member_owner).name.sym));
+                value = expanded.type.scalar;
+                if (!known(value) && expanded.type.state == ExpansionState::Resolved && expanded.type.target.valid()) {
+                    value = nominal(expanded.type.target);
+                    if (known(value)) value.optional_depth = expanded.type.optional_depth;
+                }
+                if (!known(value) && value != Type::Error && expanded.type.syntax && expanded.type.syntax != syntax) {
+                    frame.redirect = expanded.type.syntax;
+                    frame.redirect_context = env;
+                    const bool active = std::ranges::any_of(work, [&](const Frame& entry) {
+                        return entry.syntax == frame.redirect && entry.context == env;
+                    });
+                    if (active) {
+                        diag_.error(DiagCode::AliasCycle, syntax->span, "cyclic type alias expansion through inherited lookup");
+                        for (const auto& entry : work) cache(entry.context)[entry.syntax] = Type::Error;
+                    } else work.push_back({frame.redirect, env});
+                    continue;
+                }
+            } else if (syntax->kind == TypeKind::Optional) value = cached(syntax->inner, env).optional();
             else if (syntax->kind == TypeKind::Fun) {
-                TypeDescriptor descriptor{.kind = Type::Function, .result = cached(syntax->inner), .throws = syntax->throws};
+                TypeDescriptor descriptor{.kind = Type::Function, .result = cached(syntax->inner, env), .throws = syntax->throws};
                 bool complete = known(descriptor.result);
-                for (auto* param : syntax->args) { descriptor.parameters.push_back(cached(param)); complete &= known(cached(param)); }
+                for (auto* param : syntax->args) { descriptor.parameters.push_back(cached(param, env)); complete &= known(cached(param, env)); }
                 if (syntax->throws) {
-                    if (syntax->throws_type) descriptor.error = cached(syntax->throws_type);
+                    if (syntax->throws_type) descriptor.error = cached(syntax->throws_type, env);
                     else for (usize i = 0; i < resolution_.bindings().size(); ++i) {
                         const auto& b = resolution_.bindings()[i];
                         if (b.kind == BindingKind::BuiltinType && names_.str(b.name.sym) == "Error") descriptor.error = nominal(BindingId{i});
@@ -413,20 +550,24 @@ private:
                     complete &= known(descriptor.error);
                 }
                 if (complete) value = types_.intern(std::move(descriptor));
-            } else if (known(cached(syntax->inner))) {
+            } else if (known(cached(syntax->inner, env))) {
                 Type::Kind kind;
                 switch (syntax->kind) {
                     case TypeKind::Array: kind = Type::Array; break;
                     case TypeKind::Pointer: kind = Type::Pointer; break;
                     case TypeKind::Shared: kind = Type::Shared; break;
                     case TypeKind::Weak: kind = Type::Weak; break;
-                    default: annotations_[syntax] = Type::Deferred; continue;
+                    default: cache(env)[syntax] = Type::Deferred; continue;
                 }
-                value = types_.intern({.kind = kind, .element = cached(syntax->inner), .mutable_pointer = syntax->is_mut});
+                value = types_.intern({.kind = kind, .element = cached(syntax->inner, env), .mutable_pointer = syntax->is_mut});
             }
-            annotations_[syntax] = value;
+            // Errors in nested applications are already diagnosed; retain them.
+            if (syntax->inner && cached(syntax->inner, env) == Type::Error) value = Type::Error;
+            if (syntax->throws_type && cached(syntax->throws_type, env) == Type::Error) value = Type::Error;
+            for (auto* arg : syntax->args) if (cached(arg, env) == Type::Error) value = Type::Error;
+            cache(env)[syntax] = value;
         }
-        return annotations_.at(type);
+        return cached(type, context);
     }
 
     ExpandedType entity(const Expr* expr) const {
@@ -434,7 +575,22 @@ private:
         return it == entities_.end() ? ExpandedType{} : it->second;
     }
 
-    void entity(const Expr* expr, BindingId id) {
+    ExpandedType type_entity(Type type) const {
+        if (!known(type)) return {};
+        BindingId target;
+        if (type.kind == Type::Nominal) target = types_.descriptor(type)->declaration;
+        else for (const auto& [builtin, scalar] : aliases_.builtins_) if (scalar == type.scalar()) { target = BindingId{builtin}; break; }
+        return {ExpansionState::Resolved, target, type, type.optional_depth};
+    }
+
+    void entity(const Expr* expr, BindingId id, usize context = 0) {
+        if (context && resolution_.binding(id).kind == BindingKind::TypeAlias) {
+            const auto* alias = cast<TypeAliasItem>(resolution_.binding(id).item);
+            entities_.erase(expr);
+            if (alias->type && alias->generics.empty() && !associated_alias(id) && !constrained(id))
+                entities_[expr] = type_entity(annotation(alias->type, context));
+            return;
+        }
         const auto type = aliases_.binding(id, resolution_).type;
         if (type.state == ExpansionState::Resolved) entities_[expr] = type;
     }
@@ -454,6 +610,12 @@ private:
         }
     }
 
+    void clear_deferred_annotations() {
+        const auto deferred = [](const auto& entry) { return entry.second == Type::Deferred; };
+        std::erase_if(annotations_, deferred);
+        for (auto& cache : substituted_annotations_) std::erase_if(cache, deferred);
+    }
+
     void complete_hierarchy_types() {
         const auto progress = [&]() {
             std::pair<usize, usize> counts{};
@@ -465,9 +627,9 @@ private:
         };
         for (;;) {
             const auto before = progress();
-            std::erase_if(annotations_, [](const auto& entry) { return entry.second == Type::Deferred; });
+            clear_deferred_annotations();
             normalize_aliases();
-            std::erase_if(annotations_, [](const auto& entry) { return entry.second == Type::Deferred; });
+            clear_deferred_annotations();
             // Normalize every base against the previous complete graph before
             // rebuilding, so forward declarations cannot change lookup order.
             for (const auto& b : resolution_.bindings()) if (b.kind == BindingKind::Type)
@@ -895,7 +1057,7 @@ private:
         }
         return {};
     }
-    ExpandedType inherited_type(const TypeExpr* syntax) {
+    ExpandedType inherited_type(const TypeExpr* syntax, BindingId* declaration = nullptr) {
         ExpandedType current;
         for (usize p = 0; p < syntax->path.parts.size(); ++p) {
             if (p && current.optional_depth) return {};
@@ -908,11 +1070,14 @@ private:
             } else {
                 const auto owner = p == 0 && reference ? enclosing_owner(reference->scope) : current.target;
                 if (!owner.valid() || !resolution_.binding(owner).members.valid() || !known(nominal(owner))) return {};
-                auto found = *lookup_member(owner, name.sym, true);
-                if (p == 0 && found.state == ExpansionState::Resolved && found.ids.empty()) found = outer_lookup(owner, name.sym, true);
+                MemberLookup found;
+                if (hierarchy_ready_) found = *lookup_member(owner, name.sym, true);
+                else found.ids = direct_members(owner, name.sym, true);
+                if (hierarchy_ready_ && p == 0 && found.state == ExpansionState::Resolved && found.ids.empty()) found = outer_lookup(owner, name.sym, true);
                 if (found.state != ExpansionState::Resolved) return {found.state, {}, found.state == ExpansionState::Error ? Type{Type::Error} : Type{}};
                 ids = std::move(found.ids);
                 if (ids.empty()) {
+                    if (!hierarchy_ready_) return {}; // inherited candidates may become available later
                     diag_.error(DiagCode::UnknownType, name.span, "unknown inherited type '{}'", names_.str(name.sym));
                     return {ExpansionState::Error, {}, Type::Error};
                 }
@@ -922,6 +1087,7 @@ private:
                 }
             }
             if (ids.size() != 1) return {};
+            if (declaration && p + 1 == syntax->path.parts.size()) *declaration = ids.front();
             current = aliases_.binding(ids.front(), resolution_).type;
             if (current.state == ExpansionState::Deferred && current.syntax == syntax) {
                 diag_.error(DiagCode::AliasCycle, syntax->span, "cyclic type alias expansion through inherited lookup");
@@ -959,15 +1125,26 @@ private:
             const auto type = entity(member->base);
             if (base.type == Type::Error) record.state = ResolutionState::Unresolved;
             else if (type.state == ExpansionState::Resolved && type.target.valid() && !type.optional_depth &&
-                     resolution_.binding(type.target).kind == BindingKind::Type && known(nominal(type.target))) {
+                     resolution_.binding(type.target).kind == BindingKind::Type && (known(type.scalar) || known(nominal(type.target)))) {
                 record.owner = type.target;
                 record.type_receiver = true;
             } else if (base.type.kind == Type::Nominal && !base.type.optional_depth)
                 record.owner = types_.descriptor(base.type)->declaration;
+            if (base.type.kind == Type::Nominal && !base.type.optional_depth) record.receiver_type = base.type;
+            else if (record.type_receiver) record.receiver_type = type.scalar;
             if (!record.owner.valid()) { members_[expr] = std::move(record); return std::nullopt; }
             if (!resolution_.binding(record.owner).members.valid()) { members_[expr] = std::move(record); return std::nullopt; }
         }
         auto found = *lookup_member(record.owner, name.sym);
+        if (record.receiver_type.kind == Type::Nominal && !types_.descriptor(record.receiver_type)->arguments.empty()) {
+            const auto* owner = cast_type_decl(resolution_.binding(record.owner).item);
+            if (owner->supers.empty()) {
+                found.state = ExpansionState::Resolved;
+                found.ids = direct_members(record.owner, name.sym, false);
+                const auto args = types_.descriptor(record.receiver_type)->arguments;
+                reference_contexts_[expr] = application(record.owner, args, 0, expr->span).context;
+            }
+        }
         if (name_expr && found.state == ExpansionState::Resolved && found.ids.empty()) {
             found = outer_lookup(record.owner, name.sym);
             if (!found.ids.empty()) record.owner = member_owner(found.ids.front());
@@ -1005,7 +1182,7 @@ private:
         std::optional<BindingId> field;
         if (record.candidates.size() == 1) {
             const auto id = record.candidates.front();
-            entity(expr, id);
+            entity(expr, id, reference_contexts_.contains(expr) ? reference_contexts_.at(expr) : 0);
             if (value_binding(id)) field = id;
         }
         members_[expr] = std::move(record);
@@ -1013,7 +1190,11 @@ private:
     }
 
     std::span<const BindingId> callees(const Expr* expr) const {
-        while (const auto* paren = as<ParenExpr>(expr)) expr = paren->inner;
+        for (;;) {
+            if (const auto* paren = as<ParenExpr>(expr)) expr = paren->inner;
+            else if (const auto* generic = as<GenericInstExpr>(expr)) expr = generic->base;
+            else break;
+        }
         if (const auto it = members_.find(expr); it != members_.end())
             return it->second.state == ResolutionState::Resolved ? std::span<const BindingId>(it->second.candidates) : std::span<const BindingId>{};
         const auto* name = as<NameExpr>(expr);
@@ -1488,6 +1669,20 @@ private:
         return true;
     }
 
+    bool defaults_known(List<Param> params, std::span<const usize> supplied, std::span<const Type> types) {
+        bool complete = true;
+        for (usize p = 0; p < params.size(); ++p) {
+            const auto* argument = params[p].default_value;
+            if (!argument || std::ranges::find(supplied, p) != supplied.end()) continue;
+            if (!known(annotation(params[p].type))) { complete = false; continue; }
+            const auto index = expressions_.at(argument);
+            if (nodes_[index].state == 0) default_dependencies_.push_back(index);
+            const auto fact = probe(index, types[p]);
+            complete &= fact.matches && !fact.deferred && fact.fits;
+        }
+        return complete;
+    }
+
     void candidate_notes(Diagnostic& d, std::span<const BindingId> candidates) const {
         for (BindingId id : candidates) {
             const auto& b = resolution_.binding(id);
@@ -1589,8 +1784,13 @@ private:
         auto& record = calls_[&expr];
         record.kind = CallKind::NominalConstructor;
         record.target = type.target;
-        const Type result = nominal(type.target);
+        const Type result = known(type.scalar) ? type.scalar : nominal(type.target);
         if (!known(result)) return Value{};
+        usize context = 0;
+        if (!types_.descriptor(result)->arguments.empty()) {
+            const auto args = types_.descriptor(result)->arguments;
+            context = application(type.target, args, 0, expr.span).context;
+        }
         if (item->kind == ItemKind::Interface || has_modifier(item->mods, Modifier::Abstract)) {
             diag_.error(DiagCode::NotConstructible, expr.span, "type '{}' cannot be constructed directly", scalar_type_name(result));
             record.state = CallState::Error;
@@ -1603,9 +1803,11 @@ private:
         std::vector<Type> parameters;
         for (usize p = 0; p < item->ctor_params.size(); ++p) {
             labels.emplace(item->ctor_params[p].name.sym.id, p);
-            parameters.push_back(annotation(item->ctor_params[p].type));
+            parameters.push_back(annotation(item->ctor_params[p].type, context));
         }
-        bool matches = argument_mapping(expr, item->ctor_params, labels, record.parameters), deferred = !item->where.empty(), fits = true;
+        bool matches = argument_mapping(expr, item->ctor_params, labels, record.parameters), deferred = constrained(type.target), fits = true;
+        for (const auto& param : item->ctor_params) deferred |= param.conv != Convention::Default;
+        if (matches && context) deferred |= !defaults_known(item->ctor_params, record.parameters, parameters);
         for (const auto& arg : expr.args) if (value(arg.value).type == Type::Error) {
             record.state = CallState::Error; return Value{Type::Error};
         }
@@ -1621,6 +1823,7 @@ private:
         }
         if (deferred && fits) return Value{};
         record.state = CallState::Resolved;
+        record.parameter_types = parameters;
         for (usize a = 0; a < expr.args.size(); ++a)
             if (require(expr.args[a].value, parameters[record.parameters[a]], expr.args[a].value->span).type == Type::Error)
                 record.state = CallState::Error;
@@ -1656,6 +1859,8 @@ private:
     }
 
     Value prepare_call(const CallExpr& expr) {
+        default_dependencies_.clear();
+        calls_[&expr] = {}; // a deferred application may resume after default dependencies
         if (auto conversion = prepare_conversion(expr)) return *conversion;
         if (auto constructor = prepare_constructor(expr)) return *constructor;
         auto& record = calls_[&expr];
@@ -1666,6 +1871,13 @@ private:
         }
         const Expr* receiver = expr.callee;
         while (const auto* paren = as<ParenExpr>(receiver)) receiver = paren->inner;
+        const auto* generic = as<GenericInstExpr>(receiver);
+        std::vector<Type> type_arguments;
+        if (generic) {
+            for (auto* arg : generic->args) type_arguments.push_back(annotation(arg));
+            receiver = generic->base;
+            while (const auto* paren = as<ParenExpr>(receiver)) receiver = paren->inner;
+        }
         if (receiver->kind == ExprKind::Super) {
             record.kind = CallKind::NominalConstructor;
             if (callee.type.kind == Type::Nominal) record.target = types_.descriptor(callee.type)->declaration;
@@ -1686,9 +1898,7 @@ private:
             if (b.kind != BindingKind::Function) return {};
             if (resolution_.scopes()[b.scope.value].kind == ScopeKind::Members) {
                 record.kind = CallKind::Method;
-                const Expr* callee_expr = expr.callee;
-                while (const auto* paren = as<ParenExpr>(callee_expr)) callee_expr = paren->inner;
-                if (const auto* member = as<MemberExpr>(callee_expr); member && !members_.at(member).type_receiver)
+                if (const auto* member = as<MemberExpr>(receiver); member && !members_.at(member).type_receiver)
                     record.receiver = member->base;
             } else if (resolution_.scopes()[b.scope.value].kind != ScopeKind::File) return {};
         }
@@ -1698,20 +1908,40 @@ private:
             usize score = 0;
             usize lifts = 0;
             bool deferred = false;
+            usize context = 0;
+            std::vector<Type> types;
         };
         std::vector<Match> matches, out_of_range;
+        bool generic_arity = !generic;
         for (BindingId id : candidates) {
             const auto* fun = cast<FunItem>(resolution_.binding(id).item);
             const auto& signature = signatures_.at(id.value);
-            Match match{.id = id, .deferred = signature.generic || !fun->sig.where.empty() ||
-                        (member_owner(id).valid() && !method_inputs_known(id))};
+            if (generic && fun->sig.generics.size() != type_arguments.size()) continue;
+            generic_arity = true;
+            usize context = reference_contexts_.contains(receiver) ? reference_contexts_.at(receiver) : 0;
+            bool pending = signature.generic && !generic;
+            if (generic) {
+                const auto applied = application(id, type_arguments, context, generic->span);
+                if (applied.state == ExpansionState::Error) { record.state = CallState::Error; return {Type::Error}; }
+                pending |= applied.state != ExpansionState::Resolved;
+                context = applied.context;
+            }
+            Match match{.id = id, .deferred = pending || constrained(id), .context = context};
             if (!argument_mapping(expr, fun->sig.params, parameter_indices_.at(fun), match.parameters)) continue;
+            const auto owner = member_owner(id);
+            if (owner.valid()) match.deferred |= constrained(owner);
+            for (const auto& param : fun->sig.params) {
+                match.types.push_back(context ? annotation(param.type, context) : annotation(param.type));
+                match.deferred |= (owner.valid() || signature.generic) && param.conv != Convention::Default;
+            }
+            if (interface_owner(id) && !method_inputs_known(id)) match.deferred = true;
+            if (context) match.deferred |= !defaults_known(fun->sig.params, match.parameters, match.types);
             bool compatible_args = true, fits = true;
             for (usize a = 0; a < expr.args.size(); ++a) {
                 if (interface_owner(id) && contains_self_type(fun->sig.params[match.parameters[a]].type)) {
                     match.deferred = true; continue; // receiver Self substitution is still pending
                 }
-                const Type expected = signature.parameters[match.parameters[a]];
+                const Type expected = match.types[match.parameters[a]];
                 const auto p = probe(expressions_.at(expr.args[a].value), expected);
                 match.deferred |= p.deferred;
                 match.score += p.score; match.lifts += p.lifts;
@@ -1720,6 +1950,10 @@ private:
             if (!compatible_args) continue;
             if (fits) matches.push_back(std::move(match));
             else out_of_range.push_back(std::move(match));
+        }
+        if (!generic_arity) {
+            diag_.error(DiagCode::GenericArguments, generic->span, "type argument count does not match any callable signature");
+            record.state = CallState::Error; return {Type::Error};
         }
         if (matches.empty() && out_of_range.size() != 1) {
             auto& d = diag_.error(DiagCode::NoMatchingCall, expr.span, "arguments do not match any callable signature");
@@ -1748,8 +1982,8 @@ private:
                     if (candidate == other) continue;
                     bool strict = false;
                     for (usize a = 0; a < expr.args.size(); ++a) {
-                        const auto from = signatures_.at(candidate->id.value).parameters[candidate->parameters[a]];
-                        const auto to = signatures_.at(other->id.value).parameters[other->parameters[a]];
+                        const auto from = candidate->types[candidate->parameters[a]];
+                        const auto to = other->types[other->parameters[a]];
                         if (from == to) continue;
                         strict = true;
                         if (relation(from, to) != Relation::Yes) { dominates = false; break; }
@@ -1770,9 +2004,11 @@ private:
         record.target = selected->id;
         record.parameters = std::move(selected->parameters);
         record.state = CallState::Resolved;
-        const auto& signature = signatures_.at(selected->id.value);
+        call_contexts_[&expr] = selected->context;
+        record.type_arguments = type_arguments;
+        record.parameter_types = selected->types;
         for (usize a = 0; a < expr.args.size(); ++a) {
-            if (require(expr.args[a].value, signature.parameters[record.parameters[a]], expr.args[a].value->span).type == Type::Error)
+            if (require(expr.args[a].value, selected->types[record.parameters[a]], expr.args[a].value->span).type == Type::Error)
                 record.state = CallState::Error;
         }
         if (record.state == CallState::Error) return {Type::Error};
@@ -1887,7 +2123,45 @@ private:
                     if (record.state == ResolutionState::Unresolved) node.value = {Type::Error};
                     else if (record.state == ResolutionState::Resolved && record.candidates.size() == 1 && value_binding(record.candidates.front()))
                         node.value = nodes_[record.candidates.front().value].value;
+                    if (record.state == ResolutionState::Resolved && record.candidates.size() == 1 && reference_contexts_.contains(expr)) {
+                        const auto& field = nodes_[record.candidates.front().value];
+                        if (value_binding(record.candidates.front()) && field.annotation)
+                            node.value = {annotation(field.annotation, reference_contexts_.at(expr))};
+                    }
                 } else if (expr->kind == ExprKind::Name && !node.deps.empty()) node.value = nodes_[node.deps.front()].value;
+                break;
+            }
+            case ExprKind::GenericInst: {
+                const auto* generic = cast<GenericInstExpr>(expr);
+                if (value(generic->base).type == Type::Error) { node.value = {Type::Error}; break; }
+                std::vector<Type> args;
+                for (auto* arg : generic->args) args.push_back(annotation(arg));
+                if (std::ranges::find(args, Type{Type::Error}) != args.end()) { node.value = {Type::Error}; break; }
+                const auto ids = callees(generic->base);
+                if (ids.size() == 1) {
+                    const auto id = ids.front();
+                    const auto kind = resolution_.binding(id).kind;
+                    if (kind == BindingKind::Type || kind == BindingKind::TypeAlias || kind == BindingKind::BuiltinType) {
+                        const Expr* base = generic->base;
+                        while (const auto* paren = as<ParenExpr>(base)) base = paren->inner;
+                        const auto context = reference_contexts_.contains(base) ? reference_contexts_.at(base) : 0;
+                        const auto applied = application(id, std::move(args), context, expr->span);
+                        if (applied.state == ExpansionState::Error) { node.value = {Type::Error}; break; }
+                        if (applied.state != ExpansionState::Resolved) break;
+                        Type result;
+                        if (kind == BindingKind::TypeAlias) {
+                            const auto* alias = cast<TypeAliasItem>(resolution_.binding(id).item);
+                            if (alias->type && !associated_alias(id) && !constrained(id)) result = annotation(alias->type, applied.context);
+                        } else result = instance(id, applied.context);
+                        if (result == Type::Error) { node.value = {Type::Error}; break; }
+                        if (known(result)) entities_[expr] = type_entity(result);
+                        break;
+                    }
+                }
+                if ((!ids.empty() && resolution_.binding(ids.front()).kind != BindingKind::Function) || known(value(generic->base).type)) {
+                    diag_.error(DiagCode::GenericArguments, expr->span, "type arguments require a generic declaration");
+                    node.value = {Type::Error};
+                }
                 break;
             }
             case ExprKind::SelfType: {
@@ -1915,6 +2189,9 @@ private:
                 auto& record = calls_.at(cast<CallExpr>(expr));
                 PHS_ASSERT(node.call_prepared && record.state == CallState::Resolved);
                 node.value = nodes_[function_nodes_.at(record.target.value)].value;
+                const auto context = call_contexts_.at(cast<CallExpr>(expr));
+                const auto* fun = cast<FunItem>(resolution_.binding(record.target).item);
+                if (context && fun->sig.ret) node.value = {annotation(fun->sig.ret, context)};
                 if (node.value.type == Type::Error) record.state = CallState::Error;
                 break;
             }
@@ -1943,6 +2220,11 @@ private:
     AliasExpansion aliases_;
     TypeTable types_;
     std::unordered_map<const TypeExpr*, Type> annotations_;
+    std::unordered_map<u32, BindingId> generic_bindings_;
+    std::vector<Environment> environments_{{}};
+    std::unordered_map<usize, std::unordered_map<TypeDescriptor, usize, TypeDescriptorHash>> environment_ids_;
+    std::vector<std::unordered_map<const TypeExpr*, Type>> substituted_annotations_{1};
+    std::unordered_set<u32> reported_applications_;
     std::vector<Node> nodes_;
     std::unordered_map<const Expr*, usize> expressions_;
     // A promoted constructor field and its parameter have separate binding
@@ -1954,6 +2236,8 @@ private:
     std::unordered_map<const ast::CallExpr*, CheckedCall> calls_;
     std::unordered_map<const ast::CallExpr*, CheckedConversion> conversions_;
     std::unordered_map<const Expr*, CheckedMember> members_;
+    std::unordered_map<const Expr*, usize> reference_contexts_;
+    std::unordered_map<const CallExpr*, usize> call_contexts_;
     std::unordered_map<const Expr*, ExpandedType> entities_;
     std::unordered_map<usize, BindingId> member_owners_;
     std::unordered_map<usize, std::unordered_map<u32, std::vector<BindingId>>> member_values_;
@@ -1966,6 +2250,7 @@ private:
     std::unordered_map<u64, std::unordered_map<usize, std::shared_ptr<const MemberLookup>>> inherited_members_;
     std::vector<Walk> walk_;
     std::vector<Requirement> requirements_;
+    std::vector<usize> default_dependencies_;
     std::vector<const Expr*> defaults_;
 };
 

@@ -237,7 +237,7 @@ let nested = [[stop()], [1]]
 let emptyFirst = [[], [1]]
 let typed: Int8 = 1
 let anchored = [stop(), typed, 2]
-fun opaque<T>(): UInt64 = UInt64(18446744073709551615)
+fun opaque<T: Copy>(): UInt64 = UInt64(18446744073709551615)
 let pendingFirst = [opaque<Int>(), 18446744073709551615]
 let pendingLast = [18446744073709551615, opaque<Int>()]
 )");
@@ -247,7 +247,7 @@ let pendingLast = [18446744073709551615, opaque<Int>()]
     CHECK(f.value("allNever") == Type::Deferred);
     CHECK(f.value("pendingFirst") == Type::Deferred && f.value("pendingLast") == Type::Deferred);
     Frontend independent;
-    independent.check("fun opaque<T>(): Int = 1\nlet values = [true, 1, opaque<Int>()]", {DiagCode::ScalarTypeMismatch});
+    independent.check("fun opaque<T: Copy>(): Int = 1\nlet values = [true, 1, opaque<Int>()]", {DiagCode::ScalarTypeMismatch});
 }
 
 void nested_concrete_anchors() {
@@ -298,7 +298,7 @@ let distinct = [1] != [true]
 let empty = [] == []
 let byte: Int8 = 1
 let nested = ([[1], [byte]]) == [[]]
-fun opaque<T>(): UInt64 = UInt64(18446744073709551615)
+fun opaque<T: Copy>(): UInt64 = UInt64(18446744073709551615)
 let pending = [opaque<Int>(), 18446744073709551615] == []
 )");
     for (std::string_view binding : {"same", "distinct", "empty", "nested", "pending"})

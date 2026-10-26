@@ -240,6 +240,23 @@ class FrontendTests(unittest.TestCase):
         self.assertIn("error[E0300]", stderr)
         self.assertNotIn("error[E04", stderr)
 
+    def test_generic_instantiation_and_phase_gating(self) -> None:
+        source = """type Values<T> = [T]
+class Box<T>(let value: T) { fun get(): T = value }
+fun identity<T>(value: T): T = value
+let box = Box<Int8>(1)
+let bad: Bool = box.get()
+let wrongCount: Values<Int, Bool>
+let wrongArgument = identity<Int>(true)
+"""
+        code, _, stderr = self.run_source(source, "parse")
+        self.assertEqual((code, stderr), (0, ""))
+        code, stdout, stderr = self.run_source(source, "check")
+        self.assertEqual((code, stdout), (1, ""))
+        self.assertEqual(stderr.count("error["), 3, stderr)
+        for diagnostic in ("E0400", "E0470", "E0411"):
+            self.assertIn(f"error[{diagnostic}]", stderr)
+
     def test_check_resolves_names_after_validation(self) -> None:
         source = "fun f(x: Missing) = unknown(x)\n"
         code, _, stderr = self.run_source(source, "parse")

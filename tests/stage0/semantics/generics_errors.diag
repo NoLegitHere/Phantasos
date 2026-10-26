@@ -1,0 +1,33 @@
+generics_errors.phs:19:27: error[E0400]: expected 'Box<Int>', found 'Box<Bool>'
+   19 | let wrongType: Box<Int> = Box<Bool>(true)
+      |                           ^^^^^^^^^^^^^^^
+generics_errors.phs:20:25: error[E0400]: expected 'Bool', found 'Int'
+   20 | let wrongResult: Bool = Box<Int>(1).get()
+      |                         ^^^^^^^^^^^^^^^^^
+generics_errors.phs:21:17: error[E0470]: type argument count does not match 'Values'
+   21 | let wrongCount: Values<Int, Bool>
+      |                 ^^^^^^^^^^^^^^^^^
+generics_errors.phs:22:22: error[E0470]: type argument count does not match any callable signature
+   22 | let wrongCallCount = identity<Int, Bool>(1)
+      |                      ^^^^^^^^^^^^^^^^^^^
+generics_errors.phs:23:21: error[E0411]: arguments do not match any callable signature
+   23 | let wrongArgument = identity<Int>(true)
+      |                     ^^^^^^^^^^^^^^^^^^^
+generics_errors.phs:18:5: note: candidate 'identity(value: <deferred>)'
+   18 | fun identity<T>(value: T): T = value
+      |     ^^^^^^^^
+generics_errors.phs:24:33: error[E0402]: integer literal is out of range for 'Int8'
+   24 | let outOfRange = identity<Int8>(128)
+      |                                 ^^^
+generics_errors.phs:25:17: error[E0430]: cyclic generic type alias expansion
+   25 | type Cycle<T> = Cycle<[T]>
+      |                 ^^^^^^^^^^
+generics_errors.phs:30:35: error[E0400]: expected 'Namespace.Item<Int>', found 'Namespace.Item<Bool>'
+   30 | let mismatched: Names.Item<Int> = Namespace.Item<Bool>(true)
+      |                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^
+generics_errors.phs:31:26: error[E0470]: type argument count does not match 'Item'
+   31 | let wrongQualifiedCount: Names.Item<Int, Bool>
+      |                          ^^^^^^^^^^^^^^^^^^^^^
+generics_errors.phs:33:30: error[E0400]: expected 'Bool', found 'Int'
+   33 | let wrongAliasResult: Bool = Types<Int>.Value(1)
+      |                              ^^^^^^^^^^^^^^^^^^^

@@ -66,8 +66,11 @@
   immediately and must not create function-return dependencies. Conversion
   records retain modes, source/destination facts, and deferred/error states.
   Alias expansion runs before scalar annotations and retains canonical binding
-  IDs rather than creating new types. Generic aliases and associated-type
-  requirements/defaults remain deferred. Keep alias/type wrapper traversal
+  IDs rather than creating new types. Concrete generic applications substitute
+  aliases and signatures in interned environments keyed by declaration identity
+  and arguments; keep per-environment caches separate from declaration facts.
+  Inference, bounds/body validation and associated-type contracts remain deferred.
+  Keep alias/type wrapper traversal
   iterative, report cycle paths once, and do not mutate lexical resolution.
   Type queries cache diagnostics so shared constructor annotations are not
   diagnosed once for each generated parameter/field binding.
@@ -153,6 +156,9 @@
   fields/types/overloads, outer-scope fallback, `super`, overrides and witnesses,
   defaults/abstract obligations, forward base aliases, invalid/deferred contracts,
   stable records, 10,000-class chains and 64-level interface diamonds.
+  The `generics` suite checks explicit type/function applications, signature and
+  member substitution, shadowed parameters, invariant identities, argument errors,
+  deferred contracts/defaults, stable records, 10,000 aliases and shared type graphs.
 
 - Run `python tests/test_license_check.py` for license-fixer regressions,
   including encoding declarations, BOMs, line endings, and idempotence.

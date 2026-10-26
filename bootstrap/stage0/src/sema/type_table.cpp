@@ -27,6 +27,7 @@ usize TypeDescriptorHash::operator()(const TypeDescriptor& d) const {
     type(d.element); type(d.result); type(d.error);
     add(d.declaration.value); add(d.mutable_pointer); add(d.throws);
     for (auto param : d.parameters) type(param);
+    for (auto arg : d.arguments) type(arg);
     return hash;
 }
 
@@ -90,6 +91,13 @@ std::string TypeTable::name(ScalarType root, const Resolution& resolution, const
                 for (auto it = parts.rbegin(); it != parts.rend() && !elided; ++it) {
                     if (it != parts.rbegin()) append(".");
                     if (!elided) append(*it);
+                }
+                if (!d->arguments.empty()) {
+                    append("<"); push(">");
+                    for (usize i = d->arguments.size(); i > 0 && !elided; --i) {
+                        push(d->arguments[i - 1]);
+                        if (i > 1) push(", ");
+                    }
                 }
                 break;
             }

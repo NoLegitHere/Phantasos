@@ -55,6 +55,7 @@ struct TypeDescriptor {
     BindingId declaration;
     bool mutable_pointer = false;
     bool throws = false;
+    std::vector<ScalarType> arguments; // nominal generic arguments, invariant and part of identity
     friend bool operator==(const TypeDescriptor&, const TypeDescriptor&) = default;
 };
 struct TypeDescriptorHash {
@@ -142,6 +143,7 @@ struct CheckedMember {
     BindingId owner;
     bool type_receiver = false;
     std::vector<BindingId> candidates; // field, method overloads, or nested type
+    ScalarType receiver_type; // concrete instance, including generic arguments when available
 };
 struct ConformanceWitness {
     BindingId requirement;
@@ -172,6 +174,8 @@ struct CheckedCall {
     std::vector<usize> parameters;
     CallKind kind = CallKind::Function;
     const ast::Expr* receiver = nullptr; // explicit instance for a Method call; implicit/static receivers are null
+    std::vector<ScalarType> type_arguments; // explicit function type arguments of a selected application
+    std::vector<ScalarType> parameter_types; // selected signature after receiver/function substitution
 };
 
 class ScalarChecker;
@@ -233,9 +237,10 @@ private:
 // calls, numeric conversions and optional wrappers on built-in facts.
 // Includes fully known composites, non-generic nominal identities, arrays,
 // primary constructors, nominal/inherited members and known function types.
-// Non-generic hierarchy graphs, overrides, method requirements and upcasts are
-// checked separately from dependent contracts. Generic substitution, property
-// requirements, function-value inference, effects and ownership need later passes.
+// Includes concrete generic applications, transparent alias/signature substitution
+// and direct members of instantiated owners without bases. Non-generic hierarchy
+// graphs and witnesses are separate from dependent contracts. Generic inference,
+// bounds/body validation, property requirements, effects and ownership remain pending.
 // Dependency evaluation and AST traversal use explicit stacks, including
 // forward binding inference. Cyclic inference remains deferred for a later pass.
 [[nodiscard]] ScalarTypes check_scalar_types(const ast::File& file, const Resolution& resolution,

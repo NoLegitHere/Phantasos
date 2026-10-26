@@ -2342,7 +2342,14 @@ private:
             exprs.pop_back();
             if (!expr) continue;
             switch (expr->kind) {
-                case ExprKind::Block: for (const Stmt* stmt : cast<BlockExpr>(expr)->stmts) stmts.push_back(stmt); break;
+                case ExprKind::Block:
+                    // Statements after an unconditional jump are unreachable.
+                    for (const Stmt* stmt : cast<BlockExpr>(expr)->stmts) {
+                        stmts.push_back(stmt);
+                        if (stmt->kind == StmtKind::Return || stmt->kind == StmtKind::Throw ||
+                            stmt->kind == StmtKind::Break || stmt->kind == StmtKind::Continue) break;
+                    }
+                    break;
                 case ExprKind::Unsafe: exprs.push_back(cast<UnsafeExpr>(expr)->block); break;
                 case ExprKind::Paren: exprs.push_back(cast<ParenExpr>(expr)->inner); break;
                 case ExprKind::Unary: exprs.push_back(cast<UnaryExpr>(expr)->operand); break;
@@ -2513,7 +2520,8 @@ private:
                 const usize child = expressions_.at(element);
                 if (nodes_[child].value.literal == Literal::Array && element_type.kind == Type::Array) work.push_back({child, element_type});
                 else {
-                    const auto checked = compatible(child, element_type, element->span);
+                    const auto checked = branching(element) ? require_branches(branching(element), element_type)
+                                                            : compatible(child, element_type, element->span);
                     if (checked.type == Type::Error) node.value = checked;
                     else if (unavailable(checked) && node.value.type != Type::Error) node.value = {};
                 }

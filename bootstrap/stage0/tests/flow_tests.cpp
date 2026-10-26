@@ -210,12 +210,18 @@ fun mismatch(a: Int): Int = if a > 0 { true } else { 2 }
 let unit: Int = if true { 1 } else { }
 let range: UInt8 = if true { 300 } else { 2 }
 fun exits(): Int = unsafe { loop { break } }
+fun elements(flag: Bool): [Int] = if flag { [if flag { true } else { 2 }] } else { [1] }
+let narrow: [UInt8] = [if true { 300 } else { 1 }]
 )", {DiagCode::IfWithoutElse, DiagCode::ScalarTypeMismatch, DiagCode::ScalarTypeMismatch, DiagCode::ScalarLiteralRange,
-     DiagCode::ScalarTypeMismatch});
+     DiagCode::ScalarTypeMismatch, DiagCode::ScalarTypeMismatch, DiagCode::ScalarLiteralRange});
 
     Frontend loops;
     loops.check(R"(
 fun forever(): Int = unsafe { loop {} }
+fun returns(): Int = unsafe { loop {
+    return 1
+    break
+} }
 fun inner(c: Bool): Int = unsafe {
     loop {
         while c { break }
@@ -296,6 +302,15 @@ fun aborts(): Int {
 fun cleanupOnly() {
     let x: Int
     defer { x = 1 }
+}
+fun guardFirst(v: Int): Int {
+    var x: Int
+    match v {
+        _ if unsafe { x = 1
+            false } -> {}
+        _ -> {}
+    }
+    return x
 }
 fun initialized(): Int {
     var y: Int

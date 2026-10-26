@@ -388,7 +388,10 @@ private:
             for (const auto& arm : match->arms) {
                 State path = state;
                 eval(arm.guard, path);
-                if (arm.guard) merge(state, path);
+                // An irrefutable pattern always runs its guard before the next arm.
+                const bool irrefutable = arm.pattern->kind == PatKind::Wildcard || arm.pattern->kind == PatKind::Binding;
+                if (arm.guard && irrefutable) state = path;
+                else if (arm.guard) merge(state, path);
                 eval(arm.body, path);
                 merge(out, path);
             }

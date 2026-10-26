@@ -864,8 +864,8 @@ to establish only the implemented rules.
 where a type is expected (an annotation, an argument, an explicit return or an
 expression body with a declared result), each branch must produce that type.
 A block produces its final expression statement; a block ending in `return`,
-`throw`, `break`, `continue` or a `loop` without a `break` out of it produces
-no value on that path; any other block produces `Unit`. Literals in each branch take the expected type.
+`throw`, `break`, `continue` or a `loop` without a reachable `break` out of it
+produces no value on that path; any other block produces `Unit`. Literals in each branch take the expected type.
 An `if` without `else` produces no value when its condition is false:
 
 ```phantasos
@@ -886,7 +886,8 @@ through `break`. A call to `panic` or a call of (non-optional) type `Never`
 ends its path. Inside `try?`, a `throw` or any call other than `panic` can
 leave the operand early and resume after the `try?` expression. `match` is assumed exhaustive
 (exhaustiveness is checked separately); a failed pattern or guard continues
-to the next arm with the guard's effects.
+to the next arm with the guard's effects, and an arm with a wildcard or binding
+pattern always runs its guard.
 
 - **All-path return (`E0500`).** A block-bodied function whose declared result
   is not `Unit` must reach `return`, `throw` or a diverging call on every path;

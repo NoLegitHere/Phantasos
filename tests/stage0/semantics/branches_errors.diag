@@ -13,3 +13,9 @@ branches_errors.phs:19:30: error[E0402]: integer literal is out of range for 'UI
 branches_errors.phs:20:27: error[E0400]: expected 'Int', found 'Unit'
    20 | fun exits(): Int = unsafe { loop { break } }
       |                           ^^^^^^^^^^^^^^^^^^
+branches_errors.phs:21:56: error[E0400]: expected 'Int', found 'Bool'
+   21 | fun elements(flag: Bool): [Int] = if flag { [if flag { true } else { 2 }] } else { [1] }
+      |                                                        ^^^^
+branches_errors.phs:22:34: error[E0402]: integer literal is out of range for 'UInt8'
+   22 | let narrow: [UInt8] = [if true { 300 } else { 1 }]
+      |                                  ^^^

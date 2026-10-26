@@ -42,7 +42,8 @@ Windows x64 and Linux x86_64:
 - [x] Initial generic body checking, bound-based lookup, associated types/Self and dependent witnesses
 - [x] Flow checks: all-path returns, definite initialization, immutable bindings and branch results
 - [ ] Generic base substitution, built-in traits, remaining dependent contracts and ownership analysis
-- [ ] MIR, x86_64 codegen, COFF/ELF writers, linker, runtime
+- [x] Native scalar slice: MIR, naive x86_64 code, and static Linux ELF executables with a stage0 runtime (`build`)
+- [ ] Windows PE/COFF output, a general linker and runtime, and code generation beyond scalars
 - [ ] Workspace-aware build driver
 
 The language is specified in [`docs/spec`](docs/spec), with a standalone

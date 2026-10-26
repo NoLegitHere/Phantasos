@@ -58,6 +58,8 @@ add_library(phantasos_frontend STATIC
     src/sema/type_table.cpp
     src/sema/flow.cpp
     src/codegen/gate.cpp
+    src/codegen/lower.cpp
+    src/codegen/mir.cpp
 )
 add_library(Phantasos::Frontend ALIAS phantasos_frontend)
 target_include_directories(phantasos_frontend PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
@@ -76,12 +78,12 @@ phs_warnings(phantasos-stage0)
 
 include(CTest)
 if(BUILD_TESTING)
-    foreach(suite IN ITEMS support frontend sema resolve session types calls conversions aliases composites members hierarchy generics inference bodies flow gate)
+    foreach(suite IN ITEMS support frontend sema resolve session types calls conversions aliases composites members hierarchy generics inference bodies flow gate mir)
         add_executable(phantasos-${suite}-tests tests/${suite}_tests.cpp)
         target_link_libraries(phantasos-${suite}-tests PRIVATE Phantasos::Frontend)
         phs_warnings(phantasos-${suite}-tests)
         add_test(NAME ${suite} COMMAND phantasos-${suite}-tests)
     endforeach()
     # Bound descriptor, member and inheritance graph regressions.
-    set_tests_properties(composites members hierarchy generics inference bodies flow gate PROPERTIES TIMEOUT 30)
+    set_tests_properties(composites members hierarchy generics inference bodies flow gate mir PROPERTIES TIMEOUT 30)
 endif()

@@ -128,6 +128,13 @@ fun main(): Int {
      DiagCode::UnsupportedCodegen, DiagCode::UnsupportedCodegen});
 }
 
+void stored_values() {
+    // Parameters and locals need a value; Unit and Never results are fine.
+    Frontend f;
+    f.gate("fun noop() {}\nfun stop(): Never {\n    loop {}\n}\nfun takes(u: ()) {}\nfun main() {\n    let u = noop()\n    let n: Int = 1\n    if n == 2 {\n        let s = stop()\n    }\n}\n",
+           {DiagCode::UnsupportedCodegen, DiagCode::UnsupportedCodegen, DiagCode::UnsupportedCodegen});
+}
+
 void entry_points() {
     Frontend none;
     none.gate("fun helper() {}\n", {DiagCode::InvalidEntryPoint});
@@ -171,6 +178,7 @@ int main() {
     accepted_subset();
     rejected_items();
     rejected_bodies();
+    stored_values();
     entry_points();
     gated_by_check_errors();
     long_trees();

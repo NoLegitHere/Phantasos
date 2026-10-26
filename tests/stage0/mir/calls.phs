@@ -1,0 +1,34 @@
+// Copyright 2026 The Phantasos Authors
+// SPDX-License-Identifier: Apache-2.0
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// Calls: labels pass in parameter order, overloads get unique names, and a
+// call to a Never function ends its block.
+
+fun sub(a: Int, b: Int): Int = a - b
+
+fun sub(a: Int8): Int8 = a
+
+fun stop(): Never {
+    loop {}
+}
+
+fun noop() {}
+
+fun main() {
+    noop()
+    let x: Int = if sub(b: 1, a: 5) > 0 { sub(2, 1) } else { stop() }
+    let y: Int8 = sub(Int8.truncating(x))
+    if y == 0 { return }
+}

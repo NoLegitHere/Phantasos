@@ -18,6 +18,7 @@
 #include <optional>
 #include <unordered_map>
 
+#include "codegen/mir.hpp"
 #include "sema/types.hpp"
 #include "support/arena.hpp"
 
@@ -61,6 +62,8 @@ public:
     // Runs check, then the stage0 code generation subset gate (E0600/E0601)
     // if checking succeeded. True when the file can be compiled by stage0.
     [[nodiscard]] bool check_codegen(FileId file);
+    // Lowers a file that passes check_codegen to MIR; null otherwise. Cached.
+    [[nodiscard]] const mir::Program* lower(FileId file);
 
 private:
     struct FileState {
@@ -68,6 +71,7 @@ private:
         bool checked = false;
         bool gated = false;
         bool codegen = false;
+        std::optional<mir::Program> mir;
         std::optional<Resolution> resolution;
         std::optional<ScalarTypes> scalar_types;
     };

@@ -76,6 +76,55 @@ class FrontendTests(unittest.TestCase):
                 if oversized:
                     self.assertIn(b"source file exceeds input limit of 67108864 bytes", result.stderr)
 
+    def test_build_command(self) -> None:
+        def build(*args: str):
+            return subprocess.run([str(self.exe), "build", *args], capture_output=True, timeout=30, cwd=self.directory.name)
+
+        self.source.write_text("fun main(): Int = 42\n", encoding="utf-8")
+        result = build("case.phs")
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, b"", b""))
+        self.assertEqual((Path(self.directory.name) / "case").read_bytes()[:4], b"\x7fELF")
+        named = Path(self.directory.name) / "named"
+        self.assertEqual(build(str(self.source), "-o", str(named)).returncode, 0)
+        self.assertTrue(named.exists())
+        for args in ((), (str(self.source), "-o"), (str(self.source), "-x", "out"), (str(self.source), "-o", "a", "b")):
+            with self.subTest(args=args):
+                result = build(*args)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn(b"usage:", result.stderr)
+        self.assertEqual(build(str(self.source), "-o", str(Path(self.directory.name) / "missing" / "out")).returncode, 2)
+
+        # A write that fails when the stream is flushed still fails the build.
+        if Path("/dev/full").exists():
+            result = build(str(self.source), "-o", "/dev/full")
+            self.assertEqual(result.returncode, 2)
+            self.assertIn(b"cannot write '/dev/full'", result.stderr)
+
+        # The output may not replace the source, by name, by default or by link.
+        source_text = self.source.read_bytes()
+        bare = Path(self.directory.name) / "bare"
+        bare.write_bytes(source_text)
+        link = Path(self.directory.name) / "link"
+        try:
+            link.symlink_to(self.source)
+        except OSError:
+            link = self.source
+        for args in ((str(self.source), "-o", str(self.source)), ("bare",), (str(self.source), "-o", str(link))):
+            with self.subTest(args=args):
+                result = build(*args)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn(b"is the source file", result.stderr)
+        self.assertEqual(self.source.read_bytes(), source_text)
+        self.assertEqual(bare.read_bytes(), source_text)
+
+        # Code outside the stage0 subset is reported and writes nothing.
+        self.source.write_text("fun main(): Float64 = 1.5\n", encoding="utf-8")
+        rejected = Path(self.directory.name) / "rejected"
+        result = build(str(self.source), "-o", str(rejected))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(b"error[E0600]", result.stderr)
+        self.assertFalse(rejected.exists())
+
     def test_nesting_limit(self) -> None:
         n = 2000
         cases = {

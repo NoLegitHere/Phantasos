@@ -79,7 +79,7 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--stage0", required=True, type=Path)
     ap.add_argument("--cases", type=int, default=500)
     ap.add_argument("--seed", type=int, default=1234)
-    ap.add_argument("--command", choices=("parse", "check", "gate", "mir", "asm"), default="parse")
+    ap.add_argument("--command", choices=("parse", "check", "gate", "mir", "asm", "build"), default="parse")
     ap.add_argument("--timeout", type=float, default=5.0)
     ap.add_argument("--out", type=Path, default=None, help="directory for failing inputs")
     args = ap.parse_args(argv)
@@ -95,6 +95,10 @@ def main(argv: list[str]) -> int:
     out_dir = args.out or Path(tempfile.mkdtemp(prefix="phs-fuzz-"))
     out_dir.mkdir(parents=True, exist_ok=True)
     work = out_dir / "case.phs"
+    # `build` writes an executable into its own directory; it is never run,
+    # since mutated loops need not end.
+    build_dir = tempfile.TemporaryDirectory(prefix="phs-fuzz-build-") if args.command == "build" else None
+    output = ["-o", str(Path(build_dir.name) / "case")] if build_dir else []
     rng = random.Random(args.seed)
     failures = 0
     for i in range(args.cases):
@@ -102,7 +106,7 @@ def main(argv: list[str]) -> int:
         work.write_bytes(text)
         reason = None
         try:
-            r = subprocess.run([str(exe), args.command, str(work)], capture_output=True, timeout=args.timeout)
+            r = subprocess.run([str(exe), args.command, str(work), *output], capture_output=True, timeout=args.timeout)
             if r.returncode not in (0, 1):
                 reason = f"exit code {r.returncode}"
             elif any(m in r.stderr for m in SANITIZER_MARKERS):
@@ -117,6 +121,8 @@ def main(argv: list[str]) -> int:
             saved.write_bytes(text)
             print(f"FAIL case {i}: {reason} -> {saved}")
     work.unlink(missing_ok=True)
+    if build_dir:
+        build_dir.cleanup()
     print(f"fuzz ({args.command}): {args.cases} cases, {failures} failure(s), seed {args.seed}")
     return 1 if failures else 0
 

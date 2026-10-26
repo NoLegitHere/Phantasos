@@ -141,6 +141,51 @@ class GoldenRunnerTests(unittest.TestCase):
             self.assertEqual(tree.read_text(encoding="utf-8"), "original\n")
             self.assertEqual(self.baseline.read_text(encoding="utf-8"), "")
 
+    def run_program(self, status, stderr=b"", stdout=b"", update=False, build=None):
+        build = build or subprocess.CompletedProcess([], 0, "", "")
+        program = subprocess.CompletedProcess([], status, stdout, stderr)
+        with patch.object(run_golden.subprocess, "run", side_effect=[build, program]):
+            return run_golden.run_program_case(Path("unused-compiler"), self.source, update)
+
+    def test_run_compares_status_and_stderr(self) -> None:
+        exit_file, stderr_file = self.source.with_suffix(".exit"), self.source.with_suffix(".stderr")
+        exit_file.write_text("101\n", encoding="utf-8")
+        stderr_file.write_text("panic: arithmetic overflow\n", encoding="utf-8")
+        self.assertEqual(self.run_program(101, b"panic: arithmetic overflow\n"), [])
+        failures = self.run_program(42, b"panic: arithmetic overflow\n")
+        self.assertEqual(failures, ["expected exit status 101, got 42"])
+        failures = self.run_program(101)
+        self.assertTrue(any("stderr differs" in failure for failure in failures))
+        failures = self.run_program(101, b"panic: arithmetic overflow\n", stdout=b"extra")
+        self.assertTrue(any("unexpected stdout" in failure for failure in failures))
+
+    def test_run_update_writes_sidecars(self) -> None:
+        exit_file, stderr_file = self.source.with_suffix(".exit"), self.source.with_suffix(".stderr")
+        self.assertEqual(self.run_program(101, b"panic: division by zero\n", update=True), [])
+        self.assertEqual(exit_file.read_text(encoding="utf-8"), "101\n")
+        self.assertEqual(stderr_file.read_text(encoding="utf-8"), "panic: division by zero\n")
+        self.assertEqual(self.run_program(42, update=True), [])
+        self.assertEqual(exit_file.read_text(encoding="utf-8"), "42\n")
+        self.assertFalse(stderr_file.exists())
+
+    def test_run_build_failure_and_signal(self) -> None:
+        self.source.with_suffix(".exit").write_text("0\n", encoding="utf-8")
+        failed = subprocess.CompletedProcess([], 1, "", "case[1].phs:1:1: error[E0600]: unsupported\n")
+        failures = self.run_program(0, build=failed, update=True)
+        self.assertTrue(failures and "build failed with exit code 1" in failures[0])
+        self.assertEqual(self.source.with_suffix(".exit").read_text(encoding="utf-8"), "0\n")
+        self.assertEqual(self.run_program(-11), ["program killed by signal 11"])
+
+    def test_run_suite_is_skipped_off_linux(self) -> None:
+        root = Path(self.directory.name)
+        (root / "run").mkdir()
+        (root / "run" / "program.phs").write_text("fun main() {}\n", encoding="utf-8")
+        with patch.object(run_golden, "ROOT", root), patch.object(run_golden, "can_run_programs", return_value=False), patch.object(run_golden.subprocess, "run") as compiler, contextlib.redirect_stdout(io.StringIO()) as stdout:
+            status = run_golden.main(["--stage0", sys.executable])
+        self.assertEqual(status, 0)
+        self.assertIn("1 skipped", stdout.getvalue())
+        compiler.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

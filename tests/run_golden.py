@@ -22,9 +22,13 @@ Layout (relative to tests/stage0):
     semantics/*.phs    -> `check`, stderr compared with *.diag (may succeed)
     codegen/*.phs      -> `gate`,  stderr compared with *.diag (may succeed)
     mir/*.phs          -> `mir`,   stdout compared with *.mir
+    asm/*.phs          -> `asm`,   stdout compared with *.lst
+    run/*.phs          -> `build`, then runs the executable: its exit status is
+                          compared with *.exit and its stderr with *.stderr
+                          (empty when that file is missing). Linux x86_64 only.
 
-For lexer/parser/mir tests, stderr is compared with *.diag when that file exists;
-otherwise the test must succeed with empty stderr.
+For lexer/parser/mir/asm tests, stderr is compared with *.diag when that file
+exists; otherwise the test must succeed with empty stderr.
 
 Usage: python tests/run_golden.py --stage0 <path-to-phantasos-stage0> [--update] [FILTER]
 """
@@ -32,9 +36,11 @@ Usage: python tests/run_golden.py --stage0 <path-to-phantasos-stage0> [--update]
 from __future__ import annotations
 
 import argparse
+import platform
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent / "stage0"
@@ -46,6 +52,7 @@ SUITES = {
     "codegen": ("gate", None),
     "mir": ("mir", ".mir"),
     "asm": ("asm", ".lst"),
+    "run": ("build", None),
 }
 CHECK_SUITES = ("diagnostics", "semantics", "codegen")
 
@@ -129,6 +136,51 @@ def run_case(exe: Path, suite: str, src: Path, update: bool) -> list[str]:
     return failures
 
 
+def can_run_programs() -> bool:
+    return platform.system() == "Linux" and platform.machine() in ("x86_64", "AMD64")
+
+
+def run_program_case(exe: Path, src: Path, update: bool) -> list[str]:
+    with tempfile.TemporaryDirectory(prefix="phs-run-") as directory:
+        program = Path(directory) / src.stem
+        build = subprocess.run(
+            [str(exe), "build", src.name, "-o", str(program)], cwd=src.parent, capture_output=True, text=True, encoding="utf-8"
+        )
+        if build.returncode != 0 or build.stderr:
+            return [f"build failed with exit code {build.returncode}:\n{norm(build.stderr)}"]
+        try:
+            proc = subprocess.run([str(program)], capture_output=True, timeout=10)
+        except subprocess.TimeoutExpired:
+            return ["program timed out"]
+    stdout = norm(proc.stdout.decode("utf-8", "replace"))
+    stderr = norm(proc.stderr.decode("utf-8", "replace"))
+    if proc.returncode < 0:
+        return [f"program killed by signal {-proc.returncode}"]
+    exit_file, stderr_file = src.with_suffix(".exit"), src.with_suffix(".stderr")
+    if update:
+        if stdout:
+            return ["unexpected stdout; expected files not updated"]
+        exit_file.write_text(f"{proc.returncode}\n", encoding="utf-8", newline="\n")
+        if stderr:
+            stderr_file.write_text(stderr, encoding="utf-8", newline="\n")
+        else:
+            stderr_file.unlink(missing_ok=True)
+        return []
+
+    failures: list[str] = []
+    if not exit_file.exists():
+        return [f"missing expected file {exit_file.name}"]
+    expected_status = exit_file.read_text(encoding="utf-8").strip()
+    if expected_status != str(proc.returncode):
+        failures.append(f"expected exit status {expected_status}, got {proc.returncode}")
+    expected_stderr = norm(stderr_file.read_text(encoding="utf-8")) if stderr_file.exists() else ""
+    if expected_stderr != stderr:
+        failures.append(f"stderr differs:\n{diff(expected_stderr, stderr)}")
+    if stdout:
+        failures.append(f"unexpected stdout:\n{stdout}")
+    return failures
+
+
 def diff(expected: str, actual: str) -> str:
     import difflib
 
@@ -152,14 +204,18 @@ def main(argv: list[str]) -> int:
         print(f"error: stage0 executable not found: {exe}", file=sys.stderr)
         return 2
 
-    total = failed = 0
+    total = failed = skipped = 0
     for suite in SUITES:
         for src in sorted((ROOT / suite).glob("*.phs")):
             rel = src.relative_to(ROOT).as_posix()
             if args.filter not in rel:
                 continue
+            if suite == "run" and not can_run_programs():
+                skipped += 1
+                print(f"skip {rel} (needs Linux x86_64)")
+                continue
             total += 1
-            failures = run_case(exe, suite, src, args.update)
+            failures = run_program_case(exe, src, args.update) if suite == "run" else run_case(exe, suite, src, args.update)
             if failures:
                 failed += 1
                 print(f"FAIL {rel}")
@@ -168,11 +224,11 @@ def main(argv: list[str]) -> int:
             else:
                 print(f"ok   {rel}")
 
-    if total == 0:
+    if total == 0 and skipped == 0:
         print(f"error: no test cases matched filter {args.filter!r}", file=sys.stderr)
         return 2
     verb = "updated" if args.update else "passed"
-    print(f"\n{total - failed}/{total} {verb}")
+    print(f"\n{total - failed}/{total} {verb}" + (f", {skipped} skipped" if skipped else ""))
     return 1 if failed else 0
 
 

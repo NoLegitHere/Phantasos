@@ -883,8 +883,8 @@ initializer and destructor body. Analysis is structural and does not evaluate
 conditions: both arms of an `if` and both operands of `&&`, `||` and `??` are
 possible paths, `while` and `for` may run zero times, and `loop` exits only
 through `break`. A call to `panic` or a call of (non-optional) type `Never`
-ends its path. Inside `try?`, a `throw` or any call can leave the operand
-early and resume after the `try?` expression. `match` is assumed exhaustive
+ends its path. Inside `try?`, a `throw` or any call other than `panic` can
+leave the operand early and resume after the `try?` expression. `match` is assumed exhaustive
 (exhaustiveness is checked separately); a failed pattern or guard continues
 to the next arm with the guard's effects.
 
@@ -895,7 +895,8 @@ to the next arm with the guard's effects.
 - **Definite initialization (`E0501`).** A local declared without an
   initializer must be assigned on every path before it is read, including by a
   compound assignment. Unreachable code is not checked. A `defer` body is
-  checked against the state where it is registered.
+  checked against the state where it is registered; its assignments to a
+  `let` count as possible writes from then on, since they run at scope exit.
 - **Immutable bindings (`E0502`).** Assignment and compound assignment may
   target a `var` local or global, or an `inout` parameter. Other parameters,
   `let` locals and globals, pattern and `for` bindings, and `if let` bindings

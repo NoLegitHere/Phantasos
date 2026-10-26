@@ -97,3 +97,9 @@ fun maybe(): Never? = none
 fun optionalNever(): Int {
     maybe()
 }
+
+fun cleanupThenWrite() {
+    let x: Int
+    defer { x = 1 }
+    x = 2
+}

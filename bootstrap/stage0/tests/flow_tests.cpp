@@ -254,8 +254,18 @@ fun maybe(): Never? = none
 fun optionalNever(): Int {
     maybe()
 }
+fun cleanupThenWrite() {
+    let x: Int
+    defer { x = 1 }
+    x = 2
+}
+fun twoCleanups() {
+    let x: Int
+    defer { x = 1 }
+    defer { x = 2 }
+}
 )", {DiagCode::MissingReturn, DiagCode::UninitializedUse, DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment,
-     DiagCode::MissingReturn});
+     DiagCode::MissingReturn, DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment});
 
     Frontend valid;
     valid.check(R"(
@@ -266,6 +276,13 @@ fun arms(v: Int): Int {
         _ -> { x = 2 }
     }
     return x
+}
+fun aborts(): Int {
+    let x = try? panic("stop")
+}
+fun cleanupOnly() {
+    let x: Int
+    defer { x = 1 }
 }
 fun initialized(): Int {
     var y: Int

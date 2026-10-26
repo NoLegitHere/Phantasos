@@ -100,3 +100,9 @@ flow_errors.phs:99:1: error[E0500]: function 'optionalNever' must return 'Int' o
 flow_errors.phs:97:5: note: the end of the body is reachable without a 'return'
    97 | fun optionalNever(): Int {
       |     ^^^^^^^^^^^^^
+flow_errors.phs:104:5: error[E0502]: 'x' may already be initialized; a 'let' binding is assigned only once
+  104 |     x = 2
+      |     ^
+flow_errors.phs:102:9: note: declared with 'let' here
+  102 |     let x: Int
+      |         ^

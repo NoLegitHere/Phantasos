@@ -61,6 +61,10 @@ fun classify(x: Int): Int {
     return y
 }
 
+fun aborts(): Int {
+    let unused = try? panic("stop")
+}
+
 fun reset(x: inout Int) { x = 0 }
 
 var counter = 0

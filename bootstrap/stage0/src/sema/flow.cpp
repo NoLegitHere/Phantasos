@@ -322,13 +322,15 @@ private:
         return result;
     }
 
-    bool diverges(const CallExpr& call) const {
-        if (types_.expression(&call) == ScalarType{ScalarType::Never}) return true;
+    bool panics(const CallExpr& call) const {
         const auto* callee = as<NameExpr>(unparen(call.callee));
         if (!callee) return false;
         const auto id = target(*callee);
         return id.valid() && resolution_.binding(id).kind == BindingKind::BuiltinValue &&
                names_.str(resolution_.binding(id).name.sym) == "panic";
+    }
+    bool diverges(const CallExpr& call) const {
+        return types_.expression(&call) == ScalarType{ScalarType::Never} || panics(call);
     }
 
     void eval(const Expr* root, State& state) {
@@ -359,8 +361,9 @@ private:
             }
             if (const auto* name = as<NameExpr>(expr)) read(*name, state);
             else if (const auto* call = as<CallExpr>(expr)) {
-                // Any call inside `try?` may throw after its operands have run.
-                if (!caught_.empty()) merge(caught_.back(), state);
+                // Any call inside `try?` may throw after its operands have run;
+                // a panic aborts instead (3.7).
+                if (!caught_.empty() && !panics(*call)) merge(caught_.back(), state);
                 if (diverges(*call)) state = dead();
             } else if (conditional(*expr)) {
                 // The right operand runs on only some paths.
@@ -469,6 +472,9 @@ private:
                 control_flow(*cast<DeferStmt>(&stmt)->body, cleanup);
                 caught_ = std::move(caught);
                 breaks_.pop_back();
+                // Its writes happen at scope exit, so a later write to the same
+                // `let`, or another cleanup's, would assign it twice.
+                state.maybe.unite(assigned_lets({cast<DeferStmt>(&stmt)->body}));
                 break;
             }
             case StmtKind::Expr: eval(cast<ExprStmt>(&stmt)->expr, state); break;

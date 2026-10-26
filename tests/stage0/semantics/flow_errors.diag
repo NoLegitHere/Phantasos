@@ -1,0 +1,132 @@
+flow_errors.phs:18:1: error[E0500]: function 'fallsOff' must return 'Int' on every path
+   18 | }
+      | ^
+flow_errors.phs:16:5: note: the end of the body is reachable without a 'return'
+   16 | fun fallsOff(a: Int): Int {
+      |     ^^^^^^^^
+flow_errors.phs:22:1: error[E0500]: function 'chain' must return 'Int' on every path
+   22 | }
+      | ^
+flow_errors.phs:20:5: note: the end of the body is reachable without a 'return'
+   20 | fun chain(a: Int): Int {
+      |     ^^^^^
+flow_errors.phs:26:1: error[E0500]: function 'whileOnly' must return 'Int' on every path
+   26 | }
+      | ^
+flow_errors.phs:24:5: note: the end of the body is reachable without a 'return'
+   24 | fun whileOnly(c: Bool): Int {
+      |     ^^^^^^^^^
+flow_errors.phs:30:1: error[E0500]: function 'breaks' must return 'Int' on every path
+   30 | }
+      | ^
+flow_errors.phs:28:5: note: the end of the body is reachable without a 'return'
+   28 | fun breaks(): Int {
+      |     ^^^^^^
+flow_errors.phs:35:12: error[E0501]: 'y' is used before it is initialized
+   35 |     return y
+      |            ^
+flow_errors.phs:33:9: note: declared here without an initializer
+   33 |     var y: Int
+      |         ^
+flow_errors.phs:41:12: error[E0501]: 'y' is used before it is initialized
+   41 |     return y
+      |            ^
+flow_errors.phs:39:9: note: declared here without an initializer
+   39 |     var y: Int
+      |         ^
+flow_errors.phs:46:5: error[E0501]: 'y' is used before it is initialized
+   46 |     y += 1
+      |     ^
+flow_errors.phs:45:9: note: declared here without an initializer
+   45 |     var y: Int
+      |         ^
+flow_errors.phs:52:25: error[E0502]: cannot assign to immutable 'x'
+   52 | fun parameter(x: Int) { x = 1 }
+      |                         ^
+flow_errors.phs:52:15: note: parameters are read-only unless declared 'inout'
+   52 | fun parameter(x: Int) { x = 1 }
+      |               ^
+flow_errors.phs:56:5: error[E0502]: cannot assign to immutable 'x'
+   56 |     x = 2
+      |     ^
+flow_errors.phs:55:9: note: declared with 'let' here
+   55 |     let x = 1
+      |         ^
+flow_errors.phs:62:5: error[E0502]: 'y' may already be initialized; a 'let' binding is assigned only once
+   62 |     y = 2
+      |     ^
+flow_errors.phs:60:9: note: declared with 'let' here
+   60 |     let y: Int
+      |         ^
+flow_errors.phs:67:15: error[E0502]: 'y' may already be initialized; a 'let' binding is assigned only once
+   67 |     while c { y = 1 }
+      |               ^
+flow_errors.phs:66:9: note: declared with 'let' here
+   66 |     let y: Int
+      |         ^
+flow_errors.phs:70:16: error[E0502]: cannot assign to immutable 'limit'
+   70 | fun global() { limit = 2 }
+      |                ^^^^^
+flow_errors.phs:50:5: note: declared with 'let' here
+   50 | let limit = 1
+      |     ^^^^^
+flow_errors.phs:73:23: error[E0502]: cannot assign to immutable 'v'
+   73 |     for v in values { v = 1 }
+      |                       ^
+flow_errors.phs:73:9: note: bound here; only 'var' locals can be reassigned
+   73 |     for v in values { v = 1 }
+      |         ^
+flow_errors.phs:78:1: error[E0500]: function 'caught' must return 'Int' on every path
+   78 | }
+      | ^
+flow_errors.phs:76:5: note: the end of the body is reachable without a 'return'
+   76 | fun caught(): Int {
+      |     ^^^^^^
+flow_errors.phs:85:16: error[E0502]: 'x' may already be initialized; a 'let' binding is assigned only once
+   85 |         _ -> { x = 2 }
+      |                ^
+flow_errors.phs:81:9: note: declared with 'let' here
+   81 |     let x: Int
+      |         ^
+flow_errors.phs:91:20: error[E0502]: 'x' may already be initialized; a 'let' binding is assigned only once
+   91 |     while unsafe { x = 1
+      |                    ^
+flow_errors.phs:90:9: note: declared with 'let' here
+   90 |     let x: Int
+      |         ^
+flow_errors.phs:99:1: error[E0500]: function 'optionalNever' must return 'Int' on every path
+   99 | }
+      | ^
+flow_errors.phs:97:5: note: the end of the body is reachable without a 'return'
+   97 | fun optionalNever(): Int {
+      |     ^^^^^^^^^^^^^
+flow_errors.phs:104:5: error[E0502]: 'x' may already be initialized; a 'let' binding is assigned only once
+  104 |     x = 2
+      |     ^
+flow_errors.phs:102:9: note: declared with 'let' here
+  102 |     let x: Int
+      |         ^
+flow_errors.phs:108:5: error[E0501]: 'x' is used before it is initialized
+  108 |     x }) {}
+      |     ^
+flow_errors.phs:107:41: note: declared here without an initializer
+  107 | fun defaulted(value: Int = unsafe { var x: Int
+      |                                         ^
+flow_errors.phs:110:45: error[E0502]: cannot assign to immutable 'a'
+  110 | fun rewritesParam(a: Int, b: Int = unsafe { a = 1
+      |                                             ^
+flow_errors.phs:110:19: note: parameters are read-only unless declared 'inout'
+  110 | fun rewritesParam(a: Int, b: Int = unsafe { a = 1
+      |                   ^
+flow_errors.phs:116:5: error[E0501]: 'x' is used before it is initialized
+  116 |     x }) {}
+      |     ^
+flow_errors.phs:115:34: note: declared here without an initializer
+  115 | class Derived: Base(unsafe { var x: Int
+      |                                  ^
+flow_errors.phs:119:27: error[E0502]: cannot assign to immutable 'a'
+  119 |     let b: Int = unsafe { a = 1
+      |                           ^
+flow_errors.phs:118:13: note: parameters are read-only unless declared 'inout'
+  118 | class Field(a: Int) {
+      |             ^

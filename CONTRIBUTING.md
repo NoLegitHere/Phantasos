@@ -43,8 +43,8 @@
 - The CLI and C++ tests link `Phantasos::Frontend`; keep CLI-only behavior in
   `main.cpp`. Prefer `FrontendSession` (`frontend/session.hpp`) to own sources,
   keyword-seeded interning, diagnostics, AST storage and cached resolutions.
-  `parse(FileId)` is syntax-only; `check(FileId)` runs validation, resolution
-  and scalar typing only if that file has no errors. Repeated calls reuse results without
+  `parse(FileId)` is syntax-only; `check(FileId)` runs validation, resolution,
+  scalar typing and flow checks, each only if that file has no errors. Repeated calls reuse results without
   emitting diagnostics again. Files are immutable and resolve independently;
   source IDs and result pointers belong to the session, which cannot be moved
   or copied. A non-null `CheckResult::resolution` means resolution ran, not
@@ -81,6 +81,12 @@
   use receiver contexts and iterative descriptor substitution. Keep definition
   facts separate from selected-call facts, and preserve deferred states for
   unsupported receiver/generic-base/coinductive contracts.
+  `check_flow` (`sema/flow`) runs only after scalar typing succeeds. It walks
+  each callable body once, with one bit per local declared without an
+  initializer, and never re-analyzes a loop body: definite facts at a loop head
+  equal its entry, and `let` locals assigned anywhere in the body count as
+  possibly assigned. Keep it diagnostic-only; it leaves the AST, Resolution and
+  ScalarTypes unchanged. Contextual branch results belong in `sema/types`.
   Keep alias/type wrapper traversal
   iterative, report cycle paths once, and do not mutate lexical resolution.
   Type queries cache diagnostics so shared constructor annotations are not
@@ -177,6 +183,9 @@
   The `bodies` suite checks errors without instantiation, symbolic returns,
   bounds/where lookup, associated projections, generic conformers, `Self` and
   stored-property witnesses, defaults, cached results and deferred contracts.
+  The `flow` suite covers all-path returns, divergence, definite initialization,
+  `let`/parameter/pattern immutability, contextual branch results, phase gating
+  and long `||` chains and deeply nested loops.
 
 - Run `python tests/test_license_check.py` for license-fixer regressions,
   including encoding declarations, BOMs, line endings, and idempotence.

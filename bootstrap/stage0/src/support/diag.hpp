@@ -72,6 +72,7 @@ enum class DiagCode : u16 {
     ScalarTypeMismatch = 400,
     InvalidScalarOperand = 401,
     ScalarLiteralRange = 402,
+    IfWithoutElse = 403,
     NotCallable = 410,
     NoMatchingCall = 411,
     AmbiguousCall = 412,
@@ -90,6 +91,9 @@ enum class DiagCode : u16 {
     MissingImplementation = 463,
     GenericArguments = 470,
     GenericConstraint = 471,
+    MissingReturn = 500,
+    UninitializedUse = 501,
+    ImmutableAssignment = 502,
 };
 
 constexpr std::string_view diag_code(DiagCode code) {
@@ -134,6 +138,7 @@ constexpr std::string_view diag_code(DiagCode code) {
         case DiagCode::ScalarTypeMismatch: return "E0400";
         case DiagCode::InvalidScalarOperand: return "E0401";
         case DiagCode::ScalarLiteralRange: return "E0402";
+        case DiagCode::IfWithoutElse: return "E0403";
         case DiagCode::NotCallable: return "E0410";
         case DiagCode::NoMatchingCall: return "E0411";
         case DiagCode::AmbiguousCall: return "E0412";
@@ -152,6 +157,9 @@ constexpr std::string_view diag_code(DiagCode code) {
         case DiagCode::MissingImplementation: return "E0463";
         case DiagCode::GenericArguments: return "E0470";
         case DiagCode::GenericConstraint: return "E0471";
+        case DiagCode::MissingReturn: return "E0500";
+        case DiagCode::UninitializedUse: return "E0501";
+        case DiagCode::ImmutableAssignment: return "E0502";
     }
     unreachable();
 }

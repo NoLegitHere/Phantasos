@@ -2223,6 +2223,9 @@ private:
                 // Only the last statement can supply a block's deferred result.
                 // Function, loop and cleanup bodies discard every expression.
                 for (usize i = 0; i < stmts.size(); ++i) push(stmts[i], returns, discarded || i + 1 < stmts.size());
+                // A used result is final only after its tail expression.
+                if (!discarded && !stmts.empty())
+                    if (const auto* tail = as<ExprStmt>(stmts.back())) dependency(index, tail->expr);
                 break;
             }
             case ExprKind::If: {
@@ -2298,7 +2301,143 @@ private:
         // Preserve the expression's actual type; the declaration/check fails.
         return {Type::Error};
     }
+    // A used block's final expression and each `if`/`match` branch supply the
+    // value. Diverging tails produce Never. Without `else`, the false path
+    // produces `none` when an optional is expected and no value otherwise.
+    struct Tail {
+        enum Kind : u8 { Value, Unit, MissingElse } kind;
+        const Expr* expr;
+    };
+    static const Expr* branching(const Expr* expr) {
+        while (const auto* paren = as<ParenExpr>(expr)) expr = paren->inner;
+        return expr && (expr->kind == ExprKind::If || expr->kind == ExprKind::Block || expr->kind == ExprKind::Unsafe ||
+                        expr->kind == ExprKind::Match) ? expr : nullptr;
+    }
+    // Whether a `break` leaves this loop. Nested loop bodies and cleanups
+    // have their own targets; nested conditions and iterables do not.
+    static bool breaks_out(const LoopStmt& loop) {
+        std::vector<const Stmt*> stmts;
+        std::vector<const Expr*> exprs{loop.body};
+        while (!exprs.empty() || !stmts.empty()) {
+            if (!stmts.empty()) {
+                const Stmt* stmt = stmts.back();
+                stmts.pop_back();
+                switch (stmt->kind) {
+                    case StmtKind::Break: return true;
+                    case StmtKind::Var: exprs.push_back(cast<VarStmt>(stmt)->init); break;
+                    case StmtKind::Return: exprs.push_back(cast<ReturnStmt>(stmt)->value); break;
+                    case StmtKind::Throw: exprs.push_back(cast<ThrowStmt>(stmt)->value); break;
+                    case StmtKind::Expr: exprs.push_back(cast<ExprStmt>(stmt)->expr); break;
+                    case StmtKind::Assign:
+                        exprs.push_back(cast<AssignStmt>(stmt)->target);
+                        exprs.push_back(cast<AssignStmt>(stmt)->value);
+                        break;
+                    case StmtKind::While: exprs.push_back(cast<WhileStmt>(stmt)->cond.expr); break;
+                    case StmtKind::For: exprs.push_back(cast<ForStmt>(stmt)->iter); break;
+                    case StmtKind::Loop: case StmtKind::Defer: case StmtKind::Continue: break;
+                }
+                continue;
+            }
+            const Expr* expr = exprs.back();
+            exprs.pop_back();
+            if (!expr) continue;
+            switch (expr->kind) {
+                case ExprKind::Block:
+                    // Statements after an unconditional jump are unreachable.
+                    for (const Stmt* stmt : cast<BlockExpr>(expr)->stmts) {
+                        stmts.push_back(stmt);
+                        if (stmt->kind == StmtKind::Return || stmt->kind == StmtKind::Throw ||
+                            stmt->kind == StmtKind::Break || stmt->kind == StmtKind::Continue) break;
+                    }
+                    break;
+                case ExprKind::Unsafe: exprs.push_back(cast<UnsafeExpr>(expr)->block); break;
+                case ExprKind::Paren: exprs.push_back(cast<ParenExpr>(expr)->inner); break;
+                case ExprKind::Unary: exprs.push_back(cast<UnaryExpr>(expr)->operand); break;
+                case ExprKind::Binary:
+                    exprs.push_back(cast<BinaryExpr>(expr)->lhs);
+                    exprs.push_back(cast<BinaryExpr>(expr)->rhs);
+                    break;
+                case ExprKind::Call:
+                    exprs.push_back(cast<CallExpr>(expr)->callee);
+                    for (const auto& arg : cast<CallExpr>(expr)->args) exprs.push_back(arg.value);
+                    break;
+                case ExprKind::If: {
+                    const auto& branch = *cast<IfExpr>(expr);
+                    exprs.push_back(branch.cond.expr);
+                    exprs.push_back(branch.then_block);
+                    exprs.push_back(branch.else_branch);
+                    break;
+                }
+                case ExprKind::Match:
+                    exprs.push_back(cast<MatchExpr>(expr)->scrutinee);
+                    for (const auto& arm : cast<MatchExpr>(expr)->arms) {
+                        exprs.push_back(arm.guard);
+                        exprs.push_back(arm.body);
+                    }
+                    break;
+                case ExprKind::Member: exprs.push_back(cast<MemberExpr>(expr)->base); break;
+                case ExprKind::OptMember: exprs.push_back(cast<OptMemberExpr>(expr)->base); break;
+                case ExprKind::Index:
+                    exprs.push_back(cast<IndexExpr>(expr)->base);
+                    exprs.push_back(cast<IndexExpr>(expr)->index);
+                    break;
+                case ExprKind::Cast: exprs.push_back(cast<CastExpr>(expr)->operand); break;
+                case ExprKind::Unwrap: exprs.push_back(cast<UnwrapExpr>(expr)->operand); break;
+                case ExprKind::GenericInst: exprs.push_back(cast<GenericInstExpr>(expr)->base); break;
+                case ExprKind::Array: for (const Expr* e : cast<ArrayExpr>(expr)->elems) exprs.push_back(e); break;
+                case ExprKind::Interp: for (const Expr* e : cast<InterpExpr>(expr)->exprs) exprs.push_back(e); break;
+                default: break;
+            }
+        }
+        return false;
+    }
+    static void tails(const Expr* root, std::vector<Tail>& out) {
+        std::vector<const Expr*> work{root};
+        while (!work.empty()) {
+            const Expr* expr = work.back();
+            work.pop_back();
+            while (const auto* paren = as<ParenExpr>(expr)) expr = paren->inner;
+            if (const auto* block = as<BlockExpr>(expr)) {
+                const Stmt* last = block->stmts.empty() ? nullptr : block->stmts.back();
+                if (const auto* tail = last ? as<ExprStmt>(last) : nullptr) work.push_back(tail->expr);
+                else if (!last || (last->kind != StmtKind::Return && last->kind != StmtKind::Throw &&
+                                   last->kind != StmtKind::Break && last->kind != StmtKind::Continue &&
+                                   !(last->kind == StmtKind::Loop && !breaks_out(*cast<LoopStmt>(last)))))
+                    out.push_back({Tail::Unit, block});
+            } else if (const auto* unsafe = as<UnsafeExpr>(expr)) work.push_back(unsafe->block);
+            else if (const auto* branch = as<IfExpr>(expr)) {
+                if (branch->else_branch) work.push_back(branch->else_branch);
+                else out.push_back({Tail::MissingElse, branch});
+                work.push_back(branch->then_block);
+            } else if (const auto* match = as<MatchExpr>(expr)) {
+                for (auto it = match->arms.rbegin(); it != match->arms.rend(); ++it) work.push_back(it->body);
+            } else out.push_back({Tail::Value, expr});
+        }
+    }
+    Value require_branches(const Expr* root, Type expected) {
+        std::vector<Tail> found;
+        tails(root, found);
+        Value result{expected};
+        for (const auto& tail : found) {
+            if (tail.kind == Tail::Value) {
+                const auto checked = compatible(expressions_.at(tail.expr), expected, tail.expr->span);
+                if (checked.type == Type::Error) result = checked;
+                else if (unavailable(checked) && result.type != Type::Error) result = {};
+            } else if (tail.kind == Tail::MissingElse) {
+                if (expected.optional_depth || promotes(Type::Unit, expected)) continue;
+                diag_.error(DiagCode::IfWithoutElse, tail.expr->span,
+                            "'if' without 'else' has no '{}' value when its condition is false; add an 'else' or expect '{}?'",
+                            scalar_type_name(expected), scalar_type_name(expected));
+                result = {Type::Error};
+            } else if (!promotes(Type::Unit, expected)) {
+                diag_.error(DiagCode::ScalarTypeMismatch, tail.expr->span, "expected '{}', found 'Unit'", scalar_type_name(expected));
+                result = {Type::Error};
+            }
+        }
+        return result;
+    }
     Value require(const Expr* expr, Type expected, Span span) {
+        if (expr && known(expected) && branching(expr)) return require_branches(branching(expr), expected);
         if (expr) return compatible(expressions_.at(expr), expected, span);
         if (known(expected) && !promotes(Type::Unit, expected)) {
             diag_.error(DiagCode::ScalarTypeMismatch, span, "expected '{}', found 'Unit'", scalar_type_name(expected));
@@ -2381,7 +2520,8 @@ private:
                 const usize child = expressions_.at(element);
                 if (nodes_[child].value.literal == Literal::Array && element_type.kind == Type::Array) work.push_back({child, element_type});
                 else {
-                    const auto checked = compatible(child, element_type, element->span);
+                    const auto checked = branching(element) ? require_branches(branching(element), element_type)
+                                                            : compatible(child, element_type, element->span);
                     if (checked.type == Type::Error) node.value = checked;
                     else if (unavailable(checked) && node.value.type != Type::Error) node.value = {};
                 }
@@ -2488,6 +2628,16 @@ private:
         while (!work.empty()) {
             const auto [index, target] = work.back(); work.pop_back();
             const auto actual = nodes_[index].value;
+            if (known(target) && branching(nodes_[index].expr)) {
+                std::vector<Tail> found;
+                tails(branching(nodes_[index].expr), found);
+                for (const auto& tail : found) {
+                    if (tail.kind == Tail::Value) work.push_back({expressions_.at(tail.expr), target});
+                    else if (!promotes(Type::Unit, target) && !(tail.kind == Tail::MissingElse && target.optional_depth))
+                        result.matches = false;
+                }
+                continue;
+            }
             if (!known(target) || unavailable(actual)) { result.deferred = true; continue; }
             if (actual.type == Type::Never) continue;
             if (actual.literal == Literal::Array) {

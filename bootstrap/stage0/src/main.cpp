@@ -32,7 +32,7 @@ constexpr std::string_view kUsage =
     "commands:\n"
     "  lex <file.phs>     print the token stream\n"
     "  parse <file.phs>   print the syntax tree\n"
-    "  check <file.phs>   check syntax, semantics, names and scalar types\n"
+    "  check <file.phs>   check syntax, semantics, names, types and flow\n"
     "  version            print the version\n"
     "  help               print this message\n";
 

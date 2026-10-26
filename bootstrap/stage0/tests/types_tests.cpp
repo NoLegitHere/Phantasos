@@ -231,7 +231,10 @@ fun calls() { use(18446744073709551615) }
     CHECK(valid.result.scalar_types->expression(ast::cast<ast::ExprStmt>(body->stmts[2])->expr) == Type::Int);
     const auto* branch = ast::cast<ast::IfExpr>(ast::cast<ast::VarItem>(valid.result.syntax->items[1])->init);
     CHECK(valid.result.scalar_types->expression(ast::cast<ast::ExprStmt>(branch->then_block->stmts[0])->expr) == Type::Int);
-    CHECK(valid.result.scalar_types->expression(ast::cast<ast::ExprStmt>(branch->then_block->stmts[1])->expr) == Type::Deferred);
+    // The used branch tails take the annotation's type.
+    CHECK(valid.result.scalar_types->expression(ast::cast<ast::ExprStmt>(branch->then_block->stmts[1])->expr) == Type::UInt64);
+    const auto* otherwise = ast::cast<ast::BlockExpr>(branch->else_branch);
+    CHECK(valid.result.scalar_types->expression(ast::cast<ast::ExprStmt>(otherwise->stmts[0])->expr) == Type::UInt64);
     const auto* calls = ast::cast<ast::BlockExpr>(ast::cast<ast::FunItem>(valid.result.syntax->items[3])->body);
     const auto* call = ast::cast<ast::CallExpr>(ast::cast<ast::ExprStmt>(calls->stmts[0])->expr);
     CHECK(valid.result.scalar_types->expression(call->args[0].value) == Type::UInt64);

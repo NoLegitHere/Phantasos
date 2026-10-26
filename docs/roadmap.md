@@ -65,6 +65,14 @@ foundation. Complete.
   - [x] Naive x86_64 code with overflow and division traps.
   - [x] Static ELF writer, stage0 `_start` and panic stub.
   - [x] `build` command and run tests in Linux CI.
+- [ ] **Next: output (M2).** `print` in the prelude for `String`, `Int`, `UInt`
+  and `Bool` (spec 3.27), string literals in read-only data, and a runtime
+  write, so stage0 programs can say hello.
+  - [x] Prelude `print` and its call checking.
+  - [ ] Read-only data in objects and ELF executables.
+  - [ ] MIR and x86_64 for two-word `String` values; gate accepts output.
+  - [ ] Runtime write and integer formatting.
+  - [ ] Run tests that compare standard output.
 - [ ] Generic base substitution and built-in traits. Instantiate
   generic base/interface graphs, derive `Copy`/`Sendable`/`Error`, and complete
   generic method contracts, associated defaults and receiver-dependent contexts.

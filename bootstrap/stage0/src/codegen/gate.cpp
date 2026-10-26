@@ -381,6 +381,10 @@ private:
             return;
         }
         const CheckedCall* checked = types_.call(&call);
+        if (checked && checked->kind == CallKind::Builtin) {
+            unsupported(call.callee->span, "output with 'print'");
+            return;
+        }
         const auto* callee = as<NameExpr>(call.callee);
         const bool direct = checked && checked->state == CallState::Resolved && checked->kind == CallKind::Function &&
                             callee && checked->target.valid() && checked->type_arguments.empty();

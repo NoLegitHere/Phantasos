@@ -2802,6 +2802,48 @@ private:
         return Value{kind == ConversionKind::Checked ? destination.optional() : destination};
     }
 
+    // print(value:) takes one String, Int, UInt or Bool, positionally or with
+    // its label, and returns Unit (3.27). Integer literals select Int.
+    std::optional<Value> prepare_builtin(const CallExpr& expr) {
+        const Expr* callee = expr.callee;
+        while (const auto* paren = as<ParenExpr>(callee)) callee = paren->inner;
+        if (callee->kind != ExprKind::Name) return std::nullopt;
+        const auto ids = callees(callee);
+        if (ids.size() != 1) return std::nullopt;
+        const auto& binding = resolution_.binding(ids.front());
+        if (binding.kind != BindingKind::BuiltinValue || names_.str(binding.name.sym) != "print") return std::nullopt;
+        auto& record = calls_[&expr];
+        record.kind = CallKind::Builtin;
+        record.target = ids.front();
+        const auto reject = [&](std::string_view found) -> Value {
+            diag_.error(DiagCode::NoMatchingCall, expr.span,
+                        "print takes one String, Int, UInt or Bool argument{}", found);
+            record.state = CallState::Error;
+            return Value{Type::Error};
+        };
+        if (expr.args.size() != 1 || (!expr.args[0].label.sym.empty() && names_.str(expr.args[0].label.sym) != "value"))
+            return reject("");
+        record.parameters = {0};
+        const Expr* arg = expr.args[0].value;
+        const Value source = value(arg);
+        if (source.type == Type::Error) {
+            record.state = CallState::Error;
+            return Value{Type::Error};
+        }
+        if (unavailable(source)) return Value{};
+        Type parameter = source.type;
+        if (source.literal == Literal::Integer) parameter = Type::Int;
+        else if (source.literal != Literal::None || source.type.optional_depth ||
+                 (source.type != Type::String && source.type != Type::Int && source.type != Type::UInt &&
+                  source.type != Type::Bool && source.type != Type::Never))
+            return reject(std::format(", found '{}'", scalar_type_name(default_type(source))));
+        if (parameter == Type::Never) parameter = Type::Unit;
+        record.parameter_types = {parameter};
+        record.state = CallState::Resolved;
+        if (parameter != Type::Unit && require(arg, parameter, arg->span).type == Type::Error) record.state = CallState::Error;
+        return Value{record.state == CallState::Error ? Type{Type::Error} : Type{Type::Unit}};
+    }
+
     std::optional<Value> prepare_constructor(const CallExpr& expr) {
         auto type = entity(expr.callee);
         bool inferred = false;
@@ -2920,6 +2962,7 @@ private:
         pending_dependencies_.clear();
         calls_[&expr] = {}; // a deferred application may resume after pending dependencies
         if (auto conversion = prepare_conversion(expr)) return *conversion;
+        if (auto builtin = prepare_builtin(expr)) return *builtin;
         if (auto constructor = prepare_constructor(expr)) return *constructor;
         auto& record = calls_[&expr];
         const Value callee = value(expr.callee);

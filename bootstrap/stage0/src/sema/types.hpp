@@ -143,6 +143,19 @@ struct CheckedMember {
     bool type_receiver = false;
     std::vector<BindingId> candidates; // field, method overloads, or nested type
 };
+struct ConformanceWitness {
+    BindingId requirement;
+    BindingId implementation; // valid only for a Resolved witness
+    ExpansionState state = ExpansionState::Deferred;
+};
+struct CheckedHierarchy {
+    ExpansionState state = ExpansionState::Deferred; // structural base graph
+    ExpansionState conformance = ExpansionState::Deferred; // supported override/requirement checks
+    BindingId superclass;
+    bool dependent = false;
+    std::vector<BindingId> bases;
+    std::vector<ConformanceWitness> witnesses;
+};
 enum class ConversionKind : u8 { Widening, Checked, Truncating };
 struct CheckedConversion {
     CallState state = CallState::Deferred;
@@ -192,6 +205,10 @@ public:
         return it == members_.end() ? nullptr : &it->second;
     }
     const ExpandedType* alias(BindingId id) const { return aliases_.alias(id); }
+    const CheckedHierarchy* hierarchy(BindingId id) const {
+        const auto it = hierarchies_.find(id.value);
+        return it == hierarchies_.end() ? nullptr : &it->second;
+    }
     const TypeDescriptor* descriptor(ScalarType type) const { return types_.descriptor(type); }
     std::string type_name(ScalarType type, const Resolution& resolution, const Interner& names, usize limit = TypeTable::kNameLimit) const {
         return types_.name(type, resolution, names, limit);
@@ -205,6 +222,7 @@ private:
     std::unordered_map<const ast::CallExpr*, CheckedCall> calls_;
     std::unordered_map<const ast::CallExpr*, CheckedConversion> conversions_;
     std::unordered_map<const ast::Expr*, CheckedMember> members_;
+    std::unordered_map<usize, CheckedHierarchy> hierarchies_;
     AliasExpansion aliases_;
     TypeTable types_;
 };
@@ -214,9 +232,10 @@ private:
 // Also infers expression-body returns and checks direct file-level function
 // calls, numeric conversions and optional wrappers on built-in facts.
 // Includes fully known composites, non-generic nominal identities, arrays,
-// primary constructors, direct nominal members and calls through known function types. Generic aliases,
-// inherited/dependent member lookup, function-value inference, effects and ownership
-// still require later passes.
+// primary constructors, nominal/inherited members and known function types.
+// Non-generic hierarchy graphs, overrides, method requirements and upcasts are
+// checked separately from dependent contracts. Generic substitution, property
+// requirements, function-value inference, effects and ownership need later passes.
 // Dependency evaluation and AST traversal use explicit stacks, including
 // forward binding inference. Cyclic inference remains deferred for a later pass.
 [[nodiscard]] ScalarTypes check_scalar_types(const ast::File& file, const Resolution& resolution,

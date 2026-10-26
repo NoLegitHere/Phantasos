@@ -1,0 +1,36 @@
+// Copyright 2026 The Phantasos Authors
+// SPDX-License-Identifier: Apache-2.0
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+class Closed {}
+class ClosedChild: Closed {}
+open class A: B {}
+open class B: A {}
+open class Virtual { open fun read(): Int = 1 }
+class MissingOverride: Virtual { fun read(): Int = 1 }
+interface Required { fun get(): Int }
+class Missing: Required {}
+class Wrong: Required { fun get(): Bool = true }
+open class Root {}
+class Child: Root {}
+let down: Child = Root()
+open class Args(x: Int8) {}
+class BadArgs: Args(128) {}
+
+class Overloaded {
+    fun select(x: Int): Int = x
+    fun select<T>(x: T, y: T): T = x
+}
+let mismatch: Bool = Overloaded().select(1)
+let noMatch = Overloaded().select(true)

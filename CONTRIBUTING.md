@@ -78,14 +78,17 @@
   Keep type-name formatting bounded in both work and output; shared descriptor
   graphs can expand exponentially even with iterative traversal. Public names
   default to 32 KiB and diagnostic names to 1 KiB per type, with `...` elision.
-  Defer possible inheritance/conformance instead of treating it as equality or
-  a proven mismatch. Primary constructors and typed indirect calls finish without
+  Use the checked nominal graph for ancestry; generic/built-in trait contracts
+  remain deferred. Primary constructors and typed indirect calls finish without
   adding function-return dependencies; named-function value inference is pending.
   Member lookup retains separate `CheckedMember` records; never rewrite lexical
   references. Index direct member scopes and cache expression type entities.
   Resolve a receiver before adding its selected field dependency. Method calls
-  add only the selected return dependency, as direct functions do. Keep inherited
-  overload sets deferred until hierarchy lookup is implemented.
+  add only the selected return dependency, as direct functions do. Inherited
+  lookup shares cached results along chains and deduplicates diamonds. Normalize
+  newly available inherited type/base aliases before checking callable signatures.
+  Keep structural graph state separate from conformance/witness state. Unsupported
+  generic, associated-type, property and receiver-convention contracts are pending.
   For low-level API calls, seed the interner with `seed_keywords` before lexing. Source
   managers, interners, and arenas must outlive the views/nodes referring to
   their storage. `DiagEngine::all()` exposes emission order;
@@ -146,6 +149,10 @@
   The `members` suite covers direct fields/methods, static and implicit receivers,
   alias-qualified access, member overloads/defaults, callable fields, receiver
   errors, deferred hierarchies/generics, stable records and 10,000-step chains.
+  The `hierarchy` suite covers bases/cycles, nominal/interface upcasts, inherited
+  fields/types/overloads, outer-scope fallback, `super`, overrides and witnesses,
+  defaults/abstract obligations, forward base aliases, invalid/deferred contracts,
+  stable records, 10,000-class chains and 64-level interface diamonds.
 
 - Run `python tests/test_license_check.py` for license-fixer regressions,
   including encoding declarations, BOMs, line endings, and idempotence.

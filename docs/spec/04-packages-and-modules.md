@@ -75,8 +75,9 @@ build/<target>/<profile>/bin/<name>[.exe]  executables
 
 ## 4.5 Stage0 support
 **Current status:** stage0 is frontend-only. It provides `lex`, syntax-only
-`parse`, and `check` (syntax, structural semantic validation and lexical name
-resolution) on single files. Imports receive `E0304` from `check` until
+`parse`, and `check` on single files. Checking includes structural validation,
+lexical resolution and the initial typing, call, alias, member and hierarchy
+checks described in chapter 3. Imports receive `E0304` from `check` until
 package loading is implemented. None of the package or workspace features
 in this chapter work yet.
 

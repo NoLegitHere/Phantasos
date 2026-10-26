@@ -16,6 +16,7 @@
 #include "sema/types.hpp"
 
 #include <limits>
+#include <memory>
 #include <optional>
 #include <unordered_set>
 #include <variant>
@@ -154,16 +155,7 @@ public:
             result.aliases_ = std::move(aliases_);
             return result;
         }
-        for (auto& [id, fact] : aliases_.aliases_) {
-            (void)id;
-            if (!fact.syntax) continue;
-            const Type type = annotation(fact.syntax);
-            if (known(type)) {
-                fact.state = ExpansionState::Resolved;
-                fact.scalar = type;
-                fact.optional_depth = type.optional_depth;
-            }
-        }
+        normalize_aliases();
         // Binding nodes have the same indices as the resolver's BindingIds.
         for (usize i = 0; i < resolution_.bindings().size(); ++i) {
             const auto& b = resolution_.bindings()[i];
@@ -172,6 +164,10 @@ public:
                 b.kind != BindingKind::Type && b.kind != BindingKind::TypeAlias)
                 member_values_[b.scope.value][b.name.sym.id].push_back(BindingId{i});
         }
+        build_hierarchies();
+        hierarchy_ready_ = true;
+        complete_hierarchy_types();
+        std::erase_if(annotations_, [](const auto& entry) { return entry.second == Type::Deferred; });
         nodes_.resize(resolution_.bindings().size());
         for (usize i = 0; i < resolution_.bindings().size(); ++i) {
             const auto& b = resolution_.bindings()[i];
@@ -258,6 +254,8 @@ public:
             }
             (void)require(requirement.value, expected, requirement.span);
         }
+        check_super_arguments();
+        check_hierarchy_contracts();
         // Only context-free roots default. A literal inside a deferred call,
         // annotation or composite expression may still need a contextual type
         // (for example a UInt64 argument beyond the default Int range).
@@ -273,6 +271,7 @@ public:
         result.calls_ = std::move(calls_);
         result.conversions_ = std::move(conversions_);
         result.members_ = std::move(members_);
+        result.hierarchies_ = std::move(hierarchies_);
         result.aliases_ = std::move(aliases_);
         result.types_ = std::move(types_);
         return result;
@@ -290,11 +289,6 @@ private:
         const auto* item = cast_type_decl(b.item);
         return item->kind == ItemKind::Interface;
     }
-    bool inherited(Type type) const {
-        if (type.kind != Type::Nominal) return false;
-        const auto& b = resolution_.binding(types_.descriptor(type)->declaration);
-        return b.kind == BindingKind::Type && !cast_type_decl(b.item)->supers.empty();
-    }
     Relation relation(Type from, Type to) const {
         if (promotes(from, to) || from == Type::Never) return Relation::Yes;
         // Shared descriptors form a DAG. Keep the pair directed, since function
@@ -310,11 +304,17 @@ private:
             if (promotes(source, target) || source == Type::Never) continue;
             if (!compared.emplace(source, target).second) continue;
             if (!known(source) || !known(target)) { result = Relation::Deferred; continue; }
-            if (protocol(target)) { result = Relation::Deferred; continue; }
-            if (source.optional_depth > target.optional_depth) return Relation::No;
-            if (source.kind == Type::Nominal && target.kind == Type::Nominal && (protocol(source) || inherited(source) || inherited(target))) {
+            if (protocol(target) && resolution_.binding(types_.descriptor(target)->declaration).kind == BindingKind::BuiltinType) {
                 result = Relation::Deferred; continue;
             }
+            if (source.optional_depth > target.optional_depth) return Relation::No;
+            if (source.kind == Type::Nominal && target.kind == Type::Nominal) {
+                const auto match = ancestry(types_.descriptor(source)->declaration, types_.descriptor(target)->declaration);
+                if (match == Relation::No) return Relation::No;
+                if (match == Relation::Deferred) result = Relation::Deferred;
+                continue;
+            }
+            if (protocol(target)) { result = Relation::Deferred; continue; }
             if (source.kind == Type::Function && target.kind == Type::Function) {
                 const auto* a = types_.descriptor(source);
                 const auto* b = types_.descriptor(target);
@@ -368,7 +368,9 @@ private:
                 frame.ready = true;
                 active[syntax] = true;
                 if (syntax->kind == TypeKind::Path || syntax->kind == TypeKind::Unit || syntax->kind == TypeKind::SelfType) {
-                    const auto expanded = aliases_.type(syntax, resolution_);
+                    auto expanded = aliases_.type(syntax, resolution_);
+                    if (hierarchy_ready_ && expanded.type.state == ExpansionState::Deferred && syntax->kind == TypeKind::Path && syntax->args.empty())
+                        expanded.type = inherited_type(syntax);
                     if (!expanded.unknown_member.sym.empty())
                         diag_.error(DiagCode::UnknownType, expanded.unknown_member.span, "unknown type '{}' in '{}'",
                                     names_.str(expanded.unknown_member.sym), names_.str(resolution_.binding(expanded.member_owner).name.sym));
@@ -380,7 +382,10 @@ private:
                     if (known(value) || value == Type::Error) { annotations_[syntax] = value; continue; }
                     if (expanded.type.syntax && expanded.type.syntax != syntax) {
                         frame.redirect = expanded.type.syntax;
-                        if (!active.contains(frame.redirect)) work.push_back({frame.redirect});
+                        if (!annotations_.contains(frame.redirect) && active.contains(frame.redirect)) {
+                            diag_.error(DiagCode::AliasCycle, syntax->span, "cyclic type alias expansion through inherited lookup");
+                            for (const auto& entry : work) annotations_[entry.syntax] = Type::Error;
+                        } else if (!active.contains(frame.redirect)) work.push_back({frame.redirect});
                     } else annotations_[syntax] = Type::Deferred;
                     continue;
                 }
@@ -434,8 +439,503 @@ private:
         if (type.state == ExpansionState::Resolved) entities_[expr] = type;
     }
 
+    void normalize_aliases() {
+        for (auto& [id, fact] : aliases_.aliases_) {
+            (void)id;
+            if (!fact.syntax) continue;
+            const auto value = annotation(fact.syntax);
+            if (value == Type::Error) { fact.state = ExpansionState::Error; fact.scalar = value; continue; }
+            if (!known(value)) continue;
+            fact.state = ExpansionState::Resolved;
+            fact.scalar = value;
+            fact.optional_depth = value.optional_depth;
+            if (value.kind == Type::Nominal) fact.target = types_.descriptor(value)->declaration;
+            else for (const auto& [builtin, type] : aliases_.builtins_) if (type == value.scalar()) { fact.target = BindingId{builtin}; break; }
+        }
+    }
+
+    void complete_hierarchy_types() {
+        const auto progress = [&]() {
+            std::pair<usize, usize> counts{};
+            for (const auto& [id, fact] : aliases_.aliases_) { (void)id; counts.first += fact.state != ExpansionState::Deferred; }
+            for (const auto& b : resolution_.bindings()) if (b.kind == BindingKind::Type)
+                for (const auto& base : cast_type_decl(b.item)->supers)
+                    if (const auto it = annotations_.find(base.type); it != annotations_.end()) counts.second += it->second != Type::Deferred;
+            return counts;
+        };
+        for (;;) {
+            const auto before = progress();
+            std::erase_if(annotations_, [](const auto& entry) { return entry.second == Type::Deferred; });
+            normalize_aliases();
+            std::erase_if(annotations_, [](const auto& entry) { return entry.second == Type::Deferred; });
+            // Normalize every base against the previous complete graph before
+            // rebuilding, so forward declarations cannot change lookup order.
+            for (const auto& b : resolution_.bindings()) if (b.kind == BindingKind::Type)
+                for (const auto& base : cast_type_decl(b.item)->supers) (void)annotation(base.type);
+            const auto after = progress();
+            if (after.second > before.second) {
+                hierarchies_.clear(); hierarchy_order_.clear(); ancestry_cache_.clear(); inherited_members_.clear();
+                build_hierarchies();
+            }
+            if (after == before) break; // only Deferred -> known/error facts advance
+        }
+    }
+
+    void build_hierarchies() {
+        for (usize id = 0; id < resolution_.bindings().size(); ++id) {
+            const auto& b = resolution_.bindings()[id];
+            if (b.kind != BindingKind::Type) continue;
+            auto& fact = hierarchies_[id];
+            const auto* item = cast_type_decl(b.item);
+            if (!known(nominal(BindingId{id}))) continue;
+            fact.state = item->where.empty() ? ExpansionState::Resolved : ExpansionState::Deferred;
+            for (const auto& base : item->supers) {
+                const auto type = annotation(base.type);
+                if (type == Type::Error) { fact.state = ExpansionState::Error; continue; }
+                if (!known(type)) { if (fact.state != ExpansionState::Error) fact.state = ExpansionState::Deferred; continue; }
+                bool valid = type.kind == Type::Nominal && !type.optional_depth;
+                BindingId parent;
+                if (valid) {
+                    parent = types_.descriptor(type)->declaration;
+                    const auto& target = resolution_.binding(parent);
+                    if (target.kind == BindingKind::BuiltinType) {
+                        if (std::ranges::find(fact.bases, parent) != fact.bases.end()) {
+                            if (reported_bases_.insert(base.type).second) diag_.error(DiagCode::InvalidBase, base.type->span, "repeated base type");
+                            fact.state = ExpansionState::Error; continue;
+                        }
+                        fact.bases.push_back(parent);
+                        if (fact.state != ExpansionState::Error) fact.state = ExpansionState::Deferred;
+                        continue; // built-in trait/error contracts need later checking
+                    }
+                    const auto* declaration = cast_type_decl(target.item);
+                    valid = declaration->kind == ItemKind::Interface ? !base.has_args :
+                        declaration->kind == ItemKind::Class && item->kind == ItemKind::Class && !fact.superclass.valid() &&
+                        !has_modifier(declaration->mods, Modifier::Final) &&
+                        (has_modifier(declaration->mods, Modifier::Open) || has_modifier(declaration->mods, Modifier::Abstract) ||
+                         has_modifier(declaration->mods, Modifier::Sealed));
+                    if (std::ranges::find(fact.bases, parent) != fact.bases.end()) valid = false;
+                    if (valid && declaration->kind == ItemKind::Class) fact.superclass = parent;
+                }
+                if (!valid) {
+                    if (reported_bases_.insert(base.type).second) {
+                        auto& d = diag_.error(DiagCode::InvalidBase, base.type->span, "invalid, repeated or final base type for '{}'", names_.str(b.name.sym));
+                        if (parent.valid()) d.notes.push_back({resolution_.binding(parent).name.span, "base declared here"});
+                    }
+                    fact.state = ExpansionState::Error;
+                } else fact.bases.push_back(parent);
+            }
+        }
+        struct Frame { usize id; usize next = 0; };
+        std::vector<u8> color(resolution_.bindings().size());
+        std::vector<Frame> stack;
+        // Explicit DFS validates cycles and propagates incomplete/error bases.
+        for (usize root = 0; root < color.size(); ++root) {
+            if (!hierarchies_.contains(root) || color[root]) continue;
+            stack.push_back({root}); color[root] = 1;
+            while (!stack.empty()) {
+                auto& frame = stack.back();
+                auto& fact = hierarchies_.at(frame.id);
+                if (frame.next < fact.bases.size()) {
+                    const auto base = fact.bases[frame.next++];
+                    if (!hierarchies_.contains(base.value)) continue;
+                    if (!color[base.value]) { color[base.value] = 1; stack.push_back({base.value}); continue; }
+                    if (color[base.value] == 1 && fact.state != ExpansionState::Error) {
+                        Diagnostic* diagnostic = nullptr;
+                        if (!reported_cycles_.contains(base.value)) diagnostic = &diag_.error(DiagCode::InheritanceCycle, resolution_.bindings()[frame.id].name.span,
+                                              "cyclic inheritance involving '{}'", names_.str(resolution_.binding(base).name.sym));
+                        bool cycle = false;
+                        for (const auto& entry : stack) {
+                            cycle |= entry.id == base.value;
+                            if (!cycle) continue;
+                            hierarchies_.at(entry.id).state = ExpansionState::Error;
+                            reported_cycles_.insert(entry.id);
+                            if (diagnostic) diagnostic->notes.push_back({resolution_.bindings()[entry.id].name.span, "type in inheritance cycle"});
+                        }
+                    }
+                    continue;
+                }
+                for (const auto base : fact.bases) {
+                    const auto it = hierarchies_.find(base.value);
+                    if (it == hierarchies_.end()) continue;
+                    if (it->second.state == ExpansionState::Error) fact.state = ExpansionState::Error;
+                    else if (it->second.state == ExpansionState::Deferred && fact.state != ExpansionState::Error) fact.state = ExpansionState::Deferred;
+                }
+                color[frame.id] = 2;
+                hierarchy_order_.push_back(BindingId{frame.id});
+                stack.pop_back();
+            }
+        }
+    }
+
+    Relation ancestry(BindingId source, BindingId target) const {
+        if (source == target) return Relation::Yes;
+        auto& cache = ancestry_cache_[source.value];
+        if (const auto it = cache.find(target.value); it != cache.end()) return it->second;
+        std::vector<BindingId> work{source};
+        std::unordered_set<usize> visited;
+        Relation result = Relation::No;
+        while (!work.empty()) {
+            const auto next = work.back(); work.pop_back();
+            if (next == target) { result = Relation::Yes; break; }
+            if (!visited.insert(next.value).second) continue;
+            const auto it = hierarchies_.find(next.value);
+            if (it == hierarchies_.end() || it->second.state != ExpansionState::Resolved) { result = Relation::Deferred; continue; }
+            for (const auto base : it->second.bases) work.push_back(base);
+        }
+        cache[target.value] = result;
+        return result;
+    }
+
+    bool static_member(BindingId id) const {
+        const auto& b = resolution_.binding(id);
+        return b.kind == BindingKind::Type || b.kind == BindingKind::TypeAlias || b.kind == BindingKind::EnumCase ||
+               (b.item && has_modifier(b.item->mods, Modifier::Static));
+    }
+    BindingId member_owner(BindingId id) const {
+        const auto it = member_owners_.find(resolution_.binding(id).scope.value);
+        return it == member_owners_.end() ? BindingId{} : it->second;
+    }
+    bool interface_owner(BindingId id) const {
+        const auto owner = member_owner(id);
+        return owner.valid() && resolution_.binding(owner).item->kind == ItemKind::Interface;
+    }
+    bool contains_self_type(const TypeExpr* root) const {
+        if (!root) return false;
+        std::vector<const TypeExpr*> work{root};
+        while (!work.empty()) {
+            const auto* type = work.back(); work.pop_back();
+            if (type->kind == TypeKind::SelfType) return true;
+            if (type->inner) work.push_back(type->inner);
+            if (type->throws_type) work.push_back(type->throws_type);
+            for (const auto* arg : type->args) work.push_back(arg);
+        }
+        return false;
+    }
+    bool method_inputs_known(BindingId id) const {
+        const auto* fun = cast<FunItem>(resolution_.binding(id).item);
+        const auto& sig = signatures_.at(id.value);
+        if (sig.generic || !fun->sig.where.empty()) return false;
+        for (const auto param : sig.parameters) if (!known(param)) return false;
+        const bool interface = interface_owner(id);
+        for (const auto& param : fun->sig.params) {
+            if (param.conv != Convention::Default) return false;
+            if (interface && contains_self_type(param.type)) return false;
+        }
+        if (interface && (contains_self_type(fun->sig.ret) || contains_self_type(fun->sig.throws_type))) return false;
+        return true;
+    }
+    bool same_method_shape(BindingId a, BindingId b) const {
+        if (static_member(a) != static_member(b)) return false;
+        const auto x = cast<FunItem>(resolution_.binding(a).item)->sig.params;
+        const auto y = cast<FunItem>(resolution_.binding(b).item)->sig.params;
+        if (x.size() != y.size()) return false;
+        for (usize p = 0; p < x.size(); ++p) if (x[p].name.sym != y[p].name.sym) return false;
+        return true;
+    }
+    bool same_method_inputs(BindingId a, BindingId b) const {
+        return same_method_shape(a, b) && method_inputs_known(a) && method_inputs_known(b) &&
+               signatures_.at(a.value).parameters == signatures_.at(b.value).parameters;
+    }
+    struct MemberLookup {
+        ExpansionState state = ExpansionState::Resolved;
+        // Keep reabstracting declarations even when a peer default supplies
+        // the visible implementation. Descendants still need their blockers.
+        std::vector<BindingId> declarations;
+        std::vector<BindingId> ids;
+    };
+    std::vector<BindingId> direct_members(BindingId owner, Symbol name, bool types_only) const {
+        const auto scope = resolution_.binding(owner).members;
+        if (!scope.valid()) return {};
+        if (!types_only) if (const auto table = member_values_.find(scope.value); table != member_values_.end())
+            if (const auto it = table->second.find(name.id); it != table->second.end()) return it->second;
+        const auto& types = aliases_.member_types_.at(scope.value);
+        if (const auto it = types.find(name.id); it != types.end()) return {it->second};
+        return {};
+    }
+    void merge_members(std::vector<BindingId>& result, std::span<const BindingId> incoming) const {
+        const auto hides = [&](BindingId a, BindingId b) {
+            if (a == b) return true;
+            const auto& x = resolution_.binding(a);
+            const auto& y = resolution_.binding(b);
+            if (x.kind != BindingKind::Function || y.kind != BindingKind::Function)
+                return ancestry(member_owner(a), member_owner(b)) == Relation::Yes;
+            if (!same_method_inputs(a, b)) return false;
+            return ancestry(member_owner(a), member_owner(b)) == Relation::Yes;
+        };
+        for (const auto candidate : incoming) {
+            if (std::ranges::any_of(result, [&](BindingId id) { return hides(id, candidate); })) continue;
+            std::erase_if(result, [&](BindingId id) { return hides(candidate, id); });
+            result.push_back(candidate);
+        }
+    }
+    std::vector<BindingId> preferred_members(std::span<const BindingId> declarations) const {
+        std::vector<BindingId> result;
+        for (const auto candidate : declarations) {
+            const bool hidden = std::ranges::any_of(declarations, [&](BindingId other) {
+                if (candidate == other || resolution_.binding(candidate).kind != BindingKind::Function ||
+                    resolution_.binding(other).kind != BindingKind::Function || !same_method_inputs(other, candidate)) return false;
+                const bool candidate_interface = interface_owner(candidate), other_interface = interface_owner(other);
+                if (!other_interface && candidate_interface) return true;
+                return other_interface && candidate_interface && cast<FunItem>(resolution_.binding(other).item)->body &&
+                       !cast<FunItem>(resolution_.binding(candidate).item)->body;
+            });
+            if (!hidden) result.push_back(candidate);
+        }
+        return result;
+    }
+    std::shared_ptr<const MemberLookup> lookup_member(BindingId owner, Symbol name, bool types_only = false) {
+        const u64 key = (static_cast<u64>(name.id) << 1) | types_only;
+        auto& cache = inherited_members_[key];
+        if (const auto it = cache.find(owner.value); it != cache.end()) return it->second;
+        struct Frame { BindingId id; usize next = 0; };
+        std::vector<Frame> stack{{owner}};
+        while (!stack.empty()) {
+            auto& frame = stack.back();
+            const auto hierarchy = hierarchies_.find(frame.id.value);
+            const auto own = direct_members(frame.id, name, types_only);
+            if (hierarchy == hierarchies_.end() || hierarchy->second.state == ExpansionState::Error ||
+                (!own.empty() && resolution_.binding(own.front()).kind != BindingKind::Function)) {
+                auto result = std::make_shared<MemberLookup>();
+                result->state = hierarchy == hierarchies_.end() ? ExpansionState::Deferred : hierarchy->second.state;
+                if (result->state != ExpansionState::Error && !own.empty()) { result->state = ExpansionState::Resolved; result->ids = own; result->declarations = own; }
+                cache[frame.id.value] = result; stack.pop_back(); continue;
+            }
+            const auto& fact = hierarchy->second;
+            if (frame.next < fact.bases.size()) {
+                const auto base = fact.bases[frame.next++];
+                if (!cache.contains(base.value)) stack.push_back({base});
+                continue;
+            }
+            if (own.empty() && fact.bases.size() == 1 && fact.state == ExpansionState::Resolved) {
+                cache[frame.id.value] = cache.at(fact.bases.front().value);
+            } else {
+                auto result = std::make_shared<MemberLookup>();
+                result->state = fact.state;
+                result->declarations = own;
+                for (const auto base : fact.bases) {
+                    const auto& parent = *cache.at(base.value);
+                    if (parent.state == ExpansionState::Error) result->state = ExpansionState::Error;
+                    else if (parent.state == ExpansionState::Deferred && result->state != ExpansionState::Error) result->state = ExpansionState::Deferred;
+                    merge_members(result->declarations, parent.declarations);
+                }
+                result->ids = preferred_members(result->declarations);
+                cache[frame.id.value] = result;
+            }
+            stack.pop_back();
+        }
+        return cache.at(owner.value);
+    }
+
+    Relation method_contract(BindingId implementation, BindingId requirement) {
+        if (!same_method_shape(implementation, requirement)) return Relation::No;
+        if (!method_inputs_known(implementation) || !method_inputs_known(requirement)) return Relation::Deferred;
+        if (!same_method_inputs(implementation, requirement)) return Relation::No;
+        const auto* a = cast<FunItem>(resolution_.binding(implementation).item);
+        const auto* b = cast<FunItem>(resolution_.binding(requirement).item);
+        if (has_modifier(a->mods, Modifier::Mut) && !has_modifier(b->mods, Modifier::Mut)) return Relation::No;
+        if (a->sig.throws && !b->sig.throws) return Relation::No;
+        if (has_modifier(a->mods, Modifier::Async) != has_modifier(b->mods, Modifier::Async) ||
+            has_modifier(a->mods, Modifier::Unsafe) != has_modifier(b->mods, Modifier::Unsafe)) return Relation::Deferred;
+        if (a->sig.throws && b->sig.throws && (a->sig.throws_type || b->sig.throws_type)) {
+            if (!a->sig.throws_type || !b->sig.throws_type) return Relation::Deferred;
+            const auto errors = relation(annotation(a->sig.throws_type), annotation(b->sig.throws_type));
+            if (errors != Relation::Yes) return errors;
+        }
+        const auto from = nodes_[function_nodes_.at(implementation.value)].value.type;
+        const auto to = nodes_[function_nodes_.at(requirement.value)].value.type;
+        return known(from) && known(to) ? relation(from, to) : Relation::Deferred;
+    }
+
+    void check_super_arguments() {
+        for (const auto owner : hierarchy_order_) {
+            const auto& fact = hierarchies_.at(owner.value);
+            if (fact.state != ExpansionState::Resolved || !fact.superclass.valid()) continue;
+            const auto* parent = cast_type_decl(resolution_.binding(fact.superclass).item);
+            if (std::ranges::any_of(parent->members, [](const Item* item) { const auto* init = as<InitItem>(item); return init && init->has_params; })) continue;
+            std::unordered_map<u32, usize> labels;
+            for (usize p = 0; p < parent->ctor_params.size(); ++p) labels.emplace(parent->ctor_params[p].name.sym.id, p);
+            for (const auto& base : cast_type_decl(resolution_.binding(owner).item)->supers) {
+                if (!base.has_args) continue; // an explicit super(...) body can delegate later
+                const auto type = annotation(base.type);
+                if (type.kind != Type::Nominal || types_.descriptor(type)->declaration != fact.superclass) continue;
+                if (std::ranges::any_of(base.args, [&](const Arg& arg) { return value(arg.value).type == Type::Error; })) continue;
+                CallExpr arguments;
+                arguments.args = base.args;
+                std::vector<usize> mapping;
+                bool matches = argument_mapping(arguments, parent->ctor_params, labels, mapping);
+                if (matches) for (usize a = 0; a < base.args.size(); ++a)
+                    matches &= probe(expressions_.at(base.args[a].value), annotation(parent->ctor_params[mapping[a]].type)).matches;
+                if (!matches) diag_.error(DiagCode::NoMatchingCall, base.type->span, "arguments do not match superclass constructor");
+                else for (usize a = 0; a < base.args.size(); ++a)
+                    (void)require(base.args[a].value, annotation(parent->ctor_params[mapping[a]].type), base.args[a].value->span);
+            }
+        }
+    }
+
+    void check_hierarchy_contracts() {
+        std::unordered_map<usize, std::shared_ptr<const std::vector<BindingId>>> obligations;
+        for (const auto owner : hierarchy_order_) {
+            auto& fact = hierarchies_.at(owner.value);
+            if (fact.state == ExpansionState::Error) { fact.conformance = ExpansionState::Error; obligations[owner.value] = std::make_shared<std::vector<BindingId>>(); continue; }
+            const auto* item = cast_type_decl(resolution_.binding(owner).item);
+            fact.conformance = fact.state;
+            auto required = std::make_shared<std::vector<BindingId>>();
+            for (const auto base : fact.bases) {
+                if (const auto it = obligations.find(base.value); it != obligations.end())
+                    for (const auto id : *it->second) if (std::ranges::find(*required, id) == required->end()) required->push_back(id);
+                if (const auto it = hierarchies_.find(base.value); it != hierarchies_.end()) {
+                    fact.dependent |= it->second.dependent;
+                    if (it->second.conformance == ExpansionState::Error) fact.conformance = ExpansionState::Error;
+                }
+            }
+            if (fact.conformance == ExpansionState::Error) { obligations[owner.value] = required; continue; }
+            if (fact.dependent) fact.conformance = ExpansionState::Deferred;
+            bool added = false;
+            for (const auto id : resolution_.scopes()[resolution_.binding(owner).members.value].bindings) {
+                const auto& b = resolution_.binding(id);
+                if (item->kind == ItemKind::Interface && (b.kind == BindingKind::Field || b.kind == BindingKind::TypeAlias)) {
+                    fact.conformance = ExpansionState::Deferred; fact.dependent = true;
+                }
+                if (b.kind != BindingKind::Function) continue;
+                const auto* fun = cast<FunItem>(b.item);
+                if (item->kind == ItemKind::Interface || (!static_member(id) && !fun->body)) {
+                    required->push_back(id); added = true;
+                    if (!method_inputs_known(id) || !known(nodes_[function_nodes_.at(id.value)].value.type)) {
+                        fact.conformance = ExpansionState::Deferred; fact.dependent = true;
+                    }
+                }
+                bool found = false, pending = fact.state != ExpansionState::Resolved ||
+                    (has_modifier(fun->mods, Modifier::Override) && !method_inputs_known(id)), invalid = false;
+                for (const auto base : fact.bases) {
+                    const auto inherited = lookup_member(base, b.name.sym);
+                    pending |= inherited->state != ExpansionState::Resolved;
+                    for (const auto parent : inherited->ids) {
+                        if (resolution_.binding(parent).kind != BindingKind::Function || !same_method_shape(id, parent)) continue;
+                        pending |= !method_inputs_known(id) || !method_inputs_known(parent);
+                        if (!same_method_inputs(id, parent)) continue;
+                        found = true;
+                        const auto* declaration = cast<FunItem>(resolution_.binding(parent).item);
+                        const auto* parent_owner = cast_type_decl(resolution_.binding(member_owner(parent)).item);
+                        const bool virtual_method = interface_owner(parent) || has_modifier(declaration->mods, Modifier::Open) ||
+                            has_modifier(declaration->mods, Modifier::Abstract) || (has_modifier(parent_owner->mods, Modifier::Abstract) && !declaration->body);
+                        const auto contract = method_contract(id, parent);
+                        pending |= contract == Relation::Deferred;
+                        if (has_modifier(fun->mods, Modifier::Override) && static_member(id)) invalid = true;
+                        else if (!static_member(id) && (!interface_owner(parent) || has_modifier(fun->mods, Modifier::Override) || item->kind == ItemKind::Interface) &&
+                                 (!virtual_method || has_modifier(declaration->mods, Modifier::Final) ||
+                                 (!interface_owner(parent) && !has_modifier(fun->mods, Modifier::Override)) || contract == Relation::No)) invalid = true;
+                    }
+                }
+                if (has_modifier(fun->mods, Modifier::Override) && !found && !pending) invalid = true;
+                if (invalid) {
+                    diag_.error(DiagCode::InvalidOverride, b.name.span, "invalid override of method '{}'", names_.str(b.name.sym));
+                    fact.conformance = ExpansionState::Error;
+                } else if (pending && fact.conformance != ExpansionState::Error) { fact.conformance = ExpansionState::Deferred; fact.dependent = true; }
+            }
+            // Reuse obligation lists along chains with no new requirements.
+            if (!added && fact.bases.size() == 1 && obligations.contains(fact.bases.front().value)) obligations[owner.value] = obligations.at(fact.bases.front().value);
+            else obligations[owner.value] = required;
+            if (fact.conformance == ExpansionState::Error) continue;
+            if (item->kind == ItemKind::Interface) continue;
+            for (const auto requirement : *obligations.at(owner.value)) {
+                ConformanceWitness witness{.requirement = requirement};
+                if (!method_inputs_known(requirement)) { fact.witnesses.push_back(witness); fact.dependent = true; if (fact.conformance != ExpansionState::Error) fact.conformance = ExpansionState::Deferred; continue; }
+                const auto& binding = resolution_.binding(requirement);
+                const auto available = lookup_member(owner, binding.name.sym);
+                bool pending = available->state != ExpansionState::Resolved;
+                usize matches = 0;
+                for (const auto id : available->ids) {
+                    if (resolution_.binding(id).kind != BindingKind::Function || !cast<FunItem>(resolution_.binding(id).item)->body) continue;
+                    const auto contract = method_contract(id, requirement);
+                    pending |= contract == Relation::Deferred;
+                    if (contract == Relation::Yes) { witness.implementation = id; ++matches; }
+                }
+                if (matches == 1 && !pending) witness.state = ExpansionState::Resolved;
+                else if (!pending && !has_modifier(item->mods, Modifier::Abstract)) {
+                    auto& d = diag_.error(DiagCode::MissingImplementation, item->name.span,
+                                          "type '{}' has {} implementation of '{}'", names_.str(item->name.sym),
+                                          matches ? "ambiguous" : "no compatible", names_.str(binding.name.sym));
+                    d.notes.push_back({binding.name.span, "requirement declared here"});
+                    witness.state = ExpansionState::Error;
+                    fact.conformance = ExpansionState::Error;
+                } else if (fact.conformance != ExpansionState::Error) fact.conformance = ExpansionState::Deferred;
+                fact.dependent |= pending;
+                if (witness.state != ExpansionState::Resolved) witness.implementation = {};
+                fact.witnesses.push_back(witness);
+            }
+        }
+    }
+
     // Receiver facts select a declaration before adding its dependency. Method
     // overloads do not depend on their bodies until a call selects one target.
+    BindingId enclosing_owner(ScopeId scope) const {
+        while (scope.valid()) {
+            if (const auto it = member_owners_.find(scope.value); it != member_owners_.end()) return it->second;
+            scope = resolution_.scopes()[scope.value].parent;
+        }
+        return {};
+    }
+    MemberLookup outer_lookup(BindingId owner, Symbol name, bool types_only = false) {
+        for (auto scope = resolution_.binding(owner).scope; scope.valid(); scope = resolution_.scopes()[scope.value].parent) {
+            if (const auto it = member_owners_.find(scope.value); it != member_owners_.end()) {
+                const auto found = lookup_member(it->second, name, types_only);
+                if (found->state != ExpansionState::Resolved || !found->ids.empty()) return *found;
+            } else {
+                MemberLookup result;
+                std::vector<BindingId> types;
+                for (const auto id : resolution_.scopes()[scope.value].bindings) {
+                    const auto& b = resolution_.binding(id);
+                    if (b.name.sym != name) continue;
+                    if (b.kind == BindingKind::Type || b.kind == BindingKind::TypeAlias || b.kind == BindingKind::GenericParameter || b.kind == BindingKind::BuiltinType) types.push_back(id);
+                    else if (!types_only) result.ids.push_back(id);
+                }
+                if (result.ids.empty()) result.ids = std::move(types);
+                if (!result.ids.empty()) return result;
+            }
+        }
+        return {};
+    }
+    ExpandedType inherited_type(const TypeExpr* syntax) {
+        ExpandedType current;
+        for (usize p = 0; p < syntax->path.parts.size(); ++p) {
+            if (p && current.optional_depth) return {};
+            const auto name = syntax->path.parts[p];
+            const auto* reference = resolution_.reference(name.span);
+            std::vector<BindingId> ids;
+            if (reference && reference->state == ResolutionState::Resolved) {
+                const auto candidates = resolution_.candidates(reference->target);
+                ids.assign(candidates.begin(), candidates.end());
+            } else {
+                const auto owner = p == 0 && reference ? enclosing_owner(reference->scope) : current.target;
+                if (!owner.valid() || !resolution_.binding(owner).members.valid() || !known(nominal(owner))) return {};
+                auto found = *lookup_member(owner, name.sym, true);
+                if (p == 0 && found.state == ExpansionState::Resolved && found.ids.empty()) found = outer_lookup(owner, name.sym, true);
+                if (found.state != ExpansionState::Resolved) return {found.state, {}, found.state == ExpansionState::Error ? Type{Type::Error} : Type{}};
+                ids = std::move(found.ids);
+                if (ids.empty()) {
+                    diag_.error(DiagCode::UnknownType, name.span, "unknown inherited type '{}'", names_.str(name.sym));
+                    return {ExpansionState::Error, {}, Type::Error};
+                }
+                if (ids.size() > 1) {
+                    diag_.error(DiagCode::AmbiguousMember, name.span, "ambiguous inherited type '{}'", names_.str(name.sym));
+                    return {ExpansionState::Error, {}, Type::Error};
+                }
+            }
+            if (ids.size() != 1) return {};
+            current = aliases_.binding(ids.front(), resolution_).type;
+            if (current.state == ExpansionState::Deferred && current.syntax == syntax) {
+                diag_.error(DiagCode::AliasCycle, syntax->span, "cyclic type alias expansion through inherited lookup");
+                return {ExpansionState::Error, {}, Type::Error};
+            }
+            if (p + 1 < syntax->path.parts.size() && current.state != ExpansionState::Resolved) return {};
+        }
+        return current;
+    }
+    bool value_binding(BindingId id) const {
+        const auto kind = resolution_.binding(id).kind;
+        return kind == BindingKind::Field || kind == BindingKind::Variable || kind == BindingKind::Local ||
+               kind == BindingKind::Parameter || kind == BindingKind::Pattern || kind == BindingKind::BuiltinValue;
+    }
     std::optional<BindingId> prepare_reference(const Expr* expr) {
         const auto* name_expr = as<NameExpr>(expr);
         const auto* member = as<MemberExpr>(expr);
@@ -444,16 +944,16 @@ private:
         std::vector<BindingId> candidates;
         const auto* reference = resolution_.reference(name.span);
         if (name_expr) {
-            if (!reference || reference->state != ResolutionState::Resolved) return std::nullopt;
-            const auto ids = resolution_.candidates(reference->target);
-            if (ids.size() == 1) entity(expr, ids.front());
-            if (ids.empty()) return std::nullopt;
-            const auto& b = resolution_.binding(ids.front());
-            const auto owner = member_owners_.find(b.scope.value);
-            if (owner == member_owners_.end() || (b.kind != BindingKind::Field && b.kind != BindingKind::Function)) return std::nullopt;
-            record.owner = owner->second;
+            if (!reference) return std::nullopt;
+            if (reference->state == ResolutionState::Resolved) {
+                const auto ids = resolution_.candidates(reference->target);
+                if (ids.size() == 1) entity(expr, ids.front());
+                if (ids.empty()) return std::nullopt;
+                record.owner = member_owner(ids.front());
+                if (!record.owner.valid()) return std::nullopt;
+            } else record.owner = enclosing_owner(reference->scope);
+            if (!record.owner.valid()) return std::nullopt;
             if (!known(nominal(record.owner))) { members_[expr] = std::move(record); return std::nullopt; }
-            candidates.assign(ids.begin(), ids.end());
         } else {
             const auto base = value(member->base);
             const auto type = entity(member->base);
@@ -466,37 +966,31 @@ private:
                 record.owner = types_.descriptor(base.type)->declaration;
             if (!record.owner.valid()) { members_[expr] = std::move(record); return std::nullopt; }
             if (!resolution_.binding(record.owner).members.valid()) { members_[expr] = std::move(record); return std::nullopt; }
-            const auto scope = resolution_.binding(record.owner).members.value;
-            if (const auto table = member_values_.find(scope); table != member_values_.end()) {
-                if (const auto it = table->second.find(name.sym.id); it != table->second.end()) candidates = it->second;
-            }
-            if (candidates.empty()) {
-                const auto& types = aliases_.member_types_.at(scope);
-                if (const auto it = types.find(name.sym.id); it != types.end()) candidates.push_back(it->second);
-            }
-            if (candidates.empty()) {
-                const auto* owner = cast_type_decl(resolution_.binding(record.owner).item);
-                if (owner->supers.empty()) {
-                    diag_.error(DiagCode::UnknownMember, name.span, "type '{}' has no member '{}'",
-                                names_.str(owner->name.sym), names_.str(name.sym));
-                    record.state = ResolutionState::Unresolved;
-                }
-                members_[expr] = std::move(record);
-                return std::nullopt;
-            }
         }
-        const auto* owner = cast_type_decl(resolution_.binding(record.owner).item);
-        if (!owner->supers.empty() && resolution_.binding(candidates.front()).kind == BindingKind::Function) {
-            // A base can add overloads with different static/instance rules.
-            record.candidates = std::move(candidates);
+        auto found = *lookup_member(record.owner, name.sym);
+        if (name_expr && found.state == ExpansionState::Resolved && found.ids.empty()) {
+            found = outer_lookup(record.owner, name.sym);
+            if (!found.ids.empty()) record.owner = member_owner(found.ids.front());
+        }
+        if (found.state != ExpansionState::Resolved) {
+            record.state = found.state == ExpansionState::Error ? ResolutionState::Unresolved : ResolutionState::Deferred;
+            record.candidates = std::move(found.ids);
+            members_[expr] = std::move(record);
+            return std::nullopt;
+        }
+        candidates = std::move(found.ids);
+        if (candidates.empty()) {
+            if (name_expr) diag_.error(DiagCode::UnknownValue, name.span, "unknown name '{}'", names_.str(name.sym));
+            else diag_.error(DiagCode::UnknownMember, name.span, "type '{}' has no member '{}'",
+                             names_.str(resolution_.binding(record.owner).name.sym), names_.str(name.sym));
+            record.state = ResolutionState::Unresolved;
             members_[expr] = std::move(record);
             return std::nullopt;
         }
         for (const auto id : candidates) {
-            const auto& b = resolution_.binding(id);
-            const bool is_static = b.kind == BindingKind::Type || b.kind == BindingKind::TypeAlias || b.kind == BindingKind::EnumCase ||
-                                   (b.item && has_modifier(b.item->mods, Modifier::Static));
-            const bool allowed = name_expr ? is_static || (reference && reference->receiver == record.owner)
+            const bool is_static = static_member(id);
+            const bool allowed = name_expr ? !record.owner.valid() || is_static ||
+                (reference && reference->receiver.valid() && ancestry(reference->receiver, member_owner(id)) == Relation::Yes)
                                            : is_static == record.type_receiver;
             if (allowed) record.candidates.push_back(id);
         }
@@ -504,12 +998,15 @@ private:
             diag_.error(DiagCode::InvalidMemberReceiver, name.span, "member '{}' is unavailable through this {} receiver",
                         names_.str(name.sym), name_expr ? "implicit" : record.type_receiver ? "type" : "instance");
             record.state = ResolutionState::Unresolved;
+        } else if (record.candidates.size() > 1 && std::ranges::any_of(record.candidates, [&](BindingId id) { return resolution_.binding(id).kind != BindingKind::Function; })) {
+            diag_.error(DiagCode::AmbiguousMember, name.span, "ambiguous inherited member '{}'", names_.str(name.sym));
+            record.state = ResolutionState::Unresolved;
         } else record.state = ResolutionState::Resolved;
         std::optional<BindingId> field;
         if (record.candidates.size() == 1) {
             const auto id = record.candidates.front();
             entity(expr, id);
-            if (resolution_.binding(id).kind == BindingKind::Field) field = id;
+            if (value_binding(id)) field = id;
         }
         members_[expr] = std::move(record);
         return field;
@@ -733,10 +1230,11 @@ private:
             const auto literal = materialize(index, expected.scalar());
             return literal.type == Type::Error ? literal : Value{expected};
         }
-        if (relation(default_type(actual), expected) == Relation::Deferred &&
+        const auto match = relation(default_type(actual), expected);
+        if (match == Relation::Deferred &&
             !(actual.literal == Literal::Array && expected.kind != Type::Array && !protocol(expected))) return {};
-        if (actual.literal == Literal::None && promotes(actual.type, expected)) return {expected};
         if (actual.type == Type::Never) return actual;
+        if (actual.literal == Literal::None && match == Relation::Yes) return {expected};
         diag_.error(DiagCode::ScalarTypeMismatch, span, "expected '{}', found '{}'",
                     scalar_type_name(expected), scalar_type_name(default_type(actual)));
         if (actual.literal != Literal::None) materialize(index, default_type(actual));
@@ -956,7 +1454,10 @@ private:
                 const auto match = relation(default_type(actual), target);
                 if (match == Relation::Deferred) result.deferred = true;
                 else if (match == Relation::No || actual.literal != Literal::None) result.matches = false;
-                else result.lifts += target.optional_depth - actual.type.optional_depth;
+                else {
+                    result.score += actual.type.scalar() != target.scalar();
+                    result.lifts += target.optional_depth - actual.type.optional_depth;
+                }
             }
         }
         return result;
@@ -1163,6 +1664,13 @@ private:
         for (const auto& arg : expr.args) {
             if (value(arg.value).type == Type::Error) { record.state = CallState::Error; return {Type::Error}; }
         }
+        const Expr* receiver = expr.callee;
+        while (const auto* paren = as<ParenExpr>(receiver)) receiver = paren->inner;
+        if (receiver->kind == ExprKind::Super) {
+            record.kind = CallKind::NominalConstructor;
+            if (callee.type.kind == Type::Nominal) record.target = types_.descriptor(callee.type)->declaration;
+            return {}; // constructor delegation/initialization ordering is a later pass
+        }
         if (callee.type == Type::Never) return {Type::Never};
         if (callee.type.kind == Type::Function && !callee.type.optional_depth) return prepare_indirect(expr, callee.type);
         if (!unavailable(callee)) {
@@ -1195,10 +1703,14 @@ private:
         for (BindingId id : candidates) {
             const auto* fun = cast<FunItem>(resolution_.binding(id).item);
             const auto& signature = signatures_.at(id.value);
-            Match match{.id = id, .deferred = signature.generic || !fun->sig.where.empty()};
+            Match match{.id = id, .deferred = signature.generic || !fun->sig.where.empty() ||
+                        (member_owner(id).valid() && !method_inputs_known(id))};
             if (!argument_mapping(expr, fun->sig.params, parameter_indices_.at(fun), match.parameters)) continue;
             bool compatible_args = true, fits = true;
             for (usize a = 0; a < expr.args.size(); ++a) {
+                if (interface_owner(id) && contains_self_type(fun->sig.params[match.parameters[a]].type)) {
+                    match.deferred = true; continue; // receiver Self substitution is still pending
+                }
                 const Type expected = signature.parameters[match.parameters[a]];
                 const auto p = probe(expressions_.at(expr.args[a].value), expected);
                 match.deferred |= p.deferred;
@@ -1223,13 +1735,31 @@ private:
         } else {
             for (const auto& match : matches) if (match.deferred) return {};
             auto best = std::pair{std::numeric_limits<usize>::max(), std::numeric_limits<usize>::max()};
-            usize ties = 0;
+            std::vector<Match*> tied;
             for (auto& match : matches) {
                 const auto rank = std::pair{match.score, match.lifts};
-                if (rank < best) { best = rank; selected = &match; ties = 1; }
-                else if (rank == best) ++ties;
+                if (rank < best) { best = rank; tied.clear(); tied.push_back(&match); }
+                else if (rank == best) tied.push_back(&match);
             }
-            if (ties != 1) {
+            if (tied.size() == 1) selected = tied.front();
+            else for (auto* candidate : tied) {
+                bool dominates = true;
+                for (const auto* other : tied) {
+                    if (candidate == other) continue;
+                    bool strict = false;
+                    for (usize a = 0; a < expr.args.size(); ++a) {
+                        const auto from = signatures_.at(candidate->id.value).parameters[candidate->parameters[a]];
+                        const auto to = signatures_.at(other->id.value).parameters[other->parameters[a]];
+                        if (from == to) continue;
+                        strict = true;
+                        if (relation(from, to) != Relation::Yes) { dominates = false; break; }
+                    }
+                    if (!strict) dominates = false;
+                    if (!dominates) break;
+                }
+                if (dominates) { selected = candidate; break; }
+            }
+            if (!selected) {
                 auto& d = diag_.error(DiagCode::AmbiguousCall, expr.span, "call is ambiguous between matching signatures");
                 candidate_notes(d, candidates);
                 record.state = CallState::Error;
@@ -1282,6 +1812,17 @@ private:
             case ExprKind::Char: node.value = {Type::Char}; break;
             case ExprKind::String: case ExprKind::Interp: node.value = {Type::String}; break;
             case ExprKind::Unit: node.value = {Type::Unit}; break;
+            case ExprKind::Super: {
+                const auto* reference = resolution_.reference(expr->span);
+                if (reference && reference->receiver.valid()) {
+                    const auto it = hierarchies_.find(reference->receiver.value);
+                    if (it != hierarchies_.end()) {
+                        if (it->second.state == ExpansionState::Error) node.value = {Type::Error};
+                        else if (it->second.state == ExpansionState::Resolved && it->second.superclass.valid()) node.value = {nominal(it->second.superclass)};
+                    }
+                }
+                break;
+            }
             case ExprKind::SelfValue: {
                 const auto* reference = resolution_.reference(expr->span);
                 if (reference && reference->state == ResolutionState::Resolved) {
@@ -1344,7 +1885,7 @@ private:
                 if (it != members_.end()) {
                     const auto& record = it->second;
                     if (record.state == ResolutionState::Unresolved) node.value = {Type::Error};
-                    else if (record.state == ResolutionState::Resolved && record.candidates.size() == 1 && resolution_.binding(record.candidates.front()).kind == BindingKind::Field)
+                    else if (record.state == ResolutionState::Resolved && record.candidates.size() == 1 && value_binding(record.candidates.front()))
                         node.value = nodes_[record.candidates.front().value].value;
                 } else if (expr->kind == ExprKind::Name && !node.deps.empty()) node.value = nodes_[node.deps.front()].value;
                 break;
@@ -1416,6 +1957,13 @@ private:
     std::unordered_map<const Expr*, ExpandedType> entities_;
     std::unordered_map<usize, BindingId> member_owners_;
     std::unordered_map<usize, std::unordered_map<u32, std::vector<BindingId>>> member_values_;
+    std::unordered_map<usize, CheckedHierarchy> hierarchies_;
+    std::vector<BindingId> hierarchy_order_;
+    bool hierarchy_ready_ = false;
+    std::unordered_set<const TypeExpr*> reported_bases_;
+    std::unordered_set<usize> reported_cycles_;
+    mutable std::unordered_map<usize, std::unordered_map<usize, Relation>> ancestry_cache_;
+    std::unordered_map<u64, std::unordered_map<usize, std::shared_ptr<const MemberLookup>>> inherited_members_;
     std::vector<Walk> walk_;
     std::vector<Requirement> requirements_;
     std::vector<const Expr*> defaults_;

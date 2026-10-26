@@ -14,6 +14,7 @@
 // limitations under the License.
 
 #include "sema/types.hpp"
+#include "support/scoped_value.hpp"
 
 #include <limits>
 #include <memory>
@@ -134,6 +135,7 @@ std::string scalar_type_name(ScalarType type) {
         case Type::Shared: return "<shared>";
         case Type::Weak: return "<weak>";
         case Type::Function: return "<function>";
+        case Type::TypeParameter: return "<type-parameter>";
     }
     unreachable();
     }();
@@ -177,7 +179,8 @@ public:
             if (b.kind == BindingKind::Function) {
                 const auto* fun = cast<FunItem>(b.item);
                 function_nodes_.emplace(i, nodes_.size());
-                nodes_.push_back({.function = fun, .init = fun->expr_body && !fun->sig.ret ? fun->body : nullptr});
+                nodes_.push_back({.function = fun, .init = fun->expr_body && !fun->sig.ret ? fun->body : nullptr,
+                                  .value = {fun->sig.ret ? annotation(fun->sig.ret) : fun->expr_body ? Type{Type::Deferred} : Type{Type::Unit}}});
                 ScalarSignature sig;
                 parameter_indices_.try_emplace(fun);
                 for (usize p = 0; p < fun->sig.params.size(); ++p) {
@@ -232,10 +235,10 @@ public:
                         node.call_prepared = true;
                         node.value = prepare_call(*call);
                         const auto& record = calls_.at(call);
-                        if (record.state == CallState::Deferred && !default_dependencies_.empty()) {
-                            // Resume only after the consulted declaration defaults
+                        if (record.state == CallState::Deferred && !pending_dependencies_.empty()) {
+                            // Resume after consulted defaults or constraint methods
                             // have available facts. Active cycles remain deferred.
-                            node.deps.insert(node.deps.end(), default_dependencies_.begin(), default_dependencies_.end());
+                            node.deps.insert(node.deps.end(), pending_dependencies_.begin(), pending_dependencies_.end());
                             node.call_prepared = false;
                             continue;
                         }
@@ -264,6 +267,7 @@ public:
         }
         check_super_arguments();
         check_hierarchy_contracts();
+        validate_constraints();
         // Only context-free roots default. A literal inside a deferred call,
         // annotation or composite expression may still need a contextual type
         // (for example a UInt64 argument beyond the default Int range).
@@ -282,6 +286,7 @@ public:
         result.hierarchies_ = std::move(hierarchies_);
         result.aliases_ = std::move(aliases_);
         result.types_ = std::move(types_);
+        result.constraints_ = std::move(constraints_);
         return result;
     }
 
@@ -320,9 +325,9 @@ private:
                 const auto* a = types_.descriptor(source);
                 const auto* b = types_.descriptor(target);
                 if (a->declaration == b->declaration) return Relation::No; // different invariant arguments
-                if (!a->arguments.empty() || !b->arguments.empty()) { result = Relation::Deferred; continue; }
                 const auto match = ancestry(types_.descriptor(source)->declaration, types_.descriptor(target)->declaration);
                 if (match == Relation::No) return Relation::No;
+                if (!a->arguments.empty() || !b->arguments.empty()) { result = Relation::Deferred; continue; }
                 if (match == Relation::Deferred) result = Relation::Deferred;
                 continue;
             }
@@ -408,6 +413,7 @@ private:
         cache.emplace(key, context);
         environments_.push_back({id, std::move(args), parent});
         substituted_annotations_.emplace_back();
+        speculative_annotations_.emplace_back();
         return {ExpansionState::Resolved, context};
     }
     bool associated_alias(BindingId id) const {
@@ -429,9 +435,127 @@ private:
         return types_.intern({.kind = Type::Nominal, .declaration = id, .arguments = std::move(args)});
     }
 
+    bool concrete(Type root) const {
+        std::vector<Type> work{root};
+        std::unordered_set<usize> seen;
+        while (!work.empty()) {
+            const auto type = work.back(); work.pop_back();
+            if (!known(type) || type.kind == Type::TypeParameter) return false;
+            const auto* descriptor = types_.descriptor(type);
+            if (!descriptor || !seen.insert(type.detail).second) continue;
+            if (type.kind == Type::Nominal) for (auto arg : descriptor->arguments) work.push_back(arg);
+            else if (type.kind == Type::Function) {
+                for (auto param : descriptor->parameters) work.push_back(param);
+                work.push_back(descriptor->result);
+                if (descriptor->throws) work.push_back(descriptor->error);
+            } else work.push_back(descriptor->element);
+        }
+        return true;
+    }
+
+    struct Inference {
+        Relation state = Relation::Deferred;
+        usize context = 0;
+        std::vector<Type> arguments;
+    };
+    Inference infer_arguments(BindingId id, List<Param> params, const CallExpr& call,
+                             std::span<const usize> mapping, usize parent) {
+        const auto generics = generic_parameters(id);
+        Inference result{.context = parent, .arguments = std::vector<Type>(generics.size())};
+        std::unordered_map<usize, usize> positions;
+        std::vector<Type> symbols;
+        for (usize p = 0; p < generics.size(); ++p) {
+            const auto binding = generic_bindings_.at(generics[p].name.span.lo);
+            positions.emplace(binding.value, p);
+            symbols.push_back(types_.intern({.kind = Type::TypeParameter, .declaration = binding}));
+        }
+        const auto pattern_context = application(id, std::move(symbols), parent, call.span).context;
+        std::vector<Type> patterns;
+        for (const auto& param : params) patterns.push_back(annotation(param.type, pattern_context));
+        bool pending = false;
+        std::vector<std::pair<usize, Type>> pending_nominals;
+        // Concrete arguments anchor inference before numeric literal defaults.
+        // Probes later contextualize literals against the complete substitution.
+        for (bool literals : {false, true}) for (usize a = 0; a < call.args.size(); ++a) {
+            const auto actual = value(call.args[a].value);
+            const bool literal = actual.literal != Literal::None &&
+                                 (actual.literal != Literal::Array || !actual.concrete_anchor);
+            if (literal != literals) continue;
+            if (!concrete(default_type(actual))) continue;
+            auto hash = [](const std::pair<Type, Type>& pair) {
+                return TypeDescriptorHash{}({.element = pair.first, .result = pair.second});
+            };
+            std::unordered_set<std::pair<Type, Type>, decltype(hash)> seen(0, hash);
+            std::vector<std::pair<Type, Type>> work{{patterns[mapping[a]], default_type(actual)}};
+            while (!work.empty()) {
+                const auto [pattern, argument] = work.back(); work.pop_back();
+                if (!known(pattern) || !known(argument) || argument == Type::Never) continue;
+                if (!seen.emplace(pattern, argument).second) continue;
+                if (pattern.kind == Type::TypeParameter) {
+                    const auto position = positions.find(types_.descriptor(pattern)->declaration.value);
+                    if (position == positions.end()) continue;
+                    auto inferred = argument;
+                    inferred.optional_depth -= std::min(inferred.optional_depth, pattern.optional_depth);
+                    auto& anchor = result.arguments[position->second];
+                    if (!known(anchor)) anchor = inferred;
+                    else if (!literal && anchor != inferred) {
+                        if (anchor.scalar() == inferred.scalar()) anchor.optional_depth = std::max(anchor.optional_depth, inferred.optional_depth);
+                        else if (anchor.kind == Type::Nominal && inferred.kind == Type::Nominal) {
+                            const auto depth = std::max(anchor.optional_depth, inferred.optional_depth);
+                            if (relation(inferred.scalar(), anchor.scalar()) == Relation::Yes) anchor.optional_depth = depth;
+                            else if (relation(anchor.scalar(), inferred.scalar()) == Relation::Yes) { anchor = inferred; anchor.optional_depth = depth; }
+                            else {
+                                pending_nominals.push_back({position->second, inferred});
+                                anchor.optional_depth = depth;
+                            }
+                        }
+                        else if (relation(inferred, anchor) == Relation::Yes) {}
+                        else if (relation(anchor, inferred) == Relation::Yes) anchor = inferred;
+                        else if (relation(anchor, inferred) == Relation::Deferred || relation(inferred, anchor) == Relation::Deferred) pending = true;
+                        else { result.state = Relation::No; return result; }
+                    }
+                    continue;
+                }
+                if (pattern.kind != argument.kind) {
+                    // These positions supply no inference evidence. Preserve
+                    // the ordinary probe's deferred protocol/other conversions.
+                    if (types_.descriptor(pattern) && !protocol(pattern) && !concrete(pattern)) { result.state = Relation::No; return result; }
+                    continue;
+                }
+                const auto* x = types_.descriptor(pattern);
+                const auto* y = types_.descriptor(argument);
+                if (!x || !y) continue;
+                if (pattern.kind == Type::Nominal) {
+                    if (x->declaration != y->declaration) continue; // generic base substitution remains pending
+                    if (x->arguments.size() != y->arguments.size()) continue;
+                    for (usize p = 0; p < x->arguments.size(); ++p) work.push_back({x->arguments[p], y->arguments[p]});
+                } else if (pattern.kind == Type::Function) {
+                    if (x->parameters.size() != y->parameters.size()) { result.state = Relation::No; return result; }
+                    for (usize p = 0; p < x->parameters.size(); ++p) work.push_back({x->parameters[p], y->parameters[p]});
+                    work.push_back({x->result, y->result});
+                    if (x->throws && y->throws) work.push_back({x->error, y->error});
+                } else work.push_back({x->element, y->element});
+            }
+        }
+        // A later supplied base/interface may resolve earlier sibling anchors.
+        // No common-ancestor search is needed: check against the final anchor.
+        for (const auto& [position, candidate] : pending_nominals)
+            pending |= relation(candidate, result.arguments[position]) != Relation::Yes;
+        if (pending) return result; // no general common-ancestor or variance solver yet
+        for (auto arg : result.arguments) if (!concrete(arg)) return result;
+        result.context = application(id, result.arguments, parent, call.span).context;
+        result.state = Relation::Yes;
+        return result;
+    }
+
     Type annotation(const TypeExpr* type, usize context = 0) {
         if (!type) return Type::Deferred;
-        const auto cache = [&](usize env) -> auto& { return env ? substituted_annotations_[env] : annotations_; };
+        const auto cache = [&](usize env) -> auto& {
+            // A probed substitution must not suppress later validation through
+            // a real cache hit if another call selects this same signature.
+            if (probing_constraints_) return speculative_annotations_[env];
+            return env ? substituted_annotations_[env] : annotations_;
+        };
         const auto cached = [&](const TypeExpr* syntax, usize env) -> Type {
             if (!syntax) return Type::Unit;
             const auto it = cache(env).find(syntax);
@@ -496,6 +620,7 @@ private:
                     if (applied.state != ExpansionState::Resolved) {
                         cache(env)[syntax] = applied.state == ExpansionState::Error ? Type::Error : Type::Deferred; continue;
                     }
+                    remember_constraints(id, applied.context, syntax->span);
                     if (kind != BindingKind::TypeAlias) {
                         cache(env)[syntax] = kind == BindingKind::BuiltinType ? aliases_.binding(id, resolution_).type.scalar : instance(id, applied.context);
                         continue;
@@ -519,6 +644,9 @@ private:
                 if (!expanded.unknown_member.sym.empty())
                     diag_.error(DiagCode::UnknownType, expanded.unknown_member.span, "unknown type '{}' in '{}'",
                                 names_.str(expanded.unknown_member.sym), names_.str(resolution_.binding(expanded.member_owner).name.sym));
+                if (expanded.type.state == ExpansionState::Resolved && expanded.type.target.valid() &&
+                    resolution_.binding(expanded.type.target).kind == BindingKind::Type && generic_parameters(expanded.type.target).empty())
+                    remember_constraints(expanded.type.target, env, syntax->span);
                 value = expanded.type.scalar;
                 if (!known(value) && expanded.type.state == ExpansionState::Resolved && expanded.type.target.valid()) {
                     value = nominal(expanded.type.target);
@@ -614,6 +742,7 @@ private:
         const auto deferred = [](const auto& entry) { return entry.second == Type::Deferred; };
         std::erase_if(annotations_, deferred);
         for (auto& cache : substituted_annotations_) std::erase_if(cache, deferred);
+        for (auto& cache : speculative_annotations_) std::erase_if(cache, deferred);
     }
 
     void complete_hierarchy_types() {
@@ -908,6 +1037,118 @@ private:
         return known(from) && known(to) ? relation(from, to) : Relation::Deferred;
     }
 
+    // Declared ancestry alone does not prove a constraint: the supported
+    // requirement signatures must have compatible implementations as well.
+    Relation satisfies(Type source, Type bound) {
+        if (!concrete(source) || !concrete(bound)) return Relation::Deferred;
+        if (bound.kind != Type::Nominal || bound.optional_depth) return Relation::No;
+        const auto target = types_.descriptor(bound)->declaration;
+        if (resolution_.binding(target).kind == BindingKind::BuiltinType) return Relation::Deferred;
+        if (resolution_.binding(target).item->kind != ItemKind::Interface) return Relation::No;
+        if (source == Type::Never) return Relation::Deferred;
+        if (source.kind != Type::Nominal || source.optional_depth) return Relation::No;
+        const auto owner = types_.descriptor(source)->declaration;
+        if (!types_.descriptor(source)->arguments.empty() || !types_.descriptor(bound)->arguments.empty()) return Relation::Deferred;
+        const auto declared = ancestry(owner, target);
+        if (declared != Relation::Yes) return declared;
+        const auto* item = resolution_.binding(owner).item;
+        const bool abstract = item->kind == ItemKind::Interface || has_modifier(item->mods, Modifier::Abstract);
+        Relation result = Relation::Yes;
+        std::unordered_set<usize> seen;
+        std::vector<BindingId> work{target};
+        while (!work.empty()) {
+            const auto next = work.back(); work.pop_back();
+            if (!seen.insert(next.value).second) continue;
+            const auto graph = hierarchies_.find(next.value);
+            if (graph == hierarchies_.end() || graph->second.state != ExpansionState::Resolved) { result = Relation::Deferred; continue; }
+            for (const auto base : graph->second.bases) work.push_back(base);
+            for (const auto requirement : resolution_.scopes()[resolution_.binding(next).members.value].bindings) {
+                const auto& b = resolution_.binding(requirement);
+                if (b.kind == BindingKind::TypeAlias || b.kind == BindingKind::Field) { result = Relation::Deferred; continue; }
+                if (b.kind != BindingKind::Function) continue;
+                if (!method_inputs_known(requirement)) { result = Relation::Deferred; continue; }
+                const auto available = lookup_member(owner, b.name.sym);
+                bool pending = available->state != ExpansionState::Resolved;
+                usize matches = 0;
+                for (const auto candidate : available->ids) {
+                    if (resolution_.binding(candidate).kind != BindingKind::Function ||
+                        (!abstract && !cast<FunItem>(resolution_.binding(candidate).item)->body)) continue;
+                    if (!same_method_shape(candidate, requirement)) continue;
+                    for (const auto function : {candidate, requirement}) {
+                        const auto node = function_nodes_.at(function.value);
+                        if (!known(nodes_[node].value.type) && nodes_[node].state == 0) pending_dependencies_.push_back(node);
+                    }
+                    const auto contract = method_contract(candidate, requirement);
+                    pending |= contract == Relation::Deferred;
+                    matches += contract == Relation::Yes;
+                }
+                if (pending) result = Relation::Deferred;
+                else if (!matches || (!abstract && matches != 1)) return Relation::No;
+            }
+        }
+        return result;
+    }
+
+    Relation constraint_status(BindingId id, usize context) {
+        if (!constrained(id)) return Relation::Yes;
+        Relation result = Relation::Yes;
+        const auto check = [&](Type source, const TypeExpr* syntax) {
+            const auto match = satisfies(source, annotation(syntax, context));
+            if (match == Relation::No) result = Relation::No;
+            else if (match == Relation::Deferred && result != Relation::No) result = Relation::Deferred;
+        };
+        for (const auto& param : generic_parameters(id)) {
+            const auto source = substituted(generic_bindings_.at(param.name.span.lo), context);
+            for (const auto* bound : param.bounds) check(source, bound);
+        }
+        List<WhereClause> where;
+        const auto* item = resolution_.binding(id).item;
+        if (const auto* fun = as<FunItem>(item)) where = fun->sig.where;
+        else if (const auto* type = as_type_decl(item)) where = type->where;
+        for (const auto& clause : where) {
+            const auto source = annotation(clause.type, context);
+            for (const auto* bound : clause.bounds) check(source, bound);
+        }
+        return result;
+    }
+
+    void remember_constraints(BindingId id, usize context, Span span) {
+        if (probing_constraints_ || !constrained(id)) return;
+        if (active_constraint_ && constraint_uses_[*active_constraint_].recursive) return;
+        for (usize next = context; next; next = environments_[next].parent)
+            for (const auto arg : environments_[next].arguments) if (!concrete(arg)) return;
+        for (const auto& param : generic_parameters(id))
+            if (!concrete(substituted(generic_bindings_.at(param.name.span.lo), context))) return;
+        if (!constraint_spans_[id.value][context].insert(span.lo).second) return;
+        bool recursive = false;
+        for (auto parent = active_constraint_; parent; parent = constraint_uses_[*parent].parent)
+            if (constraint_uses_[*parent].declaration == id) { recursive = true; break; }
+        constraint_uses_.push_back({id, context, span, active_constraint_, recursive});
+    }
+    void constraint_error(BindingId id, Span span) {
+        if (!reported_constraints_.insert(span.lo).second) return;
+        auto& diagnostic = diag_.error(DiagCode::GenericConstraint, span, "type arguments do not satisfy interface constraints of '{}'", names_.str(resolution_.binding(id).name.sym));
+        diagnostic.notes.push_back({resolution_.binding(id).name.span, "constrained declaration here"});
+    }
+    void validate_constraints() {
+        for (usize i = 0; i < constraint_uses_.size(); ++i) {
+            const auto use = constraint_uses_[i];
+            const ScopedValue active(active_constraint_, std::optional<usize>{i});
+            auto state = constraint_status(use.declaration, use.context);
+            // A declaration repeated along this dependency path may grow its
+            // arguments forever. Check its immediate facts, but do not enqueue
+            // further applications or claim that recursive validity is proven.
+            if (use.recursive && state != Relation::No) state = Relation::Deferred;
+            CheckedConstraint record{.span = use.span, .declaration = use.declaration,
+                                     .state = state == Relation::Yes ? ExpansionState::Resolved :
+                                              state == Relation::No ? ExpansionState::Error : ExpansionState::Deferred};
+            for (const auto& param : generic_parameters(use.declaration))
+                record.arguments.push_back(substituted(generic_bindings_.at(param.name.span.lo), use.context));
+            constraints_.push_back(std::move(record));
+            if (state == Relation::No) constraint_error(use.declaration, use.span);
+        }
+    }
+
     void check_super_arguments() {
         for (const auto owner : hierarchy_order_) {
             const auto& fact = hierarchies_.at(owner.value);
@@ -1136,7 +1377,8 @@ private:
             if (!resolution_.binding(record.owner).members.valid()) { members_[expr] = std::move(record); return std::nullopt; }
         }
         auto found = *lookup_member(record.owner, name.sym);
-        if (record.receiver_type.kind == Type::Nominal && !types_.descriptor(record.receiver_type)->arguments.empty()) {
+        if (record.receiver_type.kind == Type::Nominal &&
+            (!types_.descriptor(record.receiver_type)->arguments.empty() || constrained(record.owner))) {
             const auto* owner = cast_type_decl(resolution_.binding(record.owner).item);
             if (owner->supers.empty()) {
                 found.state = ExpansionState::Resolved;
@@ -1676,7 +1918,7 @@ private:
             if (!argument || std::ranges::find(supplied, p) != supplied.end()) continue;
             if (!known(annotation(params[p].type))) { complete = false; continue; }
             const auto index = expressions_.at(argument);
-            if (nodes_[index].state == 0) default_dependencies_.push_back(index);
+            if (nodes_[index].state == 0) pending_dependencies_.push_back(index);
             const auto fact = probe(index, types[p]);
             complete &= fact.matches && !fact.deferred && fact.fits;
         }
@@ -1776,23 +2018,29 @@ private:
     }
 
     std::optional<Value> prepare_constructor(const CallExpr& expr) {
-        const auto type = entity(expr.callee);
-        if (type.state != ExpansionState::Resolved || !type.target.valid() || type.optional_depth) return std::nullopt;
+        auto type = entity(expr.callee);
+        bool inferred = false;
+        if (type.state != ExpansionState::Resolved || !type.target.valid()) {
+            const Expr* callee = expr.callee;
+            while (const auto* paren = as<ParenExpr>(callee)) callee = paren->inner;
+            if (callee->kind == ExprKind::GenericInst) return std::nullopt;
+            const auto candidates = callees(callee);
+            if (candidates.size() != 1 || resolution_.binding(candidates.front()).kind != BindingKind::Type ||
+                generic_parameters(candidates.front()).empty()) return std::nullopt;
+            type.target = candidates.front();
+            inferred = true;
+        }
+        if (type.optional_depth) return std::nullopt;
         const auto& binding = resolution_.binding(type.target);
         if (binding.kind != BindingKind::Type) return std::nullopt;
         const auto* item = cast_type_decl(binding.item);
         auto& record = calls_[&expr];
         record.kind = CallKind::NominalConstructor;
         record.target = type.target;
-        const Type result = known(type.scalar) ? type.scalar : nominal(type.target);
-        if (!known(result)) return Value{};
-        usize context = 0;
-        if (!types_.descriptor(result)->arguments.empty()) {
-            const auto args = types_.descriptor(result)->arguments;
-            context = application(type.target, args, 0, expr.span).context;
-        }
+        Type result = known(type.scalar) ? type.scalar : nominal(type.target);
         if (item->kind == ItemKind::Interface || has_modifier(item->mods, Modifier::Abstract)) {
-            diag_.error(DiagCode::NotConstructible, expr.span, "type '{}' cannot be constructed directly", scalar_type_name(result));
+            diag_.error(DiagCode::NotConstructible, expr.span, "type '{}' cannot be constructed directly",
+                        known(result) ? scalar_type_name(result) : std::string(names_.str(binding.name.sym)));
             record.state = CallState::Error;
             return Value{Type::Error};
         }
@@ -1800,13 +2048,27 @@ private:
         for (const Item* member : item->members)
             if (const auto* init = as<InitItem>(member); init && init->has_params) return Value{};
         std::unordered_map<u32, usize> labels;
-        std::vector<Type> parameters;
-        for (usize p = 0; p < item->ctor_params.size(); ++p) {
-            labels.emplace(item->ctor_params[p].name.sym.id, p);
-            parameters.push_back(annotation(item->ctor_params[p].type, context));
+        for (usize p = 0; p < item->ctor_params.size(); ++p) labels.emplace(item->ctor_params[p].name.sym.id, p);
+        bool matches = argument_mapping(expr, item->ctor_params, labels, record.parameters), deferred = false, fits = true;
+        usize context = 0;
+        std::vector<Type> arguments;
+        if (inferred && matches) {
+            const auto inference = infer_arguments(type.target, item->ctor_params, expr, record.parameters, 0);
+            context = inference.context;
+            arguments = inference.arguments;
+            matches &= inference.state != Relation::No;
+            deferred |= inference.state == Relation::Deferred;
+            if (inference.state == Relation::Yes) result = instance(type.target, context);
+        } else if (result.kind == Type::Nominal && !types_.descriptor(result)->arguments.empty()) {
+            arguments = types_.descriptor(result)->arguments;
+            context = application(type.target, arguments, 0, expr.span).context;
         }
-        bool matches = argument_mapping(expr, item->ctor_params, labels, record.parameters), deferred = constrained(type.target), fits = true;
-        for (const auto& param : item->ctor_params) deferred |= param.conv != Convention::Default;
+        deferred |= !known(result);
+        std::vector<Type> parameters;
+        for (const auto& param : item->ctor_params) {
+            parameters.push_back(annotation(param.type, context));
+            deferred |= param.conv != Convention::Default;
+        }
         if (matches && context) deferred |= !defaults_known(item->ctor_params, record.parameters, parameters);
         for (const auto& arg : expr.args) if (value(arg.value).type == Type::Error) {
             record.state = CallState::Error; return Value{Type::Error};
@@ -1816,14 +2078,23 @@ private:
             matches &= p.matches; deferred |= p.deferred; fits &= p.fits;
         }
         if (!matches) {
-            auto& d = diag_.error(DiagCode::NoMatchingCall, expr.span, "arguments do not match the primary constructor of '{}'", scalar_type_name(result));
+            auto& d = diag_.error(DiagCode::NoMatchingCall, expr.span, "arguments do not match the primary constructor of '{}'", names_.str(binding.name.sym));
             d.notes.push_back({binding.name.span, "type declared here"});
             record.state = CallState::Error;
             return Value{Type::Error};
         }
+        const auto contract = constraint_status(type.target, context);
+        remember_constraints(type.target, context, expr.span);
+        if (contract == Relation::No && fits) {
+            constraint_error(type.target, expr.span);
+            record.state = CallState::Error; return Value{Type::Error};
+        }
+        deferred |= contract == Relation::Deferred;
         if (deferred && fits) return Value{};
         record.state = CallState::Resolved;
         record.parameter_types = parameters;
+        record.type_arguments = std::move(arguments);
+        record.inferred_type_arguments = inferred;
         for (usize a = 0; a < expr.args.size(); ++a)
             if (require(expr.args[a].value, parameters[record.parameters[a]], expr.args[a].value->span).type == Type::Error)
                 record.state = CallState::Error;
@@ -1859,8 +2130,8 @@ private:
     }
 
     Value prepare_call(const CallExpr& expr) {
-        default_dependencies_.clear();
-        calls_[&expr] = {}; // a deferred application may resume after default dependencies
+        pending_dependencies_.clear();
+        calls_[&expr] = {}; // a deferred application may resume after pending dependencies
         if (auto conversion = prepare_conversion(expr)) return *conversion;
         if (auto constructor = prepare_constructor(expr)) return *constructor;
         auto& record = calls_[&expr];
@@ -1910,26 +2181,44 @@ private:
             bool deferred = false;
             usize context = 0;
             std::vector<Type> types;
+            std::vector<Type> arguments;
         };
         std::vector<Match> matches, out_of_range;
+        struct FailedConstraint { BindingId id; usize context; };
+        std::vector<FailedConstraint> failed_constraints;
         bool generic_arity = !generic;
         for (BindingId id : candidates) {
             const auto* fun = cast<FunItem>(resolution_.binding(id).item);
             const auto& signature = signatures_.at(id.value);
+            const ScopedValue probing(probing_constraints_, true);
             if (generic && fun->sig.generics.size() != type_arguments.size()) continue;
             generic_arity = true;
             usize context = reference_contexts_.contains(receiver) ? reference_contexts_.at(receiver) : 0;
-            bool pending = signature.generic && !generic;
+            Match match{.id = id, .arguments = type_arguments};
+            if (!argument_mapping(expr, fun->sig.params, parameter_indices_.at(fun), match.parameters)) continue;
+            bool pending = false;
             if (generic) {
                 const auto applied = application(id, type_arguments, context, generic->span);
                 if (applied.state == ExpansionState::Error) { record.state = CallState::Error; return {Type::Error}; }
                 pending |= applied.state != ExpansionState::Resolved;
                 context = applied.context;
+            } else if (signature.generic) {
+                const auto inferred = infer_arguments(id, fun->sig.params, expr, match.parameters, context);
+                if (inferred.state == Relation::No) continue;
+                pending |= inferred.state != Relation::Yes;
+                context = inferred.context;
+                match.arguments = inferred.arguments;
             }
-            Match match{.id = id, .deferred = pending || constrained(id), .context = context};
-            if (!argument_mapping(expr, fun->sig.params, parameter_indices_.at(fun), match.parameters)) continue;
+            match.context = context;
+            const auto contract = constraint_status(id, context);
+            match.deferred = pending || contract == Relation::Deferred;
+            BindingId failed = contract == Relation::No ? id : BindingId{};
             const auto owner = member_owner(id);
-            if (owner.valid()) match.deferred |= constrained(owner);
+            if (owner.valid()) {
+                const auto owner_contract = constraint_status(owner, context);
+                match.deferred |= owner_contract == Relation::Deferred;
+                if (owner_contract == Relation::No) failed = owner;
+            }
             for (const auto& param : fun->sig.params) {
                 match.types.push_back(context ? annotation(param.type, context) : annotation(param.type));
                 match.deferred |= (owner.valid() || signature.generic) && param.conv != Convention::Default;
@@ -1948,6 +2237,7 @@ private:
                 fits &= p.fits; compatible_args &= p.matches;
             }
             if (!compatible_args) continue;
+            if (fits && failed.valid()) { failed_constraints.push_back({failed, context}); continue; }
             if (fits) matches.push_back(std::move(match));
             else out_of_range.push_back(std::move(match));
         }
@@ -1956,6 +2246,12 @@ private:
             record.state = CallState::Error; return {Type::Error};
         }
         if (matches.empty() && out_of_range.size() != 1) {
+            if (!failed_constraints.empty()) {
+                const auto failure = failed_constraints.front();
+                remember_constraints(failure.id, failure.context, expr.span);
+                constraint_error(failure.id, expr.span);
+                record.state = CallState::Error; return {Type::Error};
+            }
             auto& d = diag_.error(DiagCode::NoMatchingCall, expr.span, "arguments do not match any callable signature");
             candidate_notes(d, candidates);
             record.state = CallState::Error;
@@ -1967,6 +2263,8 @@ private:
             // precise E0402/operand diagnostic instead of a generic mismatch.
             selected = &out_of_range.front();
         } else {
+            if (matches.size() == 1 && matches.front().deferred)
+                remember_constraints(matches.front().id, matches.front().context, expr.span);
             for (const auto& match : matches) if (match.deferred) return {};
             auto best = std::pair{std::numeric_limits<usize>::max(), std::numeric_limits<usize>::max()};
             std::vector<Match*> tied;
@@ -1975,6 +2273,18 @@ private:
                 if (rank < best) { best = rank; tied.clear(); tied.push_back(&match); }
                 else if (rank == best) tied.push_back(&match);
             }
+            // An otherwise identical non-generic input profile is more specific
+            // than a function whose own parameters had to be inferred.
+            const auto profiles = tied;
+            std::erase_if(tied, [&](const Match* candidate) {
+                if (!signatures_.at(candidate->id.value).generic) return false;
+                return std::ranges::any_of(profiles, [&](const Match* other) {
+                    if (signatures_.at(other->id.value).generic) return false;
+                    for (usize a = 0; a < expr.args.size(); ++a)
+                        if (candidate->types[candidate->parameters[a]] != other->types[other->parameters[a]]) return false;
+                    return true;
+                });
+            });
             if (tied.size() == 1) selected = tied.front();
             else for (auto* candidate : tied) {
                 bool dominates = true;
@@ -2001,17 +2311,22 @@ private:
             }
         }
         PHS_ASSERT(selected);
+        const auto* selected_function = cast<FunItem>(resolution_.binding(selected->id).item);
+        for (const auto& parameter : selected_function->sig.params)
+            (void)annotation(parameter.type, selected->context); // commit only the selected signature's type uses
         record.target = selected->id;
         record.parameters = std::move(selected->parameters);
         record.state = CallState::Resolved;
         call_contexts_[&expr] = selected->context;
-        record.type_arguments = type_arguments;
+        record.type_arguments = selected->arguments;
+        record.inferred_type_arguments = !generic && signatures_.at(selected->id.value).generic;
         record.parameter_types = selected->types;
         for (usize a = 0; a < expr.args.size(); ++a) {
             if (require(expr.args[a].value, selected->types[record.parameters[a]], expr.args[a].value->span).type == Type::Error)
                 record.state = CallState::Error;
         }
         if (record.state == CallState::Error) return {Type::Error};
+        remember_constraints(selected->id, selected->context, expr.span);
         // The traversal schedules the selected return dependency next.
         return {};
     }
@@ -2148,6 +2463,7 @@ private:
                         const auto applied = application(id, std::move(args), context, expr->span);
                         if (applied.state == ExpansionState::Error) { node.value = {Type::Error}; break; }
                         if (applied.state != ExpansionState::Resolved) break;
+                        remember_constraints(id, applied.context, expr->span);
                         Type result;
                         if (kind == BindingKind::TypeAlias) {
                             const auto* alias = cast<TypeAliasItem>(resolution_.binding(id).item);
@@ -2224,6 +2540,8 @@ private:
     std::vector<Environment> environments_{{}};
     std::unordered_map<usize, std::unordered_map<TypeDescriptor, usize, TypeDescriptorHash>> environment_ids_;
     std::vector<std::unordered_map<const TypeExpr*, Type>> substituted_annotations_{1};
+    std::vector<std::unordered_map<const TypeExpr*, Type>> speculative_annotations_{1};
+    bool probing_constraints_ = false;
     std::unordered_set<u32> reported_applications_;
     std::vector<Node> nodes_;
     std::unordered_map<const Expr*, usize> expressions_;
@@ -2250,7 +2568,19 @@ private:
     std::unordered_map<u64, std::unordered_map<usize, std::shared_ptr<const MemberLookup>>> inherited_members_;
     std::vector<Walk> walk_;
     std::vector<Requirement> requirements_;
-    std::vector<usize> default_dependencies_;
+    struct ConstraintUse {
+        BindingId declaration;
+        usize context;
+        Span span;
+        std::optional<usize> parent;
+        bool recursive = false;
+    };
+    std::vector<ConstraintUse> constraint_uses_;
+    std::optional<usize> active_constraint_;
+    std::unordered_map<usize, std::unordered_map<usize, std::unordered_set<u32>>> constraint_spans_;
+    std::unordered_set<u32> reported_constraints_;
+    std::vector<CheckedConstraint> constraints_;
+    std::vector<usize> pending_dependencies_;
     std::vector<const Expr*> defaults_;
 };
 

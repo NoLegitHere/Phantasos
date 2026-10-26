@@ -392,7 +392,7 @@ candidate contextualizes its arguments. If a unique otherwise matching
 signature has a range failure, report the literal's precise range/operator
 diagnostic.
 
-A potentially matching generic/constrained signature, unsupported parameter type or pending
+A potentially matching dependent generic/constrained signature, unsupported parameter type or pending
 argument type keeps selection deferred, even if another scalar candidate fits.
 Independently provable shape/type mismatches still eliminate candidates. Calls
 through concrete explicit generic instantiations follow 3.21. Direct nominal methods and
@@ -692,7 +692,7 @@ Numeric and nested array literals receive context only from the selected
 signature, preserving range errors and overload ranking. Explicit type-argument
 count first filters overloads; no matching count reports `E0470`. Type/alias
 applications with a wrong count or arguments on a non-generic declaration also
-report `E0470`. Omitted type arguments remain pending inference.
+report `E0470`. Omitted type arguments use the initial inference rules in 3.22.
 Transparent alias qualifiers resolve the terminal declaration before applying
 arguments, so `Alias.Box<Int>` has the same identity and arity rules as
 `Outer.Box<Int>` when `type Alias = Outer`. Optional/dependent qualifier barriers
@@ -714,9 +714,9 @@ cycles whose arguments grow at each expansion. Repeated applications share
 canonical descriptors instead of expanding descriptor graphs as trees.
 
 This stage establishes application identities and supported signature facts,
-not complete generic program validity. Type-argument inference, bound/`where`
-satisfaction, checking generic bodies once against their bounds, captured
-nominal owners, generic base substitution/conformance, associated types and
+not complete generic program validity. Initial argument inference and concrete
+bound/`where` satisfaction follow 3.22. Checking generic bodies once against
+their bounds, captured nominal owners, generic base substitution/conformance, associated types and
 dependent properties remain pending. Calls with applicable unchecked constraints,
 non-default conventions or omitted dependent defaults remain deferred. Primary
 constructors also defer non-default parameter conventions. An omitted
@@ -727,3 +727,78 @@ Generic expression-body return inference still uses the declaration's available 
 bodies are not rechecked per application. Function/bound-method values, optional
 `none` arguments and lowering/monomorphization need later stages. Unsupported
 facts retain `Deferred`; passing `check` still proves only implemented rules.
+
+## 3.22 Initial generic argument inference and constraints [Core]
+
+Calls may omit all function/method type arguments, and nominal primary
+constructors may omit their type arguments. Inference uses supplied argument
+facts and parameter patterns, including unconstrained transparent aliases,
+arrays, optionals, pointers, ownership wrappers, functions and nominal arguments.
+Patterns use generic binding identities; shared declaration signatures stay
+unchanged. Explicit applications continue to follow 3.21.
+
+Concrete arguments anchor parameters before numeric-only literal arguments
+default to `Int`/`Float64`. A concrete `Int8` sibling therefore contextualizes
+`same(1, byte)` and `same(byte, 1)` identically. Repeated anchors must agree, allow
+optional lifting, or be related by a supported nominal upcast. For related
+nominal anchors, compare ancestry without optional wrappers and use
+the maximum optional depth: both `same(child, parent)` and the reversed order
+infer `Parent?` for a `Child?` and a `Parent`.
+Previously unresolved nominal anchors are rechecked against the final widened
+substitution. Supplying a base/interface later, as in `same(A(), B(), Parent())`,
+can therefore resolve sibling anchors in any argument order, including their
+optional depths, without searching for a common ancestor.
+General common-ancestor and variance solving remains deferred. Inconsistent
+scalar/composite anchors reject the candidate. `Never`, unknown facts and empty literals supply
+no anchor. Expected return/binding types and omitted defaults do not infer
+arguments. Missing arguments stay deferred; probes apply the final substitution
+and only a selected candidate materializes literals.
+Non-dependent positions contribute no inference evidence; ordinary probes
+decide compatibility there. Protocol conversions without structural inference
+evidence retain the probe's deferred result, just as in explicit applications.
+
+Explicit type-argument count and ordinary argument shape filter candidates
+before inference. Supported constraints then eliminate inapplicable candidates.
+The usual literal/optional ranks and more-specific input types apply. When
+supplied instantiated input types are identical, a function with no own generic
+parameters takes precedence over an inferred generic function. Remaining ties
+are ambiguous; declaration order and return types do not decide them. Constraint
+subsumption and specialization ordering between generic profiles remain pending.
+Speculative signature substitutions do not register constraint applications.
+They use separate annotation caches; only the selected signature commits its
+substituted parameter type uses. A later call selecting a previously rejected
+signature still validates those uses. Unconditional declaration/type applications
+continue to be checked independently. Known unrelated nominal declarations can
+reject a candidate before any generic ancestry substitution would be needed.
+
+Concrete interface bounds (`T: Read & Flag`) and `where` clauses check the
+substituted source and bound types. A known source must declare the interface
+relationship and provide a unique compatible supported implementation of each
+required method, including inherited requirements/defaults. Interface and
+abstract-class values can rely on their abstract method contracts. Available
+implementation return facts participate through iterative dependencies; active
+inference cycles stay deferred. Declared ancestry alone is insufficient.
+
+`E0471` reports unsatisfied concrete constraints, including invalid concrete
+type/alias applications outside calls. `ScalarTypes::constraints()` retains
+application spans, declarations, arguments and resolved/deferred/error states.
+Ordinary non-generic nominal annotations also register concrete `where` uses,
+including qualified or wrapped annotations; construction is not required.
+Validation retains the declaration path for discovered applications. Repeating
+a declaration on that path stops further expansion of the recursive application
+and retains it as deferred, even when its arguments grow. Its immediate bounds
+can still report an independently known failure. Finite nested applications and
+independent roots continue to be validated.
+Structural type identities remain available independently of constraint validity.
+Selected call records retain inferred arguments and an inference flag alongside
+the substituted parameter types. Facts remain session-owned and ASTs unchanged.
+
+Built-in `Copy`/`Sendable`/`Error` derivation, generic base/interface substitution,
+associated/property requirements and full generic body checking against bounds
+remain deferred. Constrained alias normalization and inference through such
+aliases, naked generic-alias constructor inference, contextual return inference,
+and dependent expression-body returns also need later work. Concrete constraints
+on alias applications are still checked even when their type facts are deferred.
+Unresolved applicable constraints keep call selection deferred; type applications
+retain their separate constraint state. This initial pass does not establish
+ownership, effects, complete generic validity or executable lowering.

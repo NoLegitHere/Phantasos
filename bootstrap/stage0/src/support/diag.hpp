@@ -89,6 +89,7 @@ enum class DiagCode : u16 {
     InvalidOverride = 462,
     MissingImplementation = 463,
     GenericArguments = 470,
+    GenericConstraint = 471,
 };
 
 constexpr std::string_view diag_code(DiagCode code) {
@@ -150,6 +151,7 @@ constexpr std::string_view diag_code(DiagCode code) {
         case DiagCode::InvalidOverride: return "E0462";
         case DiagCode::MissingImplementation: return "E0463";
         case DiagCode::GenericArguments: return "E0470";
+        case DiagCode::GenericConstraint: return "E0471";
     }
     unreachable();
 }

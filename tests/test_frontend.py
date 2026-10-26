@@ -257,6 +257,24 @@ let wrongArgument = identity<Int>(true)
         for diagnostic in ("E0400", "E0470", "E0411"):
             self.assertIn(f"error[{diagnostic}]", stderr)
 
+    def test_generic_inference_and_constraint_phase_gating(self) -> None:
+        source = """interface I { fun read(): Int }
+class Bad {}
+fun require<T: I>(value: T): T = value
+fun identity<T>(value: T): T = value
+class Box<T: I> {}
+let bound = require(Bad())
+let mismatch: Bool = identity(1)
+let annotation: Box<Int>
+"""
+        code, _, stderr = self.run_source(source, "parse")
+        self.assertEqual((code, stderr), (0, ""))
+        code, stdout, stderr = self.run_source(source, "check")
+        self.assertEqual((code, stdout), (1, ""))
+        self.assertEqual(stderr.count("error["), 3, stderr)
+        self.assertEqual(stderr.count("error[E0471]"), 2, stderr)
+        self.assertIn("error[E0400]", stderr)
+
     def test_check_resolves_names_after_validation(self) -> None:
         source = "fun f(x: Missing) = unknown(x)\n"
         code, _, stderr = self.run_source(source, "parse")

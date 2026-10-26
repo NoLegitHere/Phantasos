@@ -199,7 +199,7 @@ let genericCall = GenericMethods().pick(1)
 )");
     CHECK(f.value("inherited") == Type::Int && f.value("saved") == Type::Deferred && f.value("pending") == Type::Deferred);
     CHECK(f.value("hierarchy") == Type::Int);
-    CHECK(f.value("genericCall") == Type::Deferred);
+    CHECK(f.value("genericCall") == Type::Int);
     CHECK(f.value("dependent", BindingKind::Local) == Type::Int);
     for (std::string_view name : {"builtin", "wrapped", "maybe"}) CHECK(f.value(name, BindingKind::Local) == Type::Deferred);
 }

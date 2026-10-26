@@ -1,0 +1,48 @@
+inference_errors.phs:23:16: error[E0471]: type arguments do not satisfy interface constraints of 'bounded'
+   23 | let badBound = bounded(Missing())
+      |                ^^^^^^^^^^^^^^^^^^
+inference_errors.phs:19:5: note: constrained declaration here
+   19 | fun bounded<T: Read>(value: T): T = value
+      |     ^^^^^^^
+inference_errors.phs:24:16: error[E0471]: type arguments do not satisfy interface constraints of 'constrained'
+   24 | let badWhere = constrained<Missing>(Missing())
+      |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+inference_errors.phs:20:5: note: constrained declaration here
+   20 | fun constrained<T>(value: T): T where T: Read = value
+      |     ^^^^^^^^^^^
+inference_errors.phs:25:20: error[E0471]: type arguments do not satisfy interface constraints of 'Box'
+   25 | let badAnnotation: Box<Int>
+      |                    ^^^^^^^^
+inference_errors.phs:18:7: note: constrained declaration here
+   18 | class Box<T: Read> {}
+      |       ^^^
+inference_errors.phs:26:23: error[E0400]: expected 'Bool', found 'Int'
+   26 | let badResult: Bool = identity(1)
+      |                       ^^^^^^^^^^^
+inference_errors.phs:28:21: error[E0402]: integer literal is out of range for 'Int8'
+   28 | let badRange = same(128, byte)
+      |                     ^^^
+inference_errors.phs:29:19: error[E0411]: arguments do not match any callable signature
+   29 | let conflicting = same(byte, false)
+      |                   ^^^^^^^^^^^^^^^^^
+inference_errors.phs:22:5: note: candidate 'same(first: <deferred>, second: <deferred>)'
+   22 | fun same<T>(first: T, second: T): T = first
+      |     ^^^^
+inference_errors.phs:35:19: error[E0400]: expected 'Bool', found 'Parent?'
+   35 | let mixed: Bool = same(child, parent)
+      |                   ^^^^^^^^^^^^^^^^^^^
+inference_errors.phs:38:27: error[E0471]: type arguments do not satisfy interface constraints of 'Guard'
+   38 | fun alternative<T>(value: Guard<T>, extra: Int = 0): Bool = true
+      |                           ^^^^^^^^
+inference_errors.phs:37:7: note: constrained declaration here
+   37 | class Guard<T: Read> {}
+      |       ^^^^^
+inference_errors.phs:46:18: error[E0400]: expected 'Bool', found 'Parent'
+   46 | let late: Bool = three(Child(), Sibling(), Parent())
+      |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+inference_errors.phs:49:23: error[E0471]: type arguments do not satisfy interface constraints of 'Closed'
+   49 | let closedAnnotation: Closed
+      |                       ^^^^^^
+inference_errors.phs:48:7: note: constrained declaration here
+   48 | class Closed where Missing: Read {}
+      |       ^^^^^^

@@ -16,6 +16,7 @@
 #include "test_support.hpp"
 
 #include <algorithm>
+#include <array>
 #include <initializer_list>
 #include <string>
 
@@ -179,6 +180,64 @@ let pending = same(genericChild, genericParent)
     invariant.check("open class Parent {}\nclass Child: Parent {}\nfun f<T>(a: [T], b: [T]): T { loop {} }\nlet children: [Child?]\nlet parents: [Parent]\nlet bad = f(children, parents)", {DiagCode::NoMatchingCall});
 }
 
+void nondependent_protocol_positions() {
+    for (std::string_view protocol : {"Copy", "Sendable", "Error"}) {
+        Frontend f;
+        f.check(std::format("fun f<T>(x: T, marker: {}): T = x\nlet n: Int = 1\nlet inferred = f(n, n)\nlet explicitValue = f<Int>(n, n)", protocol));
+        CHECK(f.call("inferred").state == CallState::Deferred && f.value("inferred") == Type::Deferred);
+        CHECK(f.call("explicitValue").state == CallState::Deferred && f.value("explicitValue") == Type::Deferred);
+        Frontend alias;
+        alias.check(std::format("type Trait = {}\nfun f<T>(x: T, marker: Trait): T = x\nlet n: Int = 1\nlet inferred = f(n, n)\nlet explicitValue = f<Int>(n, n)", protocol));
+        CHECK(alias.call("inferred").state == CallState::Deferred && alias.call("explicitValue").state == CallState::Deferred);
+    }
+    Frontend nested;
+    nested.check("fun f<T>(x: T, markers: [Copy]): T = x\nlet n: Int = 1\nlet inferred = f(n, [n])\nlet explicitValue = f<Int>(n, [n])");
+    CHECK(nested.call("inferred").state == CallState::Deferred && nested.call("explicitValue").state == CallState::Deferred);
+    Frontend dependent;
+    dependent.check("interface I<U> {}\nfun f<T>(x: T, marker: I<T>): T = x\nlet n: Int = 1\nlet inferred = f(n, n)\nlet explicitValue = f<Int>(n, n)");
+    CHECK(dependent.call("inferred").state == CallState::Deferred && dependent.call("explicitValue").state == CallState::Deferred);
+    for (std::string_view source : {
+        "class Marker {}\nfun f<T>(x: T, marker: Marker): T = x\nlet bad = f(1, true)",
+        "fun f<T>(x: T, values: [T]): T = x\nlet bad = f(1, true)",
+        "type Trait = Copy\nfun f<T>(x: T, values: [Trait]): T = x\nlet values: [Int]\nlet bad = f(1, values)"}) {
+        Frontend bad; bad.check(source, {DiagCode::NoMatchingCall});
+    }
+}
+
+void late_nominal_anchors() {
+    const std::string declarations = R"(
+interface Marker {}
+open class Parent: Marker {}
+class A: Parent {}
+class B: Parent {}
+fun same<T>(a: T, b: T, c: T): T = a
+let a: A?
+let b: B
+let deepB: B? ?
+let parent: Parent
+let marker: Marker
+)";
+    for (const auto& [arguments, expected] : std::vector<std::pair<std::array<std::string_view, 3>, std::string_view>>{
+        {{"A()", "B()", "Parent()"}, "Parent"}, {{"a", "b", "parent"}, "Parent?"},
+        {{"a", "deepB", "parent"}, "Parent??"}, {{"a", "b", "marker"}, "Marker?"}
+    }) {
+        std::array<int, 3> order{0, 1, 2};
+        do {
+            Frontend f;
+            f.check(declarations + std::format("let result = same({}, {}, {})", arguments[order[0]], arguments[order[1]], arguments[order[2]]));
+            CHECK(f.name(f.value("result")) == expected && f.call("result").state == CallState::Resolved);
+            CHECK(f.call("result").type_arguments == std::vector<Type>{f.value("result")});
+        } while (std::next_permutation(order.begin(), order.end()));
+    }
+    Frontend unresolved;
+    unresolved.check(declarations + "let pending = same(A(), B(), A())");
+    CHECK(unresolved.call("pending").state == CallState::Deferred && unresolved.value("pending") == Type::Deferred);
+    Frontend positions;
+    positions.check(declarations + "fun choose<U, T>(prefix: U, a: T, b: T, c: T): T = a\nclass Holder<T>(a: T, b: T, c: T) {}\nlet result = choose(true, A(), B(), Parent())\nlet constructed = Holder(A(), B(), Parent())");
+    CHECK(positions.name(positions.value("result")) == "Parent" && positions.call("result").type_arguments.front() == Type::Bool);
+    CHECK(positions.name(positions.value("constructed")) == "Holder<Parent>" && positions.call("constructed").state == CallState::Resolved);
+}
+
 void checked_bounds_and_where() {
     const std::string declarations = R"(
 interface Read { fun read(): Int }
@@ -305,6 +364,8 @@ void shared_patterns_and_deep_bounds() {
 } // namespace
 
 int main() {
+    nondependent_protocol_positions();
+    late_nominal_anchors();
     speculative_constraint_uses();
     optional_nominal_anchors();
     inferred_arguments_and_literals();

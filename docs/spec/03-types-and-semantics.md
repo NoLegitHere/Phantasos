@@ -744,11 +744,18 @@ optional lifting, or be related by a supported nominal upcast. For related
 nominal anchors, compare ancestry without optional wrappers and use
 the maximum optional depth: both `same(child, parent)` and the reversed order
 infer `Parent?` for a `Child?` and a `Parent`.
+Previously unresolved nominal anchors are rechecked against the final widened
+substitution. Supplying a base/interface later, as in `same(A(), B(), Parent())`,
+can therefore resolve sibling anchors in any argument order, including their
+optional depths, without searching for a common ancestor.
 General common-ancestor and variance solving remains deferred. Inconsistent
 scalar/composite anchors reject the candidate. `Never`, unknown facts and empty literals supply
 no anchor. Expected return/binding types and omitted defaults do not infer
 arguments. Missing arguments stay deferred; probes apply the final substitution
 and only a selected candidate materializes literals.
+Non-dependent positions contribute no inference evidence; ordinary probes
+decide compatibility there. Protocol conversions without structural inference
+evidence retain the probe's deferred result, just as in explicit applications.
 
 Explicit type-argument count and ordinary argument shape filter candidates
 before inference. Supported constraints then eliminate inapplicable candidates.

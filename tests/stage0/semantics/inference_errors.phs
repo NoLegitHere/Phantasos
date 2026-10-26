@@ -40,3 +40,7 @@ fun alternative<T>(value: T): Int = 1
 let rejected = alternative<Unrelated>(Unrelated())
 extern "C" { fun stop(): Never }
 let selected = alternative<Unrelated>(stop(), extra: 1)
+
+class Sibling: Parent {}
+fun three<T>(a: T, b: T, c: T): T = a
+let late: Bool = three(Child(), Sibling(), Parent())

@@ -473,6 +473,7 @@ private:
         std::vector<Type> patterns;
         for (const auto& param : params) patterns.push_back(annotation(param.type, pattern_context));
         bool pending = false;
+        std::vector<std::pair<usize, Type>> pending_nominals;
         // Concrete arguments anchor inference before numeric literal defaults.
         // Probes later contextualize literals against the complete substitution.
         for (bool literals : {false, true}) for (usize a = 0; a < call.args.size(); ++a) {
@@ -503,7 +504,10 @@ private:
                             const auto depth = std::max(anchor.optional_depth, inferred.optional_depth);
                             if (relation(inferred.scalar(), anchor.scalar()) == Relation::Yes) anchor.optional_depth = depth;
                             else if (relation(anchor.scalar(), inferred.scalar()) == Relation::Yes) { anchor = inferred; anchor.optional_depth = depth; }
-                            else pending = true;
+                            else {
+                                pending_nominals.push_back({position->second, inferred});
+                                anchor.optional_depth = depth;
+                            }
                         }
                         else if (relation(inferred, anchor) == Relation::Yes) {}
                         else if (relation(anchor, inferred) == Relation::Yes) anchor = inferred;
@@ -513,8 +517,10 @@ private:
                     continue;
                 }
                 if (pattern.kind != argument.kind) {
-                    if (types_.descriptor(pattern)) { result.state = Relation::No; return result; }
-                    continue; // the ordinary probe checks non-dependent scalar positions
+                    // These positions supply no inference evidence. Preserve
+                    // the ordinary probe's deferred protocol/other conversions.
+                    if (types_.descriptor(pattern) && !protocol(pattern) && !concrete(pattern)) { result.state = Relation::No; return result; }
+                    continue;
                 }
                 const auto* x = types_.descriptor(pattern);
                 const auto* y = types_.descriptor(argument);
@@ -531,6 +537,10 @@ private:
                 } else work.push_back({x->element, y->element});
             }
         }
+        // A later supplied base/interface may resolve earlier sibling anchors.
+        // No common-ancestor search is needed: check against the final anchor.
+        for (const auto& [position, candidate] : pending_nominals)
+            pending |= relation(candidate, result.arguments[position]) != Relation::Yes;
         if (pending) return result; // no general common-ancestor or variance solver yet
         for (auto arg : result.arguments) if (!concrete(arg)) return result;
         result.context = application(id, result.arguments, parent, call.span).context;

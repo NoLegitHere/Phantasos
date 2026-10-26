@@ -39,7 +39,8 @@ Windows x64 and Linux x86_64:
 - [x] Initial inheritance graphs, inherited lookup, overrides, method conformance and nominal upcasts
 - [x] Initial explicit generic applications and alias/signature/member substitution
 - [x] Initial argument-based generic inference and concrete interface/where constraints
-- [ ] Generic bodies, dependent conformance, function-value inference, remaining numeric policies and ownership analysis
+- [x] Initial generic body checking, bound-based lookup, associated types/Self and dependent witnesses
+- [ ] Generic base substitution, built-in traits, remaining dependent contracts and ownership analysis
 - [ ] MIR, x86_64 codegen, COFF/ELF writers, linker, runtime
 - [ ] Workspace-aware build driver
 
@@ -76,10 +77,11 @@ applications substitute transparent aliases, constructor/function signatures and
 direct fields/methods of owners without bases; nominal arguments are invariant.
 Supplied arguments infer type parameters for functions, methods and nominal
 primary constructors. Concrete interface bounds and `where` clauses require
-declared ancestry and compatible supported implementations. Generic bodies,
-general inference/bound solving, generic inheritance,
-function-value inference, associated requirements, remaining numeric policies,
-dependent/property contracts, optional/ownership-wrapper member access and ownership analysis remain
+declared ancestry and compatible supported implementations. Generic bodies use
+symbolic parameters and declared bounds once; associated projections and `Self`
+substitute for concrete calls and supported witnesses. General inference/bound solving, generic inheritance,
+function-value inference, associated defaults, remaining numeric policies,
+remaining dependent/property contracts, optional/ownership-wrapper member access and ownership analysis remain
 pending, so passing `check` does not yet establish program validity. Imports explicitly report that
 package loading is unavailable.
 
@@ -149,6 +151,9 @@ and return types, selected function IDs, and argument-to-parameter mappings.
 Selected calls retain explicit/inferred type arguments and substituted parameter
 types; member records retain their concrete receiver type. Declaration signatures
 remain shared and are never overwritten by an application's types.
+Generic signatures retain symbolic type parameters/projections. `body(BindingId)`
+reports the supported schema check as resolved, deferred or erroneous. Associated
+type/property witnesses retain their substituted type as well as the implementation.
 `constraints()` retains resolved, deferred or erroneous application contracts,
 including concrete type applications outside calls. Failed constraints report E0471.
 Function value bindings remain deferred; their return types live in signatures.

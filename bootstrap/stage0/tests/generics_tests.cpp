@@ -139,8 +139,8 @@ let inferredReturn = constant<Int>()
     CHECK(f.value("overloadOne") == Type::Int && f.value("overloadTwo") == Type::Bool);
     CHECK(f.value("inferredReturn") == Type::Int);
     const auto* signature = f.result.scalar_types->signature(f.id("identity", BindingKind::Function));
-    CHECK(signature && signature->generic && signature->parameters == std::vector<Type>{Type::Deferred});
-    CHECK(signature->result == Type::Deferred); // applications never overwrite declaration facts
+    CHECK(signature && signature->generic && signature->parameters.size() == 1 && signature->parameters.front().kind == Type::TypeParameter);
+    CHECK(signature->result == signature->parameters.front()); // applications never overwrite symbolic declaration facts
     const auto* retained = f.result.scalar_types->call(f.invocation("integer"));
     for (int i = 0; i < 128; ++i) {
         const auto file = f.session.sources().add("other.phs", "let value = 1"); CHECK(file);
@@ -181,11 +181,12 @@ let bounded = bound<Int>(1)
 fun inferred<T>(x: T): T = x
 let inference = inferred(1)
 let noneArgument = inferred<Int?>(none)
-fun dependentDefault<T>(x: T = true): T = x
+extern "C" { fun deferredValue<T>(marker: borrow Bool): T }
+fun dependentDefault<T>(x: T = deferredValue<T>(true)): T = x
 let defaulted = dependentDefault<Int>()
 class Owner<T> { class Nested {} }
 let captured: Owner.Nested
-class Base<T> { let value: T }
+open class Base<T> { let value: T }
 class Derived<T>: Base<T> {}
 let inherited: Derived<Int>
 let dependent = inherited.value
@@ -197,12 +198,12 @@ let dependent = inherited.value
 
 void omitted_default_facts() {
     const std::string declarations = R"(
-fun identity<T>(x: T): T = x
+fun identity<T>(x: borrow Bool): Int = 1
 fun pending<T>(x: Int = identity<T>(true)): Int = x
 class Pending<T>(x: Int = identity<T>(true)) {}
 class Owner<T> { fun read(x: Int = identity<T>(true)): Int = x }
 fun known<T>(x: Int = make()): Int = x
-fun nested<T>(x: Int = literal<T>()): Int = x
+fun nested<T>(x: Int = pending<T>()): Int = x
 fun closed<T>(x: Int = known<Int>()): Int = x
 fun recursive<T>(x: Int = recursive<Int>()): Int = x
 class Known<T>(x: Int = make()) {}

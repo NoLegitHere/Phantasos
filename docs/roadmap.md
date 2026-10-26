@@ -48,9 +48,13 @@ foundation. Complete.
 - [x] Initial generic argument inference and concrete constraints: supplied
   argument anchors, literal context, nominal constructors, interface bounds,
   `where` clauses and retained constraint states.
-- [ ] **Next: generic bodies and dependent contracts.** Check generic bodies
-  once against bounds, resolve members through bounds, and complete associated
-  types, built-in traits, generic inheritance and dependent conformance.
+- [x] Initial generic bodies/dependent conformance: symbolic declaration types,
+  bound-based lookup, associated projections, inferred generic returns, `Self`
+  substitution, associated-type and stored-property witnesses, and generic
+  conformers to known non-generic interfaces.
+- [ ] **Next: generic base substitution and built-in traits.** Instantiate
+  generic base/interface graphs, derive `Copy`/`Sendable`/`Error`, and complete
+  generic method contracts, associated defaults and receiver-dependent contexts.
 - [ ] Complete type checking: generic aliases, generics, optionals,
   generic calls, function-value inference, remaining numeric policies, receiver-dependent members,
   inheritance, visibility, and typed errors.
@@ -66,7 +70,7 @@ Unsupported type facts, including dependent generic calls, function-value infere
 block/branch results, are explicitly deferred. Direct nominal field and method
 lookup runs after receiver inference, including known inherited members and
 type aliases. Supported method requirements are checked with retained witnesses.
-General inference/bound solving, captured owners, dependent/property contracts, visibility,
+General inference/bound solving, captured owners, remaining dependent/property contracts, visibility,
 optional/ownership-wrapper members and bound method values remain pending. A successful
 check does **not** yet imply that all members exist, types match, ownership is valid,
 or executable code can be generated. Imports receive an explicit unsupported

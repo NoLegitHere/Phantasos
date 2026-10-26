@@ -76,7 +76,11 @@
   separate from selected applications; cache hits must not skip later validation.
   Concrete interface/where constraints require compatible supported implementations, not
   ancestry alone; retain constraint states separately from structural identities.
-  Generic body validation and dependent/associated-type contracts remain deferred.
+  Check generic bodies once with symbolic parameters and declared/implied input
+  bounds; never recheck a body for each application. `Self`/associated projections
+  use receiver contexts and iterative descriptor substitution. Keep definition
+  facts separate from selected-call facts, and preserve deferred states for
+  unsupported receiver/generic-base/coinductive contracts.
   Keep alias/type wrapper traversal
   iterative, report cycle paths once, and do not mutate lexical resolution.
   Type queries cache diagnostics so shared constructor annotations are not
@@ -170,6 +174,9 @@
   constructors/methods, overload filtering, concrete bounds/where clauses,
   implementation-return dependencies, retained errors/deferrals, shared patterns
   and 5,000-interface chains.
+  The `bodies` suite checks errors without instantiation, symbolic returns,
+  bounds/where lookup, associated projections, generic conformers, `Self` and
+  stored-property witnesses, defaults, cached results and deferred contracts.
 
 - Run `python tests/test_license_check.py` for license-fixer regressions,
   including encoding declarations, BOMs, line endings, and idempotence.

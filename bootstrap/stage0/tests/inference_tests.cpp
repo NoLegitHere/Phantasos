@@ -114,7 +114,7 @@ let reordered = labels(second: 1, first: true)
     CHECK(f.call("first").type_arguments == std::vector<Type>{Type::Int8} && f.call("first").inferred_type_arguments);
     CHECK(f.call("box").type_arguments == std::vector<Type>{Type::Int8} && f.call("box").inferred_type_arguments);
     const auto* signature = f.result.scalar_types->signature(f.id("identity", BindingKind::Function));
-    CHECK(signature && signature->parameters == std::vector<Type>{Type::Deferred});
+    CHECK(signature && signature->parameters.size() == 1 && signature->parameters.front().kind == Type::TypeParameter);
 }
 
 void speculative_constraint_uses() {
@@ -127,7 +127,7 @@ void speculative_constraint_uses() {
             Frontend f;
             f.check(declarations + overloads + "let first = choose<Bad>(Bad())\nlet again = choose<Bad>(Bad())");
             CHECK(f.value("first") == Type::Int && f.value("again") == Type::Int);
-            CHECK(f.call("first").state == CallState::Resolved && f.result.scalar_types->constraints().empty());
+            CHECK(f.call("first").state == CallState::Resolved && std::ranges::none_of(f.result.scalar_types->constraints(), [](const auto& use) { return use.state == ExpansionState::Error; }));
             // Reusing a previously probed signature must still validate it if
             // a later call selects it. Never needs no invalid Box<Bad> argument.
             Frontend selected;
@@ -135,14 +135,15 @@ void speculative_constraint_uses() {
                 "extern \"C\" { fun stop(): Never }\nlet first = choose<Bad>(Bad())\nlet selected = choose<Bad>(stop(), extra: 1)",
                 {DiagCode::GenericConstraint});
             CHECK(selected.value("first") == Type::Int);
-            CHECK(selected.result.scalar_types->constraints().size() == 1);
-            const auto& contract = selected.result.scalar_types->constraints().front();
+            const auto contracts = selected.result.scalar_types->constraints();
+            CHECK(std::ranges::count_if(contracts, [](const auto& use) { return use.state == ExpansionState::Error; }) == 1);
+            const auto& contract = *std::ranges::find_if(contracts, [](const auto& use) { return use.state == ExpansionState::Error; });
             CHECK(contract.declaration == selected.id("Box", BindingKind::Type) && contract.state == ExpansionState::Error);
         }
     }
     Frontend method;
     method.check(declarations + "class Owner { fun choose<T>(value: Box<T>): Bool = true; fun choose<T>(value: T): Int = 1 }\nlet value = Owner().choose<Bad>(Bad())");
-    CHECK(method.value("value") == Type::Int && method.result.scalar_types->constraints().empty());
+    CHECK(method.value("value") == Type::Int && std::ranges::none_of(method.result.scalar_types->constraints(), [](const auto& use) { return use.state == ExpansionState::Error; }));
     Frontend closed;
     closed.check(declarations + "fun choose(value: Box<Bad>): Bool = true\nfun choose(value: Bad): Int = 1\nlet value = choose(Bad())", {DiagCode::GenericConstraint});
     CHECK(closed.result.scalar_types->constraints().size() == 1); // an unconditional declaration error still counts
@@ -334,12 +335,13 @@ let bottom = identity(stop())
 fun copying<T: Copy>(value: T): T = value
 let builtin = copying(1)
 interface Associated { type Item }
-class Pending: Associated {}
+abstract class Pending: Associated {}
 fun associated<T: Associated>(value: T): T = value
-let property = associated(Pending())
+let abstractValue: Pending
+let property = associated(abstractValue)
 class Wrapper<T>(let value: T) {}
-interface Plain {}
-fun generic<T: Plain>(value: T): T = value
+interface Plain<U> {}
+fun generic<T: Plain<Int>>(value: T): T = value
 let hierarchy = generic(Wrapper(1))
 )");
     for (std::string_view name : {"missing", "empty", "absent", "bottom", "builtin", "property", "hierarchy"})
@@ -368,12 +370,12 @@ void nongeneric_nominal_constraints() {
 
 void recursive_constraint_expansion() {
     for (std::string_view source : {
-        "interface I {}\nclass Box<T> where Box<[T]>: I {}\nlet value: Box<Int>",
-        "interface I {}\nclass Box<T> where Box<[T]>: I {}\nlet a: Box<Int>\nlet b: Box<Bool>",
-        "interface I {}\nclass Box<T> where Box<[T]>: I {}\nlet value = Box<Int>()",
-        "interface I {}\nclass Box<T> where Box<T>: I {}\nlet value: Box<Int>",
-        "interface I {}\nclass A<T> where B<[T]>: I {}\nclass B<U> where A<[U]>: I {}\nlet value: A<Int>",
-        "interface I {}\nclass A where B: I {}\nclass B where A: I {}\nlet value: A"
+        "interface I<U> {}\nclass Box<T> where Box<[T]>: I<T> {}\nlet value: Box<Int>",
+        "interface I<U> {}\nclass Box<T> where Box<[T]>: I<T> {}\nlet a: Box<Int>\nlet b: Box<Bool>",
+        "interface I<U> {}\nclass Box<T> where Box<[T]>: I<T> {}\nlet value = Box<Int>()",
+        "interface I<U> {}\nclass Box<T> where Box<T>: I<T> {}\nlet value: Box<Int>",
+        "interface I<U> {}\nclass A<T> where B<[T]>: I<T> {}\nclass B<U> where A<[U]>: I<U> {}\nlet value: A<Int>",
+        "interface I<U> {}\nclass A where B: I<Int> {}\nclass B where A: I<Int> {}\nlet value: A"
     }) {
         Frontend f; f.check(source);
         const auto uses = f.result.scalar_types->constraints();
@@ -381,10 +383,10 @@ void recursive_constraint_expansion() {
         for (const auto& use : uses) CHECK(use.state == ExpansionState::Deferred);
     }
     Frontend independent;
-    independent.check("interface I {}\nclass Good: I {}\nclass Box<T: I> where Box<[T]>: I {}\nlet value: Box<Good>", {DiagCode::GenericConstraint});
+    independent.check("interface I {}\nclass Good: I {}\ninterface J<U> {}\nclass Box<T: I> where Box<[T]>: J<T> {}\nlet value: Box<Good>", {DiagCode::GenericConstraint});
     CHECK(std::ranges::any_of(independent.result.scalar_types->constraints(), [](const auto& use) { return use.state == ExpansionState::Error; }));
     Frontend finite;
-    finite.check("interface I {}\nclass Bad {}\nclass Inner<T: I> {}\nclass Outer<T> where Inner<T>: I {}\nlet value: Outer<Bad>", {DiagCode::GenericConstraint});
+    finite.check("interface I {}\nclass Bad {}\nclass Inner<T: I> {}\nclass Outer<T> where Inner<T>: I {}\nlet value: Outer<Bad>", {DiagCode::GenericConstraint, DiagCode::GenericConstraint});
     CHECK(finite.result.scalar_types->constraints().size() == 2);
     Frontend erased;
     erased.check("interface I {}\nclass Good: I {}\ntype Erase<T> = Good\nclass Box<T> where Erase<Box<[T]>>: I {}\nlet value: Box<Int>");

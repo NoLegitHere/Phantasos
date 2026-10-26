@@ -275,6 +275,20 @@ let annotation: Box<Int>
         self.assertEqual(stderr.count("error[E0471]"), 2, stderr)
         self.assertIn("error[E0400]", stderr)
 
+    def test_generic_bodies_checked_without_instantiation(self) -> None:
+        source = """fun invalid<T>(x: T): Int = x
+fun missing<T>(x: T) = x.missing()
+interface Source { type Item; fun get(): Item }
+class Missing: Source { fun get(): Int = 1 }
+"""
+        code, _, stderr = self.run_source(source, "parse")
+        self.assertEqual((code, stderr), (0, ""))
+        code, stdout, stderr = self.run_source(source, "check")
+        self.assertEqual((code, stdout), (1, ""))
+        self.assertEqual(stderr.count("error["), 3, stderr)
+        for diagnostic in ("E0400", "E0450", "E0463"):
+            self.assertIn(f"error[{diagnostic}]", stderr)
+
     def test_check_resolves_names_after_validation(self) -> None:
         source = "fun f(x: Missing) = unknown(x)\n"
         code, _, stderr = self.run_source(source, "parse")

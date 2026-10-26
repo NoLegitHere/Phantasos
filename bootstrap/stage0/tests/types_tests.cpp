@@ -380,7 +380,7 @@ struct S(value: Int8) { fun f(value: Bool): Bool = value }
 struct Generic<T>(value: T) { fun f(): T = value }
 )");
     CHECK(shadowed.binding("value", 0) == Type::Int8 && shadowed.binding("value", 1) == Type::Int8);
-    CHECK(shadowed.binding("value", 2) == Type::Deferred && shadowed.binding("value", 3) == Type::Deferred);
+    CHECK(shadowed.binding("value", 2).kind == Type::TypeParameter && shadowed.binding("value", 3) == shadowed.binding("value", 2));
     CHECK(shadowed.binding("value", 4) == Type::Bool);
 }
 

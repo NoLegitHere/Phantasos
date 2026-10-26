@@ -78,7 +78,11 @@ std::string TypeTable::name(ScalarType root, const Resolution& resolution, const
         if (!d) { append(scalar_type_name(type)); continue; }
         switch (d->kind) {
             case ScalarType::TypeParameter:
-                append(names.str(resolution.binding(d->declaration).name.sym)); break;
+                if (resolution.binding(d->declaration).kind == BindingKind::Type) append("Self");
+                else append(names.str(resolution.binding(d->declaration).name.sym));
+                break;
+            case ScalarType::Projection:
+                push(names.str(resolution.binding(d->declaration).name.sym)); push("."); push(d->element); break;
             case ScalarType::Nominal: {
                 std::vector<std::string_view> parts{names.str(resolution.binding(d->declaration).name.sym)};
                 auto scope = resolution.binding(d->declaration).scope;

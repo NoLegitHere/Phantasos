@@ -13,7 +13,7 @@ generics_errors.phs:22:22: error[E0470]: type argument count does not match any 
 generics_errors.phs:23:21: error[E0411]: arguments do not match any callable signature
    23 | let wrongArgument = identity<Int>(true)
       |                     ^^^^^^^^^^^^^^^^^^^
-generics_errors.phs:18:5: note: candidate 'identity(value: <deferred>)'
+generics_errors.phs:18:5: note: candidate 'identity(value: T)'
    18 | fun identity<T>(value: T): T = value
       |     ^^^^^^^^
 generics_errors.phs:24:33: error[E0402]: integer literal is out of range for 'Int8'

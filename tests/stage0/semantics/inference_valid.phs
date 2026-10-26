@@ -56,5 +56,6 @@ let late: Parent = three(Child(), Sibling(), Parent())
 
 class Closed where Value: Read {}
 let closedAnnotation: Closed
-class Recursive<T> where Recursive<[T]>: Read {}
+interface Dependent<U> {}
+class Recursive<T> where Recursive<[T]>: Dependent<T> {}
 let recursiveAnnotation: Recursive<Int>

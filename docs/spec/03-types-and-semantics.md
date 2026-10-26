@@ -793,12 +793,65 @@ Structural type identities remain available independently of constraint validity
 Selected call records retain inferred arguments and an inference flag alongside
 the substituted parameter types. Facts remain session-owned and ASTs unchanged.
 
-Built-in `Copy`/`Sendable`/`Error` derivation, generic base/interface substitution,
-associated/property requirements and full generic body checking against bounds
-remain deferred. Constrained alias normalization and inference through such
-aliases, naked generic-alias constructor inference, contextual return inference,
-and dependent expression-body returns also need later work. Concrete constraints
+Initial generic bodies, associated/property requirements and `Self` contracts
+follow 3.23. Built-in `Copy`/`Sendable`/`Error` derivation and generic base/interface
+substitution remain deferred. Constrained alias normalization and inference through such
+aliases, naked generic-alias constructor inference and contextual return
+inference also need later work. Concrete constraints
 on alias applications are still checked even when their type facts are deferred.
 Unresolved applicable constraints keep call selection deferred; type applications
 retain their separate constraint state. This initial pass does not establish
 ownership, effects, complete generic validity or executable lowering.
+
+## 3.23 Initial generic body checking and dependent conformance [Core]
+
+Stage0 checks supported generic function/method/type bodies once, including
+unused declarations.
+Parameters have symbolic types keyed by their declaration bindings. A body must
+work under its declared interface/`where` bounds; a successful instantiation
+cannot repair an invalid definition. Returning an arbitrary `T` as `Int`,
+returning `true` as arbitrary `T`, or using an unbounded member reports the usual
+type/member diagnostic at the definition. Applications do not rewrite or recheck
+the body. Generic defaults are checked against their symbolic parameter types
+once; a proven default can then be used by a concrete application.
+
+Well-formed incoming nominal parameter types provide their own bounds as premises
+for a callable's own formal parameters. For example, a parameter `Box<T>` where
+`Box` requires `T: Read` lets that callable use `Read` on `T`. These premises do
+not turn a concrete `Box<Bad>` into a valid type: selected signatures and actual
+type applications still validate their substituted constraints. Conditions on
+captured owner parameters remain deferred rather than strengthening other bodies.
+
+Member lookup on a symbolic receiver uses its known bounds, including supported
+inherited interface requirements. Method signatures substitute the receiver,
+interface arguments and method arguments. `Self` in an interface contract denotes
+that conforming receiver; class `Self` continues to denote its enclosing class.
+Associated paths such as `T.Item` retain canonical symbolic projections. Explicit
+conformer type aliases resolve those projections, while associated-type bounds
+and supported projected `where` clauses provide further lookup premises.
+
+Symbolic expression-body returns are inferred and substituted through their
+descriptor graph at calls, including arrays/functions and associated projections.
+`ScalarTypes::signature` exposes the symbolic declaration signature; selected
+calls retain their application arguments/parameter types as before. The AST and
+lexical references remain unchanged. `body(BindingId)` retains resolved/deferred/
+error status for supported generic typing, including generic-owner methods and
+interface schemas. It is not a proof of flow, initialization, ownership or effects.
+
+Known non-generic interface contracts can be checked for generic nominal schemas
+and their applications. Method contracts substitute `Self` and associated types;
+conformance also checks explicit associated aliases (and their bounds), stored
+properties, and interface `where` conditions. Writable requirements need writable
+implementing fields; property types are invariant. Associated/property witnesses
+retain a known type alongside their implementation binding. Default interface
+methods can satisfy supported contracts. Abstract types may retain obligations.
+
+Generic base/interface argument substitution, associated defaults, captured
+nominal identities, generic-method witness equivalence, receiver-specific context
+refinement, and inherited class implementations whose `Self` contract changes
+remain pending. Built-in trait derivation and general function-value/variance
+inference are also pending. Recursive or deep dependent queries stop at a bounded
+depth (64 nested queries) and retain deferred states; independently known failures
+still report diagnostics. Unsupported branch/block results, casts, all-path return
+checks and ownership/effect rules remain separate roadmap work. Passing `check`
+continues to establish only the implemented rules.

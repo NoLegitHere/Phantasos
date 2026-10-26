@@ -30,7 +30,7 @@ struct ScalarType {
         Deferred, Error, Int8, Int16, Int32, Int64, UInt8, UInt16, UInt32, UInt64,
         Int, UInt, Float32, Float64, Bool, Char, String, Unit, Never,
         Nominal, Array, Pointer, Shared, Weak, Function,
-        TypeParameter // internal inference patterns; declaration facts remain deferred
+        TypeParameter, Projection // symbolic generic variables and associated type projections
     };
     Kind kind = Deferred;
     u32 optional_depth = 0;
@@ -150,6 +150,13 @@ struct ConformanceWitness {
     BindingId requirement;
     BindingId implementation; // valid only for a Resolved witness
     ExpansionState state = ExpansionState::Deferred;
+    ScalarType type; // associated type/field witness, when known
+};
+
+struct CheckedBody {
+    // Supported generic typing only; initialization, effects, ownership and
+    // full control-flow validity are separate. Unknown typing stays deferred.
+    ExpansionState state = ExpansionState::Deferred;
 };
 struct CheckedHierarchy {
     ExpansionState state = ExpansionState::Deferred; // structural base graph
@@ -194,6 +201,10 @@ class ScalarChecker;
 // Missing/unsupported facts return Deferred. Error marks a diagnosed expression.
 class ScalarTypes {
 public:
+    const CheckedBody* body(BindingId id) const {
+        const auto it = bodies_.find(id.value);
+        return it == bodies_.end() ? nullptr : &it->second;
+    }
     std::span<const CheckedConstraint> constraints() const { return constraints_; }
     ScalarType expression(const ast::Expr* expr) const {
         const auto it = expressions_.find(expr);
@@ -240,6 +251,7 @@ private:
     AliasExpansion aliases_;
     TypeTable types_;
     std::vector<CheckedConstraint> constraints_;
+    std::unordered_map<usize, CheckedBody> bodies_;
 };
 
 // Run only after successful validation and resolution. Checks scalar literals,
@@ -252,7 +264,9 @@ private:
 // and direct members of instantiated owners without bases. Non-generic hierarchy
 // graphs and witnesses are separate from dependent contracts. Argument inference
 // and supported concrete interface/where constraints retain checked application
-// facts. Generic bodies, dependent contracts, effects and ownership remain pending.
+// facts. Generic bodies use symbolic declarations once; known associated/Self
+// and property contracts retain witnesses. Remaining dependent contracts,
+// effects, flow safety and ownership need later passes.
 // Dependency evaluation and AST traversal use explicit stacks, including
 // forward binding inference. Cyclic inference remains deferred for a later pass.
 [[nodiscard]] ScalarTypes check_scalar_types(const ast::File& file, const Resolution& resolution,

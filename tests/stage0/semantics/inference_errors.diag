@@ -25,7 +25,7 @@ inference_errors.phs:28:21: error[E0402]: integer literal is out of range for 'I
 inference_errors.phs:29:19: error[E0411]: arguments do not match any callable signature
    29 | let conflicting = same(byte, false)
       |                   ^^^^^^^^^^^^^^^^^
-inference_errors.phs:22:5: note: candidate 'same(first: <deferred>, second: <deferred>)'
+inference_errors.phs:22:5: note: candidate 'same(first: T, second: T)'
    22 | fun same<T>(first: T, second: T): T = first
       |     ^^^^
 inference_errors.phs:35:19: error[E0400]: expected 'Bool', found 'Parent?'

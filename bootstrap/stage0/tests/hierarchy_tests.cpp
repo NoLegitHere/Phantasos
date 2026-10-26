@@ -234,19 +234,19 @@ void deferred_contracts_and_stable_facts() {
 open class Generic<T> {}
 class Dependent<T>: Generic<T> { override fun f(): Int = 1 }
 interface Associated { type Element; fun f(v: Element): Element }
-class Pending: Associated {}
+abstract class Pending: Associated {}
 interface WithSelf { fun identity(v: Self): Self }
 class Identity: WithSelf { fun identity(v: Identity): Identity = v }
 let pendingCall = Identity().identity(Identity())
 struct Copying: Copy {}
 interface Callback { fun use(cb: fun() -> Int throws(Self)): Int }
-class PendingCallback: Callback {}
+abstract class PendingCallback: Callback {}
 interface Borrowed { fun inspect(v: borrow Int): Int }
 class PendingBorrow: Borrowed {}
 )");
     CHECK(f.hierarchy("Dependent").state == ExpansionState::Deferred);
-    CHECK(f.hierarchy("Pending").conformance == ExpansionState::Deferred && f.hierarchy("Identity").conformance == ExpansionState::Deferred);
-    CHECK(f.value("pendingCall") == Type::Deferred && f.hierarchy("Copying").state == ExpansionState::Deferred);
+    CHECK(f.hierarchy("Pending").conformance == ExpansionState::Deferred && f.hierarchy("Identity").conformance == ExpansionState::Resolved);
+    CHECK(f.value("pendingCall").kind == Type::Nominal && f.hierarchy("Copying").state == ExpansionState::Deferred);
     CHECK(f.hierarchy("PendingCallback").conformance == ExpansionState::Deferred && f.hierarchy("PendingBorrow").conformance == ExpansionState::Deferred);
     const auto* fact = f.result.scalar_types->hierarchy(f.id("Identity", BindingKind::Type));
     for (int i = 0; i < 128; ++i) {

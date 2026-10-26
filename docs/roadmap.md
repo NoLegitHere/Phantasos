@@ -61,7 +61,7 @@ foundation. Complete.
   exit code. Constructs outside the subset receive a diagnostic.
   - [x] Code generation gate: `gate` reports constructs outside the scalar
     subset (`E0600`) and checks the `main` entry point (`E0601`).
-  - [ ] Typed MIR with strictly left-to-right lowering and a `mir` dump.
+  - [x] Typed MIR with strictly left-to-right lowering and a `mir` dump.
   - [ ] Naive x86_64 code with overflow and division traps.
   - [ ] Static ELF writer, stage0 `_start` and panic stub.
   - [ ] `build` command and run tests in Linux CI.

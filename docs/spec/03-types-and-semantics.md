@@ -223,8 +223,8 @@ signature cannot mention less-visible types.
 
 Stage0 validates these structural constraints and the type-alias forms in
 chapter 2 before running the name resolver below. Initial typing and hierarchy
-checks follow in 3.14–3.23, flow checks in 3.24 and the stage0 code generation
-subset in 3.25; remaining typing, visibility,
+checks follow in 3.14–3.23, flow checks in 3.24, the stage0 code generation
+subset in 3.25 and evaluation order in 3.26; remaining typing, visibility,
 ownership and effect analysis remain on the [roadmap](../roadmap.md).
 
 ## 3.13 Lexical name resolution [Core]
@@ -923,7 +923,8 @@ the subset, so that nothing half-checked reaches code generation:
   generic, `async`, `unsafe` or throwing, and cannot carry attributes. Their
   parameters use the default convention and have no defaults.
 - **Types.** `Bool`, `Int8` to `Int64`, `UInt8` to `UInt64`, `Int`, `UInt`,
-  `Unit` and `Never`, without optional wrappers.
+  `Unit` and `Never`, without optional wrappers. Parameters and locals need
+  one of the value types, so they cannot be `Unit` or `Never`.
 - **Statements.** `let` and `var` locals, with or without an initializer;
   assignment and compound assignment to locals; `if`, `while`, `loop`, `break`,
   `continue` and `return`.
@@ -943,3 +944,22 @@ reported again.
 The program needs exactly one `fun main()` with no parameters. It returns
 `Int` (the exit status), nothing, or `Never`. A missing, overloaded or
 otherwise invalid `main` reports `E0601`.
+
+## 3.26 Evaluation order and arithmetic traps [Core]
+
+Evaluation is strictly left to right. Operands of a binary operator, the
+arguments of a call (in source order, even when labels pass them in another
+parameter order) and the parts of an expression are evaluated before the
+operation that uses them. Compound assignment `x op= e` reads its target
+before it evaluates `e`. `&&` and `||` evaluate their right operand only when
+the left operand does not decide the result.
+
+Integer `+`, `-`, `*` and unary `-` trap when the result does not fit the
+type. `/` and `%` trap on a zero divisor and when the signed minimum is
+divided by `-1`. Integer division truncates toward zero, and `%` takes the
+sign of its left operand. The `&+`, `&-` and `&*` forms wrap.
+`T.truncating(x)` keeps the low bits of `x`. A trap is a panic (3.7).
+
+Stage0 lowers checked programs to a typed MIR that makes this order
+explicit. `phantasos-stage0 mir <file>` prints it for a file that passes
+`gate` (3.25).

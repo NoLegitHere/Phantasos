@@ -163,6 +163,16 @@ private:
         return false;
     }
 
+    // Parameters and locals hold a value, so 'Unit' and 'Never' are not stored.
+    bool stored(Span span, ScalarType value, std::string_view what) {
+        if (!type(span, value)) return false;
+        if (value.kind != ScalarType::Unit && value.kind != ScalarType::Never) return true;
+        ok_ = false;
+        diag_.error(DiagCode::UnsupportedCodegen, span, "stage0 code generation does not support {} of type '{}' yet", what,
+                    value.kind == ScalarType::Unit ? "Unit" : "Never");
+        return false;
+    }
+
     BindingId target(const NameExpr& name) const {
         const auto* ref = resolution_.reference(name.name.span);
         if (!ref || ref->state != ResolutionState::Resolved) return {};
@@ -184,7 +194,7 @@ private:
                 if (param.conv != Convention::Default) unsupported(param.name.span, "parameter conventions");
                 if (param.default_value) unsupported(param.default_value->span, "parameter defaults");
                 const auto it = values_.find(param.name.span.lo);
-                if (it != values_.end()) type(param.name.span, types_.binding(it->second));
+                if (it != values_.end()) stored(param.name.span, types_.binding(it->second), "parameters");
             }
             const auto id = items_.find(&fun);
             const ScalarSignature* sig = id == items_.end() ? nullptr : types_.signature(id->second);
@@ -225,7 +235,7 @@ private:
                     diag_.error(DiagCode::UnsupportedCodegen, var.name.span,
                                 "stage0 code generation needs the type of '{}'; add a type annotation",
                                 names_.str(var.name.sym));
-                } else if (type(var.name.span, local)) {
+                } else if (stored(var.name.span, local, "locals")) {
                     if (var.init) work.push_back({var.init, true});
                     return;
                 }

@@ -94,6 +94,9 @@ first native backend cannot compile yet. That backend covers Bool and integer
 functions, locals, loops, calls and integer arithmetic, and needs a
 `fun main()` that returns `Int` or nothing. See
 [spec 3.25](docs/spec/03-types-and-semantics.md) for the full subset.
+`mir <file.phs>` prints the typed MIR for a file that passes `gate`. The MIR
+has basic blocks, typed registers and checked arithmetic, and it lowers code
+strictly left to right (spec 3.26).
 
 ## Repository layout
 
@@ -138,6 +141,7 @@ python tests/test_frontend.py --stage0 build/stage0/phantasos-stage0   # input l
 python tests/fuzz_frontend.py --stage0 build/stage0/phantasos-stage0   # crash/hang fuzzing
 python tests/fuzz_frontend.py --stage0 build/stage0/phantasos-stage0 --command check # semantic-path fuzzing
 python tests/fuzz_frontend.py --stage0 build/stage0/phantasos-stage0 --command gate  # code-generation-gate fuzzing
+python tests/fuzz_frontend.py --stage0 build/stage0/phantasos-stage0 --command mir   # MIR lowering fuzzing
 python tools/license-check/license_check.py                            # license headers
 ```
 
@@ -205,6 +209,7 @@ Try it:
 build/stage0/phantasos-stage0 parse tests/stage0/parser/showcase.phs   # print the syntax tree
 build/stage0/phantasos-stage0 lex   tests/stage0/lexer/literals.phs    # print the token stream
 build/stage0/phantasos-stage0 gate  tests/stage0/codegen/gate_fib.phs  # check a program for code generation
+build/stage0/phantasos-stage0 mir   tests/stage0/mir/fib.phs          # print its MIR
 ```
 
 ## License

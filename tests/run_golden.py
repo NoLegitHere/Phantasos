@@ -21,8 +21,9 @@ Layout (relative to tests/stage0):
     diagnostics/*.phs  -> `check`, stderr compared with *.diag (must fail)
     semantics/*.phs    -> `check`, stderr compared with *.diag (may succeed)
     codegen/*.phs      -> `gate`,  stderr compared with *.diag (may succeed)
+    mir/*.phs          -> `mir`,   stdout compared with *.mir
 
-For lexer/parser tests, stderr is compared with *.diag when that file exists;
+For lexer/parser/mir tests, stderr is compared with *.diag when that file exists;
 otherwise the test must succeed with empty stderr.
 
 Usage: python tests/run_golden.py --stage0 <path-to-phantasos-stage0> [--update] [FILTER]
@@ -43,6 +44,7 @@ SUITES = {
     "diagnostics": ("check", None),
     "semantics": ("check", None),
     "codegen": ("gate", None),
+    "mir": ("mir", ".mir"),
 }
 CHECK_SUITES = ("diagnostics", "semantics", "codegen")
 

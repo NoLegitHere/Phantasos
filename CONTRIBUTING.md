@@ -189,6 +189,9 @@
   The `gate` suite covers the accepted code generation subset, rejected
   declarations and expressions, entry-point checks, caching, gating by `check`
   errors, and long `||` chains and deeply nested loops.
+  The `mir` suite runs lowered programs on a small reference interpreter. It
+  checks results, overflow, division and negation traps, short-circuit
+  evaluation, argument order and long or nested trees.
 
 - Run `python tests/test_license_check.py` for license-fixer regressions,
   including encoding declarations, BOMs, line endings, and idempotence.
@@ -205,6 +208,9 @@
 - `tests/stage0/codegen/` runs `gate` with the same exit-status rules as
   `semantics/`. Its fixtures cover the stage0 code generation subset and its
   `E0600`/`E0601` diagnostics.
+- `tests/stage0/mir/` runs `mir` and compares stdout with `*.mir`. Like the
+  lexer and parser fixtures, a case is positive unless its `.diag` baseline
+  has an error header.
 - Regenerate them with `python tests/run_golden.py --stage0 <exe> --update`
   and review the diff before committing.
   Lexer/parser fixtures are positive unless an existing `.diag` baseline has
@@ -214,5 +220,5 @@
 - Run `python tests/test_frontend.py --stage0 <exe>` for deterministic nesting,
   long AST/token traversal, and parser-state regression tests. These run on both
   platforms and in the sanitizer job, alongside the mutation fuzzer.
-- Run the mutation fuzzer with `--command check` and `--command gate` as well
-  as its default `parse` mode to exercise semantic validation after successful parses.
+- Run the mutation fuzzer with `--command check`, `--command gate` and
+  `--command mir` as well as its default `parse` mode to exercise semantic validation after successful parses.

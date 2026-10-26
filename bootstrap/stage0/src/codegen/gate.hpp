@@ -23,8 +23,9 @@ namespace phs {
 // functions over Bool and built-in integer types, with let/var locals,
 // assignment, if/while/loop/break/continue/return, direct calls, arithmetic,
 // comparisons, short-circuit logic and unary -, ! and ~. Everything else, and
-// any expression whose type is not known, reports E0600. A program needs one
-// `fun main()` with no parameters that returns Int or Unit (E0601).
+// any expression whose type is not known, reports E0600; parameters and locals
+// cannot be Unit or Never. A program needs one `fun main()` with no parameters
+// that returns Int, Unit or Never (E0601).
 // Run after check succeeds; the AST, Resolution and ScalarTypes are unchanged.
 // Returns true when the file is inside the subset.
 bool check_codegen_subset(const ast::File& file, const Resolution& resolution, const ScalarTypes& types,

@@ -36,6 +36,8 @@ namespace phs::x86_64 {
 enum class Trap : u32 { Overflow = 1, DivideByZero = 2 };
 
 inline constexpr std::string_view kTrapSymbol = "__phantasos_trap";
+inline constexpr std::string_view kEntrySymbol = "_start";
+inline constexpr u32 kPanicExitStatus = 101;
 
 // "_P" followed by the length-prefixed MIR name (abi.md A.7, without a package).
 [[nodiscard]] std::string symbol_name(const mir::Function& function);
@@ -43,5 +45,11 @@ inline constexpr std::string_view kTrapSymbol = "__phantasos_trap";
 // Symbols 0..n-1 are the program's functions in order; the trap entry follows.
 // When listing is non-null it receives a readable assembly listing.
 [[nodiscard]] obj::Object emit(const mir::Program& program, std::string* listing = nullptr);
+
+// The stage0 Linux runtime for a program: _start calls the program's main and
+// passes its result (0 for a Unit main) to exit_group, and the trap entry
+// writes "panic: <reason>" to stderr and exits with kPanicExitStatus. It uses
+// raw system calls only; main stays an undefined symbol for the linker.
+[[nodiscard]] obj::Object runtime(const mir::Program& program, std::string* listing = nullptr);
 
 }  // namespace phs::x86_64

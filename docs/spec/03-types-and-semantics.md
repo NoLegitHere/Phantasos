@@ -972,3 +972,12 @@ Functions use the System V AMD64 calling convention and get the symbol
 `_P<length><name>` for their MIR name, so `fib` becomes `_P3fib` and an
 overload named `sub.1` becomes `_P5sub.1`. `phantasos-stage0 asm <file>` prints the code as a
 listing. These names and codes are a stage0 detail, not a stable ABI.
+
+On Linux x86_64, stage0 links a program into a static ELF executable with a
+small runtime of its own and no C library (abi.md A.8). The process exits
+with the value `main` returns, which the kernel truncates to its low 8 bits,
+or with 0 when `main` returns nothing. A trap writes `panic: arithmetic
+overflow` or `panic: division by zero` to standard error and exits with
+status 101. Stage0 does not print a backtrace yet, and it does not detect
+stack overflow, so recursion that runs out of stack ends the process with a
+signal.

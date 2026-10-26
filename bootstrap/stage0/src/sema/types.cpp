@@ -475,9 +475,11 @@ private:
         speculative_annotations_.emplace_back();
         return {ExpansionState::Resolved, context};
     }
-    Type context_self(usize context) const {
+    Type context_self(usize context, BindingId owner = {}) const {
         while (context) {
-            if (known(environments_[context].self)) return environments_[context].self;
+            if (known(environments_[context].self) &&
+                (!owner.valid() || resolution_.binding(owner).item->kind == ItemKind::Interface || environments_[context].declaration == owner))
+                return environments_[context].self;
             context = environments_[context].parent;
         }
         return Type::Deferred;
@@ -547,30 +549,38 @@ private:
             }
             if (const auto* fun = as<FunItem>(binding.item); fun && !fun->sig.generics.empty()) {
                 // A well-formed incoming nominal type supplies its own bounds
-                // as premises for this callable's formal parameters.
-                std::vector<Type> work;
-                for (const auto& param : fun->sig.params) work.push_back(annotation(param.type));
+                // as premises for this callable's formal parameters. An earlier
+                // parameter may establish bounds needed to resolve a later one.
                 std::unordered_set<usize> seen;
-                while (!work.empty()) {
-                    const auto type = work.back(); work.pop_back();
-                    const auto* pointer = types_.descriptor(type);
-                    if (!pointer || !seen.insert(type.detail).second) continue;
-                    const auto descriptor = *pointer;
-                    if (type.kind == Type::Nominal) {
-                        const auto params = generic_parameters(descriptor.declaration);
-                        if (params.size() == descriptor.arguments.size()) {
-                            const auto context = application(descriptor.declaration, descriptor.arguments, 0, fun->name.span).context;
-                            for (usize p = 0; p < params.size(); ++p)
-                                for (const auto* bound : params[p].bounds) add(id, descriptor.arguments[p], bound, context);
-                            if (const auto* declaration = as_type_decl(resolution_.binding(descriptor.declaration).item))
-                                for (const auto& clause : declaration->where)
-                                    for (const auto* bound : clause.bounds) add(id, annotation(clause.type, context), bound, context);
-                        }
-                        for (auto arg : descriptor.arguments) work.push_back(arg);
-                    } else if (type.kind == Type::Function) {
-                        for (auto param : descriptor.parameters) work.push_back(param);
-                        work.push_back(descriptor.result); if (descriptor.throws) work.push_back(descriptor.error);
-                    } else if (type.kind != Type::TypeParameter) work.push_back(descriptor.element);
+                for (usize count = std::numeric_limits<usize>::max();;) {
+                    usize before = 0;
+                    for (const auto& [_, bounds] : formal_bounds_) before += bounds.size();
+                    if (before == count) break;
+                    count = before;
+                    clear_deferred_annotations();
+                    std::vector<Type> work;
+                    for (const auto& param : fun->sig.params) work.push_back(annotation(param.type));
+                    while (!work.empty()) {
+                        const auto type = work.back(); work.pop_back();
+                        const auto* pointer = types_.descriptor(type);
+                        if (!pointer || !seen.insert(type.detail).second) continue;
+                        const auto descriptor = *pointer;
+                        if (type.kind == Type::Nominal) {
+                            const auto params = generic_parameters(descriptor.declaration);
+                            if (params.size() == descriptor.arguments.size()) {
+                                const auto context = application(descriptor.declaration, descriptor.arguments, 0, fun->name.span).context;
+                                for (usize p = 0; p < params.size(); ++p)
+                                    for (const auto* bound : params[p].bounds) add(id, descriptor.arguments[p], bound, context);
+                                if (const auto* declaration = as_type_decl(resolution_.binding(descriptor.declaration).item))
+                                    for (const auto& clause : declaration->where)
+                                        for (const auto* bound : clause.bounds) add(id, annotation(clause.type, context), bound, context);
+                            }
+                            for (auto arg : descriptor.arguments) work.push_back(arg);
+                        } else if (type.kind == Type::Function) {
+                            for (auto param : descriptor.parameters) work.push_back(param);
+                            work.push_back(descriptor.result); if (descriptor.throws) work.push_back(descriptor.error);
+                        } else if (type.kind != Type::TypeParameter) work.push_back(descriptor.element);
+                    }
                 }
             }
         }
@@ -644,7 +654,7 @@ private:
             const auto descriptor = *pointer;
             if (type.kind == Type::TypeParameter) {
                 auto value = resolution_.binding(descriptor.declaration).kind == BindingKind::Type
-                    ? context_self(context) : substituted(descriptor.declaration, context);
+                    ? context_self(context, descriptor.declaration) : substituted(descriptor.declaration, context);
                 if (!known(value)) value = type.scalar();
                 value.optional_depth += type.optional_depth;
                 cache[type] = value; continue;
@@ -878,7 +888,7 @@ private:
                     continue;
                 }
                 if (syntax->kind == TypeKind::SelfType && id.valid() && resolution_.binding(id).kind == BindingKind::Type) {
-                    const auto self = context_self(env);
+                    const auto self = context_self(env, id);
                     cache(env)[syntax] = known(self) ? self : schema_self(id);
                     continue;
                 }
@@ -890,7 +900,7 @@ private:
                         if (prefix.state == ExpansionState::Resolved && !prefix.optional_depth && prefix.scalar.kind == Type::Nominal &&
                             types_.descriptor(prefix.scalar)->declaration == owner) receiver = prefix.scalar;
                         else if (ref && enclosing_owner(ref->scope) == owner) {
-                            receiver = context_self(env);
+                            receiver = context_self(env, owner);
                             if (!known(receiver)) receiver = schema_self(owner);
                         }
                         cache(env)[syntax] = known(receiver) ? dependent_path(syntax, receiver, syntax->path.parts.size() - 1) : Type{};
@@ -1491,6 +1501,8 @@ private:
             return Relation::Deferred;
         }
         const auto from_context = owner_context(member_owner(candidate), receiver);
+        if (!nodes_[candidate.value].annotation && !known(nodes_[candidate.value].value.type) && nodes_[candidate.value].state == 0)
+            pending_dependencies_.push_back(candidate.value);
         const auto from = nodes_[candidate.value].annotation ? annotation(nodes_[candidate.value].annotation, from_context)
             : substitute_type(nodes_[candidate.value].value.type, from_context);
         const auto to = annotation(nodes_[requirement.value].annotation, owner_context(member_owner(requirement), receiver));

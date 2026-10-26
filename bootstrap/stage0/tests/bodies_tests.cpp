@@ -235,17 +235,33 @@ class Leaf: Base { type Item = Int }
 let leafEchoed = Leaf().echo(1)
 interface Outer { class Nested {} }
 fun nested<T: Outer>(x: T): T.Nested { loop {} }
+interface Premise { type Item; fun read(): Int }
+class Requires<T: Premise> {}
+fun chained<T>(a: Requires<T>, b: Requires<T.Item>, x: T.Item): Int = x.read()
+class Target { type This = Self }
+class Holder { fun pass(x: Target.This): Target.This = x }
+let passed: Target = Holder().pass(Target())
+interface Has { let value: Int }
+fun readHas<T: Has>(x: T): Int = x.value
+let forwardRead: Int = readHas(ForwardCell())
+class ForwardCell: Has { let value = 1 }
 )");
     CHECK(f.value("inferred") == Type::Int && f.value("echoed") == Type::Int && f.value("leafEchoed") == Type::Int);
+    CHECK(f.name(f.value("passed")) == "Target" && f.value("forwardRead") == Type::Int);
     for (std::string_view name : {"echoed", "leafEchoed"}) {
         const auto& call = f.call(name); // the class implementation, not the bodiless requirement
         CHECK(call.state == CallState::Resolved && ast::cast<ast::FunItem>(f.result.resolution->binding(call.target).item)->body);
     }
-    CHECK(body(f, "nested").state == ExpansionState::Resolved);
+    CHECK(body(f, "nested").state == ExpansionState::Resolved && body(f, "chained").state == ExpansionState::Resolved);
     const auto* signature = f.result.scalar_types->signature(f.id("nested", BindingKind::Function));
     CHECK(signature && signature->result.kind == Type::Nominal);
     Frontend mismatch;
     mismatch.check("class Box<T>(x: T) { let value = x }\nlet wrong: Bool = Box(1).value", {DiagCode::ScalarTypeMismatch});
+    Frontend wrongSelf;
+    wrongSelf.check("class C { type This = Self }\nclass Box { fun echo(x: C.This): C.This = x }\nlet wrong: Box = Box().echo(Box())", {DiagCode::NoMatchingCall});
+    Frontend forwardMismatch;
+    forwardMismatch.check("interface Has { let value: Int }\nfun read<T: Has>(x: T): Int = x.value\nlet wrong: Bool = read(Cell())\nclass Cell: Has { let value = 1 }",
+                          {DiagCode::ScalarTypeMismatch});
 }
 } // namespace
 

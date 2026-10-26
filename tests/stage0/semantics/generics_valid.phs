@@ -30,3 +30,15 @@ let wrapped: Wrapped<Int> = Wrapped<Int>([1])
 let applied: Bool = identity<Bool>(true)
 fun bounded<T: Copy>(value: T): T = value
 let pending = bounded<Int>(1)
+
+class Namespace { class Item<T>(let value: T) {} }
+type Names = Namespace
+let qualified: Names.Item<Int> = Namespace.Item<Int>(1)
+class Types<T> { type Value = T }
+let converted: Int8 = Types<Int8>.Value(1)
+fun pendingDefault<T>(value: Int = identity<T>(true)): Int = value
+let omitted: Bool = pendingDefault<Int>()
+class PendingDefault<T>(value: Int = identity<T>(true)) {}
+let omittedConstructor: Bool = PendingDefault<Int>()
+class Inout<T>(value: inout T) {}
+let pendingConvention: Bool = Inout<Int>(1)

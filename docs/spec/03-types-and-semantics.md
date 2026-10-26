@@ -693,11 +693,17 @@ signature, preserving range errors and overload ranking. Explicit type-argument
 count first filters overloads; no matching count reports `E0470`. Type/alias
 applications with a wrong count or arguments on a non-generic declaration also
 report `E0470`. Omitted type arguments remain pending inference.
+Transparent alias qualifiers resolve the terminal declaration before applying
+arguments, so `Alias.Box<Int>` has the same identity and arity rules as
+`Outer.Box<Int>` when `type Alias = Outer`. Optional/dependent qualifier barriers
+still prevent traversal.
 
 Primary constructors and direct fields/methods on concrete generic owners
 without bases substitute the receiver's arguments. Member type aliases and
 nominal `Self` types use the same environment. A method's explicit arguments
 extend its receiver environment. Existing static/instance receiver rules apply.
+Member aliases also substitute when used as numeric conversion or constructor
+targets, including aliases with their own explicit type arguments.
 Calls retain their selected declaration, explicit function type arguments and
 substituted parameter types; member records retain the concrete receiver type.
 Generic declaration signatures and shared AST/lexical references are unchanged.
@@ -712,8 +718,12 @@ not complete generic program validity. Type-argument inference, bound/`where`
 satisfaction, checking generic bodies once against their bounds, captured
 nominal owners, generic base substitution/conformance, associated types and
 dependent properties remain pending. Calls with applicable unchecked constraints,
-non-default conventions or omitted dependent defaults remain deferred. Generic
-expression-body return inference still uses the declaration's available facts;
+non-default conventions or omitted dependent defaults remain deferred. Primary
+constructors also defer non-default parameter conventions. An omitted
+default requires established compatible expression facts in its declaration
+environment, even when its parameter annotation is already concrete. Supplied
+arguments bypass the default; known defaults work in either declaration order.
+Generic expression-body return inference still uses the declaration's available facts;
 bodies are not rechecked per application. Function/bound-method values, optional
 `none` arguments and lowering/monomorphization need later stages. Unsupported
 facts retain `Deferred`; passing `check` still proves only implemented rules.

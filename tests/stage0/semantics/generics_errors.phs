@@ -24,3 +24,10 @@ let wrongArgument = identity<Int>(true)
 let outOfRange = identity<Int8>(128)
 type Cycle<T> = Cycle<[T]>
 let cyclic: Cycle<Int>
+
+class Namespace { class Item<T>(let value: T) {} }
+type Names = Namespace
+let mismatched: Names.Item<Int> = Namespace.Item<Bool>(true)
+let wrongQualifiedCount: Names.Item<Int, Bool>
+class Types<T> { type Value = T }
+let wrongAliasResult: Bool = Types<Int>.Value(1)

@@ -232,6 +232,13 @@ public:
                         node.call_prepared = true;
                         node.value = prepare_call(*call);
                         const auto& record = calls_.at(call);
+                        if (record.state == CallState::Deferred && !default_dependencies_.empty()) {
+                            // Resume only after the consulted declaration defaults
+                            // have available facts. Active cycles remain deferred.
+                            node.deps.insert(node.deps.end(), default_dependencies_.begin(), default_dependencies_.end());
+                            node.call_prepared = false;
+                            continue;
+                        }
                         if (record.state == CallState::Resolved && (record.kind == CallKind::Function || record.kind == CallKind::Method)) {
                             node.deps.push_back(function_nodes_.at(record.target.value));
                             continue;
@@ -465,6 +472,10 @@ private:
                     const auto ids = resolution_.candidates(ref->target);
                     if (ids.size() == 1) id = ids.front();
                 }
+                if (!id.valid() && syntax->kind == TypeKind::Path && !syntax->args.empty()) {
+                    const auto qualified = inherited_type(syntax, &id);
+                    if (qualified.state == ExpansionState::Error) { cache(env)[syntax] = Type::Error; continue; }
+                }
                 if (id.valid() && resolution_.binding(id).kind == BindingKind::GenericParameter) {
                     if (!syntax->args.empty()) {
                         (void)application(id, std::vector<Type>(syntax->args.size()), env, syntax->span);
@@ -564,7 +575,22 @@ private:
         return it == entities_.end() ? ExpandedType{} : it->second;
     }
 
-    void entity(const Expr* expr, BindingId id) {
+    ExpandedType type_entity(Type type) const {
+        if (!known(type)) return {};
+        BindingId target;
+        if (type.kind == Type::Nominal) target = types_.descriptor(type)->declaration;
+        else for (const auto& [builtin, scalar] : aliases_.builtins_) if (scalar == type.scalar()) { target = BindingId{builtin}; break; }
+        return {ExpansionState::Resolved, target, type, type.optional_depth};
+    }
+
+    void entity(const Expr* expr, BindingId id, usize context = 0) {
+        if (context && resolution_.binding(id).kind == BindingKind::TypeAlias) {
+            const auto* alias = cast<TypeAliasItem>(resolution_.binding(id).item);
+            entities_.erase(expr);
+            if (alias->type && alias->generics.empty() && !associated_alias(id) && !constrained(id))
+                entities_[expr] = type_entity(annotation(alias->type, context));
+            return;
+        }
         const auto type = aliases_.binding(id, resolution_).type;
         if (type.state == ExpansionState::Resolved) entities_[expr] = type;
     }
@@ -1031,7 +1057,7 @@ private:
         }
         return {};
     }
-    ExpandedType inherited_type(const TypeExpr* syntax) {
+    ExpandedType inherited_type(const TypeExpr* syntax, BindingId* declaration = nullptr) {
         ExpandedType current;
         for (usize p = 0; p < syntax->path.parts.size(); ++p) {
             if (p && current.optional_depth) return {};
@@ -1044,11 +1070,14 @@ private:
             } else {
                 const auto owner = p == 0 && reference ? enclosing_owner(reference->scope) : current.target;
                 if (!owner.valid() || !resolution_.binding(owner).members.valid() || !known(nominal(owner))) return {};
-                auto found = *lookup_member(owner, name.sym, true);
-                if (p == 0 && found.state == ExpansionState::Resolved && found.ids.empty()) found = outer_lookup(owner, name.sym, true);
+                MemberLookup found;
+                if (hierarchy_ready_) found = *lookup_member(owner, name.sym, true);
+                else found.ids = direct_members(owner, name.sym, true);
+                if (hierarchy_ready_ && p == 0 && found.state == ExpansionState::Resolved && found.ids.empty()) found = outer_lookup(owner, name.sym, true);
                 if (found.state != ExpansionState::Resolved) return {found.state, {}, found.state == ExpansionState::Error ? Type{Type::Error} : Type{}};
                 ids = std::move(found.ids);
                 if (ids.empty()) {
+                    if (!hierarchy_ready_) return {}; // inherited candidates may become available later
                     diag_.error(DiagCode::UnknownType, name.span, "unknown inherited type '{}'", names_.str(name.sym));
                     return {ExpansionState::Error, {}, Type::Error};
                 }
@@ -1058,6 +1087,7 @@ private:
                 }
             }
             if (ids.size() != 1) return {};
+            if (declaration && p + 1 == syntax->path.parts.size()) *declaration = ids.front();
             current = aliases_.binding(ids.front(), resolution_).type;
             if (current.state == ExpansionState::Deferred && current.syntax == syntax) {
                 diag_.error(DiagCode::AliasCycle, syntax->span, "cyclic type alias expansion through inherited lookup");
@@ -1152,7 +1182,7 @@ private:
         std::optional<BindingId> field;
         if (record.candidates.size() == 1) {
             const auto id = record.candidates.front();
-            entity(expr, id);
+            entity(expr, id, reference_contexts_.contains(expr) ? reference_contexts_.at(expr) : 0);
             if (value_binding(id)) field = id;
         }
         members_[expr] = std::move(record);
@@ -1639,6 +1669,20 @@ private:
         return true;
     }
 
+    bool defaults_known(List<Param> params, std::span<const usize> supplied, std::span<const Type> types) {
+        bool complete = true;
+        for (usize p = 0; p < params.size(); ++p) {
+            const auto* argument = params[p].default_value;
+            if (!argument || std::ranges::find(supplied, p) != supplied.end()) continue;
+            if (!known(annotation(params[p].type))) { complete = false; continue; }
+            const auto index = expressions_.at(argument);
+            if (nodes_[index].state == 0) default_dependencies_.push_back(index);
+            const auto fact = probe(index, types[p]);
+            complete &= fact.matches && !fact.deferred && fact.fits;
+        }
+        return complete;
+    }
+
     void candidate_notes(Diagnostic& d, std::span<const BindingId> candidates) const {
         for (BindingId id : candidates) {
             const auto& b = resolution_.binding(id);
@@ -1762,9 +1806,8 @@ private:
             parameters.push_back(annotation(item->ctor_params[p].type, context));
         }
         bool matches = argument_mapping(expr, item->ctor_params, labels, record.parameters), deferred = constrained(type.target), fits = true;
-        if (matches && context) for (usize p = 0; p < item->ctor_params.size(); ++p)
-            if (item->ctor_params[p].default_value && std::ranges::find(record.parameters, p) == record.parameters.end() &&
-                !known(annotation(item->ctor_params[p].type))) deferred = true;
+        for (const auto& param : item->ctor_params) deferred |= param.conv != Convention::Default;
+        if (matches && context) deferred |= !defaults_known(item->ctor_params, record.parameters, parameters);
         for (const auto& arg : expr.args) if (value(arg.value).type == Type::Error) {
             record.state = CallState::Error; return Value{Type::Error};
         }
@@ -1816,6 +1859,8 @@ private:
     }
 
     Value prepare_call(const CallExpr& expr) {
+        default_dependencies_.clear();
+        calls_[&expr] = {}; // a deferred application may resume after default dependencies
         if (auto conversion = prepare_conversion(expr)) return *conversion;
         if (auto constructor = prepare_constructor(expr)) return *constructor;
         auto& record = calls_[&expr];
@@ -1890,9 +1935,7 @@ private:
                 match.deferred |= (owner.valid() || signature.generic) && param.conv != Convention::Default;
             }
             if (interface_owner(id) && !method_inputs_known(id)) match.deferred = true;
-            if (context) for (usize p = 0; p < fun->sig.params.size(); ++p)
-                if (fun->sig.params[p].default_value && std::ranges::find(match.parameters, p) == match.parameters.end() &&
-                    !known(annotation(fun->sig.params[p].type))) match.deferred = true;
+            if (context) match.deferred |= !defaults_known(fun->sig.params, match.parameters, match.types);
             bool compatible_args = true, fits = true;
             for (usize a = 0; a < expr.args.size(); ++a) {
                 if (interface_owner(id) && contains_self_type(fun->sig.params[match.parameters[a]].type)) {
@@ -2099,7 +2142,10 @@ private:
                     const auto id = ids.front();
                     const auto kind = resolution_.binding(id).kind;
                     if (kind == BindingKind::Type || kind == BindingKind::TypeAlias || kind == BindingKind::BuiltinType) {
-                        const auto applied = application(id, std::move(args), 0, expr->span);
+                        const Expr* base = generic->base;
+                        while (const auto* paren = as<ParenExpr>(base)) base = paren->inner;
+                        const auto context = reference_contexts_.contains(base) ? reference_contexts_.at(base) : 0;
+                        const auto applied = application(id, std::move(args), context, expr->span);
                         if (applied.state == ExpansionState::Error) { node.value = {Type::Error}; break; }
                         if (applied.state != ExpansionState::Resolved) break;
                         Type result;
@@ -2108,12 +2154,7 @@ private:
                             if (alias->type && !associated_alias(id) && !constrained(id)) result = annotation(alias->type, applied.context);
                         } else result = instance(id, applied.context);
                         if (result == Type::Error) { node.value = {Type::Error}; break; }
-                        if (known(result)) {
-                            BindingId target;
-                            if (result.kind == Type::Nominal) target = types_.descriptor(result)->declaration;
-                            else for (const auto& [builtin, scalar] : aliases_.builtins_) if (scalar == result.scalar()) { target = BindingId{builtin}; break; }
-                            entities_[expr] = {ExpansionState::Resolved, target, result, result.optional_depth};
-                        }
+                        if (known(result)) entities_[expr] = type_entity(result);
                         break;
                     }
                 }
@@ -2209,6 +2250,7 @@ private:
     std::unordered_map<u64, std::unordered_map<usize, std::shared_ptr<const MemberLookup>>> inherited_members_;
     std::vector<Walk> walk_;
     std::vector<Requirement> requirements_;
+    std::vector<usize> default_dependencies_;
     std::vector<const Expr*> defaults_;
 };
 

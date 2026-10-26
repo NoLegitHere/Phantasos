@@ -194,6 +194,109 @@ let dependent = inherited.value
         CHECK(f.value(name) == Type::Deferred);
 }
 
+void omitted_default_facts() {
+    const std::string declarations = R"(
+fun identity<T>(x: T): T = x
+fun pending<T>(x: Int = identity<T>(true)): Int = x
+class Pending<T>(x: Int = identity<T>(true)) {}
+class Owner<T> { fun read(x: Int = identity<T>(true)): Int = x }
+fun known<T>(x: Int = make()): Int = x
+fun nested<T>(x: Int = literal<T>()): Int = x
+fun closed<T>(x: Int = known<Int>()): Int = x
+fun recursive<T>(x: Int = recursive<Int>()): Int = x
+class Known<T>(x: Int = make()) {}
+fun literal<T>(x: Int8 = 1): Int8 = x
+fun make() = 1
+)";
+    const std::string calls = R"(
+let deferred = pending<Int>()
+let deferredConstructor = Pending<Int>()
+let deferredMethod = Owner<Int>().read()
+let supplied = pending<Int>(1)
+let suppliedConstructor = Pending<Int>(1)
+let suppliedMethod = Owner<Int>().read(1)
+let resolved = known<Int>()
+let resolvedConstructor = Known<Int>()
+let resolvedLiteral = literal<Int>()
+let nestedPending = nested<Int>()
+let closedDefault = closed<Int>()
+let recursiveDefault = recursive<Int>()
+)";
+    for (bool forward : {false, true}) {
+        Frontend f;
+        f.check(forward ? calls + declarations : declarations + calls);
+        for (std::string_view name : {"deferred", "deferredConstructor", "deferredMethod", "nestedPending", "recursiveDefault"})
+            CHECK(f.value(name) == Type::Deferred && f.call(name).state == CallState::Deferred);
+        for (std::string_view name : {"supplied", "suppliedMethod", "resolved", "closedDefault"})
+            CHECK(f.value(name) == Type::Int && f.call(name).state == CallState::Resolved);
+        CHECK(f.call("suppliedConstructor").state == CallState::Resolved && f.call("resolvedConstructor").state == CallState::Resolved);
+        CHECK(f.value("resolvedLiteral") == Type::Int8);
+    }
+}
+
+void alias_qualified_applications() {
+    Frontend f;
+    f.check(R"(
+class Outer { class Box<T>(let value: T) {}; type Identity<T> = T }
+type Alias = Outer
+type Again = Alias
+type Applied = Again.Box<Int>
+let value: Applied = Outer.Box<Int>(1)
+let direct: Outer.Box<Int> = value
+let alias: Alias.Box<Int> = value
+let identity: Again.Identity<Int> = 1
+type Optional = Outer?
+let pending: Optional.Box<Int, Bool> = true
+class Captured<T> { class Nested<U> {} }
+type Dependent = Captured
+let captured: Dependent.Nested<Int> = false
+)");
+    CHECK(f.value("value") == f.value("alias") && f.value("direct") == f.value("alias"));
+    CHECK(f.value("identity") == Type::Int && f.value("pending") == Type::Deferred && f.value("captured") == Type::Deferred);
+    for (const auto& [use, code] : std::vector<std::pair<std::string_view, DiagCode>>{
+        {"let bad: Alias.Box<Int> = Outer.Box<Bool>(true)", DiagCode::ScalarTypeMismatch},
+        {"let bad: Alias.Box<Int, Bool>", DiagCode::GenericArguments},
+        {"let bad: Alias.Identity<Int, Bool>", DiagCode::GenericArguments},
+        {"let bad: Alias.Missing<Int>", DiagCode::UnknownType}
+    }) {
+        Frontend bad;
+        bad.check("class Outer { class Box<T>(let value: T) {}; type Identity<T> = T }\ntype Alias = Outer\n" + std::string(use), {code});
+    }
+}
+
+void substituted_member_type_entities() {
+    Frontend f;
+    f.check(R"(
+class Token {}
+class Pair<A, B>(let first: A, let second: B) {}
+class Box<T> { type Value = T; type Again = Value; type Maybe = T?; type Convert<U> = U; type PairWith<U> = Pair<U, T> }
+let number = Box<Int8>.Value(1)
+let again = Box<Int>.Again(1)
+let object = Box<Token>.Value()
+let converted = Box<Int>.Convert<Int8>(1)
+let pair = Box<Int>.PairWith<Bool>(true, 1)
+let optional = Box<Int>.Maybe(1)
+)");
+    CHECK(f.value("number") == Type::Int8 && f.value("again") == Type::Int && f.value("converted") == Type::Int8);
+    CHECK(f.call("number").kind == CallKind::NumericConversion && f.call("object").kind == CallKind::NominalConstructor);
+    CHECK(f.name(f.value("object")) == "Token" && f.name(f.value("pair")) == "Pair<Bool, Int>");
+    CHECK(f.value("optional") == Type::Deferred);
+    Frontend bad;
+    bad.check("class Box<T> { type Value = T }\nlet bad: Bool = Box<Int>.Value(1)", {DiagCode::ScalarTypeMismatch});
+    Frontend shadowed;
+    shadowed.check("class Box<T> { type Value = T; static let Value = true }\nlet bad = Box<Int>.Value(1)", {DiagCode::NotCallable});
+}
+
+void pending_constructor_conventions() {
+    for (std::string_view convention : {"inout", "borrow", "own"}) {
+        Frontend f;
+        f.check(std::format("class Box<T>(value: {} T) {{}}\nlet value = Box<Int>(1)\nlet pending: Bool = Box<Int>(1)", convention));
+        CHECK(f.value("value") == Type::Deferred && f.call("value").state == CallState::Deferred);
+        Frontend bad;
+        bad.check(std::format("class Box<T>(value: {} T) {{}}\nlet bad = Box<Int>(true)", convention), {DiagCode::NoMatchingCall});
+    }
+}
+
 void iterative_alias_graphs() {
     Frontend f;
     std::string source;
@@ -212,6 +315,10 @@ void iterative_alias_graphs() {
 } // namespace
 
 int main() {
+    omitted_default_facts();
+    alias_qualified_applications();
+    substituted_member_type_entities();
+    pending_constructor_conventions();
     applications_and_substituted_members();
     explicitly_applied_functions();
     rejected_applications();

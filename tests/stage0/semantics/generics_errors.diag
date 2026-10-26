@@ -22,3 +22,12 @@ generics_errors.phs:24:33: error[E0402]: integer literal is out of range for 'In
 generics_errors.phs:25:17: error[E0430]: cyclic generic type alias expansion
    25 | type Cycle<T> = Cycle<[T]>
       |                 ^^^^^^^^^^
+generics_errors.phs:30:35: error[E0400]: expected 'Namespace.Item<Int>', found 'Namespace.Item<Bool>'
+   30 | let mismatched: Names.Item<Int> = Namespace.Item<Bool>(true)
+      |                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^
+generics_errors.phs:31:26: error[E0470]: type argument count does not match 'Item'
+   31 | let wrongQualifiedCount: Names.Item<Int, Bool>
+      |                          ^^^^^^^^^^^^^^^^^^^^^
+generics_errors.phs:33:30: error[E0400]: expected 'Bool', found 'Int'
+   33 | let wrongAliasResult: Bool = Types<Int>.Value(1)
+      |                              ^^^^^^^^^^^^^^^^^^^

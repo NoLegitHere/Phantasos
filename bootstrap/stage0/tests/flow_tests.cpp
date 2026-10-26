@@ -287,9 +287,11 @@ fun twoCleanups() {
     defer { x = 1 }
     defer { x = 2 }
 }
+fun rewritesParam(a: Int, b: Int = unsafe { a = 1
+    0 }) {}
 )", {DiagCode::MissingReturn, DiagCode::UninitializedUse, DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment,
      DiagCode::MissingReturn, DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment,
-     DiagCode::UninitializedUse, DiagCode::UninitializedUse});
+     DiagCode::UninitializedUse, DiagCode::UninitializedUse, DiagCode::ImmutableAssignment});
 
     Frontend valid;
     valid.check(R"(

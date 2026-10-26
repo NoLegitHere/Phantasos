@@ -210,10 +210,11 @@ private:
 
     State dead() const { return {Bits(tracked_, true), Bits(tracked_, false), false}; }
 
-    // Defaults and initializers are separate roots with their own locals.
+    // Defaults and initializers are separate roots with their own locals. Defaults keep the parameter
+    // list so that writes to earlier parameters are still checked.
     void defaults(List<Param> params) {
         for (const auto& param : params)
-            if (param.default_value) callable({}, param.default_value, nullptr);
+            if (param.default_value) callable(params, param.default_value, nullptr);
     }
 
     void callable(List<Param> params, const Expr* body, const FunItem* fun) {

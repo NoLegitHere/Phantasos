@@ -32,3 +32,16 @@ let box: Box<Value> = Box(Value())
 fun choose(value: Int): Bool = true
 fun choose<T>(value: T): T = value
 let preferred: Bool = choose(1)
+
+class Unrelated {}
+class Guard<T: Read> {}
+fun alternative<T>(value: Guard<T>): Bool = true
+fun alternative<T>(value: T): Int = 1
+let selected: Int = alternative<Unrelated>(Unrelated())
+let selectedAgain: Int = alternative<Unrelated>(Unrelated())
+open class Parent {}
+class Child: Parent {}
+let child: Child?
+let parent: Parent
+let mixed: Parent? = same(child, parent)
+let mixedReverse: Parent? = same(parent, child)

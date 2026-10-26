@@ -116,6 +116,69 @@ let reordered = labels(second: 1, first: true)
     CHECK(signature && signature->parameters == std::vector<Type>{Type::Deferred});
 }
 
+void speculative_constraint_uses() {
+    const std::string declarations = "interface I {}\nclass Bad {}\nclass Box<T: I> {}\ntype Wrapped<T> = Box<T>\n";
+    for (std::string_view pattern : {"Box<T>", "Wrapped<T>"}) {
+        const auto specific = std::format("fun choose<T>(value: {}, extra: Int = 0): Bool = true\n", pattern);
+        const std::string general = "fun choose<T>(value: T): Int = 1\n";
+        for (bool reverse : {false, true}) {
+            const auto overloads = reverse ? general + specific : specific + general;
+            Frontend f;
+            f.check(declarations + overloads + "let first = choose<Bad>(Bad())\nlet again = choose<Bad>(Bad())");
+            CHECK(f.value("first") == Type::Int && f.value("again") == Type::Int);
+            CHECK(f.call("first").state == CallState::Resolved && f.result.scalar_types->constraints().empty());
+            // Reusing a previously probed signature must still validate it if
+            // a later call selects it. Never needs no invalid Box<Bad> argument.
+            Frontend selected;
+            selected.check(declarations + overloads +
+                "extern \"C\" { fun stop(): Never }\nlet first = choose<Bad>(Bad())\nlet selected = choose<Bad>(stop(), extra: 1)",
+                {DiagCode::GenericConstraint});
+            CHECK(selected.value("first") == Type::Int);
+            CHECK(selected.result.scalar_types->constraints().size() == 1);
+            const auto& contract = selected.result.scalar_types->constraints().front();
+            CHECK(contract.declaration == selected.id("Box", BindingKind::Type) && contract.state == ExpansionState::Error);
+        }
+    }
+    Frontend method;
+    method.check(declarations + "class Owner { fun choose<T>(value: Box<T>): Bool = true; fun choose<T>(value: T): Int = 1 }\nlet value = Owner().choose<Bad>(Bad())");
+    CHECK(method.value("value") == Type::Int && method.result.scalar_types->constraints().empty());
+    Frontend closed;
+    closed.check(declarations + "fun choose(value: Box<Bad>): Bool = true\nfun choose(value: Bad): Int = 1\nlet value = choose(Bad())", {DiagCode::GenericConstraint});
+    CHECK(closed.result.scalar_types->constraints().size() == 1); // an unconditional declaration error still counts
+}
+
+void optional_nominal_anchors() {
+    Frontend f;
+    f.check(R"(
+interface Marker {}
+open class Parent: Marker {}
+class Child: Parent {}
+fun same<T>(a: T, b: T): T = a
+let child: Child?
+let parent: Parent
+let forward = same(child, parent)
+let reverse = same(parent, child)
+let explicitValue = same<Parent?>(child, parent)
+let deeper: Child? ?
+let optionalParent: Parent?
+let deep = same(deeper, optionalParent)
+let deepReverse = same(optionalParent, deeper)
+let marker: Marker
+let interfaceValue = same(child, marker)
+class Generic<T> {}
+let genericChild: Generic<Int>?
+let genericParent: Generic<Bool>
+let pending = same(genericChild, genericParent)
+)");
+    CHECK(f.name(f.value("forward")) == "Parent?" && f.value("reverse") == f.value("forward"));
+    CHECK(f.value("forward") == f.value("explicitValue") && f.call("forward").state == CallState::Resolved);
+    CHECK(f.name(f.value("deep")) == "Parent??" && f.value("deepReverse") == f.value("deep"));
+    CHECK(f.name(f.value("interfaceValue")) == "Marker?");
+    CHECK(f.call("pending").state == CallState::Deferred && f.value("pending") == Type::Deferred);
+    Frontend invariant;
+    invariant.check("open class Parent {}\nclass Child: Parent {}\nfun f<T>(a: [T], b: [T]): T { loop {} }\nlet children: [Child?]\nlet parents: [Parent]\nlet bad = f(children, parents)", {DiagCode::NoMatchingCall});
+}
+
 void checked_bounds_and_where() {
     const std::string declarations = R"(
 interface Read { fun read(): Int }
@@ -242,6 +305,8 @@ void shared_patterns_and_deep_bounds() {
 } // namespace
 
 int main() {
+    speculative_constraint_uses();
+    optional_nominal_anchors();
     inferred_arguments_and_literals();
     checked_bounds_and_where();
     overloads_and_rejected_constraints();

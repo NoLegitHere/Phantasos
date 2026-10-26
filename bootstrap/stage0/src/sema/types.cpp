@@ -14,6 +14,7 @@
 // limitations under the License.
 
 #include "sema/types.hpp"
+#include "support/scoped_value.hpp"
 
 #include <limits>
 #include <memory>
@@ -324,9 +325,9 @@ private:
                 const auto* a = types_.descriptor(source);
                 const auto* b = types_.descriptor(target);
                 if (a->declaration == b->declaration) return Relation::No; // different invariant arguments
-                if (!a->arguments.empty() || !b->arguments.empty()) { result = Relation::Deferred; continue; }
                 const auto match = ancestry(types_.descriptor(source)->declaration, types_.descriptor(target)->declaration);
                 if (match == Relation::No) return Relation::No;
+                if (!a->arguments.empty() || !b->arguments.empty()) { result = Relation::Deferred; continue; }
                 if (match == Relation::Deferred) result = Relation::Deferred;
                 continue;
             }
@@ -412,6 +413,7 @@ private:
         cache.emplace(key, context);
         environments_.push_back({id, std::move(args), parent});
         substituted_annotations_.emplace_back();
+        speculative_annotations_.emplace_back();
         return {ExpansionState::Resolved, context};
     }
     bool associated_alias(BindingId id) const {
@@ -497,10 +499,15 @@ private:
                     if (!known(anchor)) anchor = inferred;
                     else if (!literal && anchor != inferred) {
                         if (anchor.scalar() == inferred.scalar()) anchor.optional_depth = std::max(anchor.optional_depth, inferred.optional_depth);
+                        else if (anchor.kind == Type::Nominal && inferred.kind == Type::Nominal) {
+                            const auto depth = std::max(anchor.optional_depth, inferred.optional_depth);
+                            if (relation(inferred.scalar(), anchor.scalar()) == Relation::Yes) anchor.optional_depth = depth;
+                            else if (relation(anchor.scalar(), inferred.scalar()) == Relation::Yes) { anchor = inferred; anchor.optional_depth = depth; }
+                            else pending = true;
+                        }
                         else if (relation(inferred, anchor) == Relation::Yes) {}
                         else if (relation(anchor, inferred) == Relation::Yes) anchor = inferred;
-                        else if ((anchor.kind == Type::Nominal && inferred.kind == Type::Nominal) ||
-                                 relation(anchor, inferred) == Relation::Deferred || relation(inferred, anchor) == Relation::Deferred) pending = true;
+                        else if (relation(anchor, inferred) == Relation::Deferred || relation(inferred, anchor) == Relation::Deferred) pending = true;
                         else { result.state = Relation::No; return result; }
                     }
                     continue;
@@ -533,7 +540,12 @@ private:
 
     Type annotation(const TypeExpr* type, usize context = 0) {
         if (!type) return Type::Deferred;
-        const auto cache = [&](usize env) -> auto& { return env ? substituted_annotations_[env] : annotations_; };
+        const auto cache = [&](usize env) -> auto& {
+            // A probed substitution must not suppress later validation through
+            // a real cache hit if another call selects this same signature.
+            if (probing_constraints_) return speculative_annotations_[env];
+            return env ? substituted_annotations_[env] : annotations_;
+        };
         const auto cached = [&](const TypeExpr* syntax, usize env) -> Type {
             if (!syntax) return Type::Unit;
             const auto it = cache(env).find(syntax);
@@ -717,6 +729,7 @@ private:
         const auto deferred = [](const auto& entry) { return entry.second == Type::Deferred; };
         std::erase_if(annotations_, deferred);
         for (auto& cache : substituted_annotations_) std::erase_if(cache, deferred);
+        for (auto& cache : speculative_annotations_) std::erase_if(cache, deferred);
     }
 
     void complete_hierarchy_types() {
@@ -1087,7 +1100,7 @@ private:
     }
 
     void remember_constraints(BindingId id, usize context, Span span) {
-        if (!constrained(id)) return;
+        if (probing_constraints_ || !constrained(id)) return;
         for (usize next = context; next; next = environments_[next].parent)
             for (const auto arg : environments_[next].arguments) if (!concrete(arg)) return;
         for (const auto& param : generic_parameters(id))
@@ -2154,6 +2167,7 @@ private:
         for (BindingId id : candidates) {
             const auto* fun = cast<FunItem>(resolution_.binding(id).item);
             const auto& signature = signatures_.at(id.value);
+            const ScopedValue probing(probing_constraints_, true);
             if (generic && fun->sig.generics.size() != type_arguments.size()) continue;
             generic_arity = true;
             usize context = reference_contexts_.contains(receiver) ? reference_contexts_.at(receiver) : 0;
@@ -2274,6 +2288,9 @@ private:
             }
         }
         PHS_ASSERT(selected);
+        const auto* selected_function = cast<FunItem>(resolution_.binding(selected->id).item);
+        for (const auto& parameter : selected_function->sig.params)
+            (void)annotation(parameter.type, selected->context); // commit only the selected signature's type uses
         record.target = selected->id;
         record.parameters = std::move(selected->parameters);
         record.state = CallState::Resolved;
@@ -2500,6 +2517,8 @@ private:
     std::vector<Environment> environments_{{}};
     std::unordered_map<usize, std::unordered_map<TypeDescriptor, usize, TypeDescriptorHash>> environment_ids_;
     std::vector<std::unordered_map<const TypeExpr*, Type>> substituted_annotations_{1};
+    std::vector<std::unordered_map<const TypeExpr*, Type>> speculative_annotations_{1};
+    bool probing_constraints_ = false;
     std::unordered_set<u32> reported_applications_;
     std::vector<Node> nodes_;
     std::unordered_map<const Expr*, usize> expressions_;

@@ -27,3 +27,16 @@ let badResult: Bool = identity(1)
 let byte: Int8 = 1
 let badRange = same(128, byte)
 let conflicting = same(byte, false)
+
+open class Parent {}
+class Child: Parent {}
+let child: Child?
+let parent: Parent
+let mixed: Bool = same(child, parent)
+class Unrelated {}
+class Guard<T: Read> {}
+fun alternative<T>(value: Guard<T>, extra: Int = 0): Bool = true
+fun alternative<T>(value: T): Int = 1
+let rejected = alternative<Unrelated>(Unrelated())
+extern "C" { fun stop(): Never }
+let selected = alternative<Unrelated>(stop(), extra: 1)

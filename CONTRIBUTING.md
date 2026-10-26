@@ -71,8 +71,10 @@
   and arguments; keep per-environment caches separate from declaration facts.
   Inference uses internal type-parameter descriptors and supplied argument facts;
   concrete arguments anchor numeric literals before defaulting. Keep declaration
-  signatures unchanged and speculative probes free of literal mutation. Concrete
-  interface/where constraints require compatible supported implementations, not
+  signatures unchanged and speculative probes free of literal mutation. Signature
+  probes must also keep constraint-use recording and annotation caches
+  separate from selected applications; cache hits must not skip later validation.
+  Concrete interface/where constraints require compatible supported implementations, not
   ancestry alone; retain constraint states separately from structural identities.
   Generic body validation and dependent/associated-type contracts remain deferred.
   Keep alias/type wrapper traversal

@@ -740,9 +740,12 @@ unchanged. Explicit applications continue to follow 3.21.
 Concrete arguments anchor parameters before numeric-only literal arguments
 default to `Int`/`Float64`. A concrete `Int8` sibling therefore contextualizes
 `same(1, byte)` and `same(byte, 1)` identically. Repeated anchors must agree, allow
-optional lifting, or be related by a supported nominal upcast. General common
-ancestor and variance solving remains deferred. Inconsistent scalar/composite
-anchors reject the candidate. `Never`, unknown facts and empty literals supply
+optional lifting, or be related by a supported nominal upcast. For related
+nominal anchors, compare ancestry without optional wrappers and use
+the maximum optional depth: both `same(child, parent)` and the reversed order
+infer `Parent?` for a `Child?` and a `Parent`.
+General common-ancestor and variance solving remains deferred. Inconsistent
+scalar/composite anchors reject the candidate. `Never`, unknown facts and empty literals supply
 no anchor. Expected return/binding types and omitted defaults do not infer
 arguments. Missing arguments stay deferred; probes apply the final substitution
 and only a selected candidate materializes literals.
@@ -754,6 +757,12 @@ supplied instantiated input types are identical, a function with no own generic
 parameters takes precedence over an inferred generic function. Remaining ties
 are ambiguous; declaration order and return types do not decide them. Constraint
 subsumption and specialization ordering between generic profiles remain pending.
+Speculative signature substitutions do not register constraint applications.
+They use separate annotation caches; only the selected signature commits its
+substituted parameter type uses. A later call selecting a previously rejected
+signature still validates those uses. Unconditional declaration/type applications
+continue to be checked independently. Known unrelated nominal declarations can
+reject a candidate before any generic ancestry substitution would be needed.
 
 Concrete interface bounds (`T: Read & Flag`) and `where` clauses check the
 substituted source and bound types. A known source must declare the interface

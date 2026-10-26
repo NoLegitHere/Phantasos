@@ -89,6 +89,12 @@ and checks used `if`/`match`/block results against their expected type. An `if` 
 produces `none` where an optional is expected. Imports explicitly report that
 package loading is unavailable.
 
+`gate <file.phs>` runs `check`, then reports every construct that stage0's
+first native backend cannot compile yet. That backend covers Bool and integer
+functions, locals, loops, calls and integer arithmetic, and needs a
+`fun main()` that returns `Int` or nothing. See
+[spec 3.25](docs/spec/03-types-and-semantics.md) for the full subset.
+
 ## Repository layout
 
 | Path | Purpose |
@@ -131,6 +137,7 @@ python tests/run_golden.py --stage0 build/stage0/phantasos-stage0      # golden 
 python tests/test_frontend.py --stage0 build/stage0/phantasos-stage0   # input limits, nesting and parser state
 python tests/fuzz_frontend.py --stage0 build/stage0/phantasos-stage0   # crash/hang fuzzing
 python tests/fuzz_frontend.py --stage0 build/stage0/phantasos-stage0 --command check # semantic-path fuzzing
+python tests/fuzz_frontend.py --stage0 build/stage0/phantasos-stage0 --command gate  # code-generation-gate fuzzing
 python tools/license-check/license_check.py                            # license headers
 ```
 
@@ -197,6 +204,7 @@ Try it:
 ```sh
 build/stage0/phantasos-stage0 parse tests/stage0/parser/showcase.phs   # print the syntax tree
 build/stage0/phantasos-stage0 lex   tests/stage0/lexer/literals.phs    # print the token stream
+build/stage0/phantasos-stage0 gate  tests/stage0/codegen/gate_fib.phs  # check a program for code generation
 ```
 
 ## License

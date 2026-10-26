@@ -223,7 +223,8 @@ signature cannot mention less-visible types.
 
 Stage0 validates these structural constraints and the type-alias forms in
 chapter 2 before running the name resolver below. Initial typing and hierarchy
-checks follow in 3.14–3.23, and flow checks in 3.24; remaining typing, visibility,
+checks follow in 3.14–3.23, flow checks in 3.24 and the stage0 code generation
+subset in 3.25; remaining typing, visibility,
 ownership and effect analysis remain on the [roadmap](../roadmap.md).
 
 ## 3.13 Lexical name resolution [Core]
@@ -910,3 +911,35 @@ pattern always runs its guard, and arms after an unguarded one are unreachable.
 Field and receiver mutability (`mut fun`, `init` ordering), moves, borrows and
 destruction remain pending, as do stored-field initialization and global
 initialization order.
+
+## 3.25 Stage0 code generation subset
+
+This section describes an implementation limit of stage0, not a language rule.
+Stage0's first native backend lowers only a scalar subset. The `gate` command
+runs `check` first. If `check` succeeds, `gate` reports every construct outside
+the subset, so that nothing half-checked reaches code generation:
+
+- **Declarations.** Only top-level functions with a body. They cannot be
+  generic, `async`, `unsafe` or throwing, and cannot carry attributes. Their
+  parameters use the default convention and have no defaults.
+- **Types.** `Bool`, `Int8` to `Int64`, `UInt8` to `UInt64`, `Int`, `UInt`,
+  `Unit` and `Never`, without optional wrappers.
+- **Statements.** `let` and `var` locals, with or without an initializer;
+  assignment and compound assignment to locals; `if`, `while`, `loop`, `break`,
+  `continue` and `return`.
+- **Expressions.** Integer and Boolean literals, `()`, local and parameter
+  names, parentheses, direct calls to top-level functions, integer
+  conversions, unary `-`, `!` and `~`, arithmetic including the wrapping
+  forms, `&`, `|`, `^`, comparisons, `&&` and `||`. Used `if` and block
+  results are allowed where their type is known (3.24).
+
+Everything else reports `E0600`. That includes shifts, `for`, `defer`,
+`throw`, `match`, `unsafe` blocks, strings, floating-point values, arrays,
+optionals, types and members, globals, and function values. A local whose
+type is still deferred also reports `E0600` and needs an annotation. One
+`E0600` is reported per construct, and uses of a rejected local are not
+reported again.
+
+The program needs exactly one `fun main()` with no parameters. It returns
+`Int` (the exit status), nothing, or `Never`. A missing, overloaded or
+otherwise invalid `main` reports `E0601`.

@@ -15,6 +15,7 @@
 
 #include "frontend/session.hpp"
 
+#include "codegen/gate.hpp"
 #include "sema/flow.hpp"
 #include "sema/validate.hpp"
 #include "syntax/lexer.hpp"
@@ -49,6 +50,17 @@ CheckResult FrontendSession::check(FileId file) {
     }
     return {syntax, state.resolution ? &*state.resolution : nullptr,
             state.scalar_types ? &*state.scalar_types : nullptr};
+}
+
+bool FrontendSession::check_codegen(FileId file) {
+    const auto result = check(file);
+    auto& state = files_.at(file.value);
+    if (!state.gated) {
+        state.gated = true;
+        state.codegen = !diag_.has_errors(file) &&
+                        check_codegen_subset(*result.syntax, *result.resolution, *result.scalar_types, names_, diag_);
+    }
+    return state.codegen;
 }
 
 }  // namespace phs

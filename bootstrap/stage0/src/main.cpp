@@ -33,6 +33,7 @@ constexpr std::string_view kUsage =
     "  lex <file.phs>     print the token stream\n"
     "  parse <file.phs>   print the syntax tree\n"
     "  check <file.phs>   check syntax, semantics, names, types and flow\n"
+    "  gate <file.phs>    check, then check that stage0 can generate code for it\n"
     "  version            print the version\n"
     "  help               print this message\n";
 
@@ -48,8 +49,10 @@ int run_frontend(std::string_view cmd, std::string_view path) {
         std::print("{}", phs::dump_tokens(tokens, session.names(), session.sources()));
     } else if (cmd == "parse")
         std::print("{}", phs::dump_ast(*session.parse(*file), session.names()));
-    else
+    else if (cmd == "check")
         (void)session.check(*file);
+    else
+        (void)session.check_codegen(*file);
     std::fflush(stdout);
     session.diagnostics().render(stderr);
     return session.diagnostics().has_errors(*file) ? 1 : 0;
@@ -72,7 +75,7 @@ int main(int argc, char** argv) {
         std::println("phantasos-stage0 {}", PHS_VERSION);
         return 0;
     }
-    if (cmd == "lex" || cmd == "parse" || cmd == "check") {
+    if (cmd == "lex" || cmd == "parse" || cmd == "check" || cmd == "gate") {
         if (args.size() != 3) {
             std::print(stderr, "{}", kUsage);
             return 2;

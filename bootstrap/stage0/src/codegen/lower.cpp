@@ -262,9 +262,14 @@ private:
             case StmtKind::Assign: {
                 const auto& assign = *cast<AssignStmt>(&stmt);
                 const Reg dst = local(*cast<NameExpr>(assign.target));
+                if (assign.op == AssignOp::Assign) {
+                    copy(dst, any(assign.value));
+                    return;
+                }
+                // The target is read first; snapshot it if the value can assign it.
+                const Reg target = writes(assign.value) ? snapshot(dst) : dst;
                 const Reg src = any(assign.value);
-                if (assign.op == AssignOp::Assign) copy(dst, src);
-                else if (src.valid()) emit({.op = assign_op(assign.op), .dst = dst, .a = dst, .b = src});
+                if (src.valid()) emit({.op = assign_op(assign.op), .dst = dst, .a = target, .b = src});
                 return;
             }
             case StmtKind::Return: {
@@ -315,6 +320,32 @@ private:
 
     Reg any(const Expr* expr) { return control(expr) ? branch(expr, true) : value(expr); }
 
+    Reg snapshot(Reg local) {
+        const Reg dst = reg(fun_->regs[local.id]);
+        emit({.op = Op::Copy, .dst = dst, .a = local});
+        return dst;
+    }
+
+    // Only statements inside a block or `if` can assign a local while an
+    // expression is evaluated.
+    static bool writes(const Expr* root) {
+        std::vector<const Expr*> work{root};
+        while (!work.empty()) {
+            const Expr* expr = work.back();
+            work.pop_back();
+            if (expr->kind == ExprKind::If || expr->kind == ExprKind::Block) return true;
+            if (const auto* paren = as<ParenExpr>(expr)) work.push_back(paren->inner);
+            else if (const auto* unary = as<UnaryExpr>(expr)) work.push_back(unary->operand);
+            else if (const auto* binary = as<BinaryExpr>(expr)) {
+                work.push_back(binary->lhs);
+                work.push_back(binary->rhs);
+            } else if (const auto* call = as<CallExpr>(expr)) {
+                for (const auto& arg : call->args) work.push_back(arg.value);
+            }
+        }
+        return false;
+    }
+
     // Blocks and `if` chains. Recursion follows syntactic nesting; `else if`
     // chains are iterative.
     Reg branch(const Expr* root, bool used) {
@@ -361,6 +392,9 @@ private:
         };
         std::vector<Task> tasks{{root}};
         std::vector<Reg> values;
+        // A local read early in the expression keeps its value even if a later
+        // operand assigns it.
+        const bool snapshots = root->kind != ExprKind::Name && writes(root);
         while (!tasks.empty()) {
             Task& task = tasks.back();
             const Expr* expr = task.expr;
@@ -381,7 +415,8 @@ private:
                     break;
                 case ExprKind::Name: {
                     tasks.pop_back();
-                    values.push_back(local(*cast<NameExpr>(expr)));
+                    const Reg local = this->local(*cast<NameExpr>(expr));
+                    values.push_back(snapshots ? snapshot(local) : local);
                     break;
                 }
                 case ExprKind::If: case ExprKind::Block:
@@ -404,6 +439,11 @@ private:
                         tasks.pop_back();
                         const Reg operand = values.back();
                         values.pop_back();
+                        // A diverging operand has already ended the block.
+                        if (!operand.valid()) {
+                            values.push_back({});
+                            break;
+                        }
                         const Op op = unary.op == UnOp::Neg ? Op::Neg : unary.op == UnOp::Not ? Op::Not : Op::BitNot;
                         const Reg dst = reg(lower_type(scalar(expr)));
                         emit({.op = op, .dst = dst, .a = operand});

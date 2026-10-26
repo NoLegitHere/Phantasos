@@ -308,6 +308,41 @@ fun main(): Int {
     CHECK(unit.run("fun main() {\n    let same = () == ()\n    if !same { return }\n}\n").value == 0);
 }
 
+void writes_during_evaluation() {
+    // An operand read before a later operand assigns the same local keeps its value.
+    CHECK(result(R"(
+fun sub(a: Int, b: Int): Int = a - b
+fun main(): Int {
+    var x = 1
+    let y = sub(x, if true {
+        x = 2
+        3
+    } else { 3 })
+    let z = sub(x * 10, if true {
+        x = 5
+        1
+    } else { 1 })
+    return y * 100 + z + x
+}
+)") == -200 + 19 + 5);
+    // Compound assignment reads its target before its value.
+    CHECK(result(R"(
+fun main(): Int {
+    var x = 1
+    x += if true {
+        x = 10
+        2
+    } else { 2 }
+    return x
+}
+)") == 3);
+    // A diverging operand ends the block without a value.
+    Frontend f;
+    const auto text = f.dump("fun stop(): Never {\n    loop {}\n}\nfun main(): Int = -stop()\nfun flag(): Bool = !stop()\n");
+    CHECK(text.contains("    call @stop()\n    unreachable\n"));
+    CHECK(!text.contains("neg") && !text.contains("not"));
+}
+
 void rejected_files() {
     FrontendSession session;
     const auto id = session.sources().add("mir.phs", "fun main(): Float64 = 1.0\n");
@@ -342,6 +377,7 @@ int main() {
     arithmetic();
     short_circuit();
     calls_and_order();
+    writes_during_evaluation();
     rejected_files();
     long_trees();
     std::println("mir tests passed");

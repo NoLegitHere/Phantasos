@@ -570,22 +570,28 @@ private:
                         }
                     }
                     if (fun && !fun->sig.generics.empty()) {
+                        std::unordered_set<usize> visited;
                         std::vector<Type> work;
                         for (const auto& param : fun->sig.params) work.push_back(annotation(param.type));
                         while (!work.empty()) {
                             const auto type = work.back(); work.pop_back();
                             const auto* pointer = types_.descriptor(type);
-                            if (!pointer || !seen.insert(type.detail).second) continue;
+                            if (!pointer || !visited.insert(type.detail).second) continue;
                             const auto descriptor = *pointer;
                             if (type.kind == Type::Nominal) {
                                 const auto params = generic_parameters(descriptor.declaration);
-                                if (params.size() == descriptor.arguments.size()) {
+                                if (params.size() == descriptor.arguments.size() && seen.insert(type.detail).second) {
                                     const auto context = application(descriptor.declaration, descriptor.arguments, 0, fun->name.span).context;
                                     for (usize p = 0; p < params.size(); ++p)
                                         for (const auto* bound : params[p].bounds) add(id, descriptor.arguments[p], bound, context);
+                                    bool pending_clause = false;
                                     if (const auto* declaration = as_type_decl(resolution_.binding(descriptor.declaration).item))
-                                        for (const auto& clause : declaration->where)
-                                            for (const auto* bound : clause.bounds) add(id, annotation(clause.type, context), bound, context);
+                                        for (const auto& clause : declaration->where) {
+                                            const auto subject = annotation(clause.type, context);
+                                            pending_clause |= !known(subject);
+                                            for (const auto* bound : clause.bounds) add(id, subject, bound, context);
+                                        }
+                                    if (pending_clause) seen.erase(type.detail);
                                 }
                                 for (auto arg : descriptor.arguments) work.push_back(arg);
                             } else if (type.kind == Type::Function) {
@@ -1415,23 +1421,50 @@ private:
         if (projection_depth_ == kDependentDepth) return Type::Deferred;
         const ScopedValue depth(projection_depth_, projection_depth_ + 1);
         if (symbolic(owner)) {
+            const auto found = symbolic_members(owner, resolution_.binding(requirement).name.sym, true);
+            if (found.state == ExpansionState::Resolved && found.ids.size() == 1 &&
+                resolution_.binding(found.ids.front()).kind == BindingKind::TypeAlias && associated_alias(found.ids.front()))
+                requirement = found.ids.front();
             const auto type = types_.intern({.kind = Type::Projection, .element = owner, .declaration = requirement});
             if (projection_ids_.insert(type.detail).second) projection_types_.push_back(type);
             if (bounds_ready_ && !projection_bounds_.contains(type.detail)) {
                 projection_bounds_.emplace(type.detail, std::vector<Type>{}); // recursive bound guard
                 const bool uncertain = uncertain_bounds_.contains(type.detail);
                 uncertain_bounds_.insert(type.detail);
-                bool pending = false;
-                const auto interface = member_owner(requirement);
-                const auto context = owner_context(interface, owner);
-                const auto add = [&](const TypeExpr* syntax) {
+                bool pending = found.state != ExpansionState::Resolved;
+                const auto add = [&](const TypeExpr* syntax, usize context) {
                     const auto bound = annotation(syntax, context);
                     if (known(bound) && protocol(bound)) projection_bounds_[type.detail].push_back(bound);
                     else pending = true;
                 };
-                for (const auto* bound : cast<TypeAliasItem>(resolution_.binding(requirement).item)->bounds) add(bound);
-                for (const auto& clause : cast_type_decl(resolution_.binding(interface).item)->where)
-                    if (annotation(clause.type, context) == type) for (const auto* bound : clause.bounds) add(bound);
+                const auto name = resolution_.binding(requirement).name.sym;
+                std::vector<Type> work{owner.scalar(), nominal(member_owner(requirement))};
+                std::unordered_set<usize> seen_owners;
+                while (!work.empty()) {
+                    const auto current = work.back(); work.pop_back();
+                    if (!known(current) || !seen_owners.insert(current.detail).second) continue;
+                    if (symbolic(current)) {
+                        pending |= uncertain_bounds_.contains(current.detail);
+                        for (const auto* table : {&formal_bounds_, &projection_bounds_})
+                            if (const auto it = table->find(current.detail); it != table->end())
+                                for (auto bound : it->second) work.push_back(bound);
+                        continue;
+                    }
+                    if (current.kind != Type::Nominal) { pending = true; continue; }
+                    const auto interface = types_.descriptor(current)->declaration;
+                    if (resolution_.binding(interface).kind != BindingKind::Type) { pending = true; continue; }
+                    const auto graph = hierarchies_.find(interface.value);
+                    if (graph == hierarchies_.end() || graph->second.state != ExpansionState::Resolved) pending = true;
+                    else for (auto base : graph->second.bases) work.push_back(nominal(base));
+                    const auto context = owner_context(interface, owner);
+                    for (const auto declaration : direct_members(interface, name, true))
+                        if (resolution_.binding(declaration).kind == BindingKind::TypeAlias && associated_alias(declaration))
+                            for (const auto* bound : cast<TypeAliasItem>(resolution_.binding(declaration).item)->bounds) add(bound, context);
+                    for (const auto& clause : cast_type_decl(resolution_.binding(interface).item)->where) {
+                        if (clause.type->kind == TypeKind::SelfType) pending = true;
+                        if (annotation(clause.type, context) == type) for (const auto* bound : clause.bounds) add(bound, context);
+                    }
+                }
                 if (!pending && !uncertain) uncertain_bounds_.erase(type.detail);
             }
             return type;

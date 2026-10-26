@@ -258,6 +258,12 @@ interface RootType { type Item: Branch }
 class LeafBox<U: LeafTrait> {}
 fun multiProjectedWhere<T: RootType>(x: T.Item.Child): Int where T.Item.Child: LeafTrait = x.read()
 fun multiProjectedParam<T: RootType>(a: LeafBox<T.Item.Child>, x: T.Item.Child): Int = x.read()
+class ReversedWhereBox<A> where A.Item: LeafTrait, A: Premise {}
+fun reversedIncomingWhere<T>(a: ReversedWhereBox<T>, x: T.Item): Int = x.read()
+interface ReAssocBase { type Item: LeafTrait; fun get(): Item }
+interface ReAssocRefined: ReAssocBase { type Item }
+fun redeclaredAssoc<T: ReAssocRefined>(x: T): T.Item = x.get()
+fun redeclaredAssocBound<T: ReAssocRefined>(x: T): Int = x.get().read()
 )");
     CHECK(f.value("inferred") == Type::Int && f.value("echoed") == Type::Int && f.value("leafEchoed") == Type::Int);
     CHECK(f.name(f.value("passed")) == "Target" && f.value("forwardRead") == Type::Int && f.value("inferredReqValue") == Type::Int);
@@ -268,6 +274,8 @@ fun multiProjectedParam<T: RootType>(a: LeafBox<T.Item.Child>, x: T.Item.Child):
     }
     CHECK(body(f, "nested").state == ExpansionState::Resolved && body(f, "chained").state == ExpansionState::Resolved);
     CHECK(body(f, "multiProjectedWhere").state == ExpansionState::Resolved && body(f, "multiProjectedParam").state == ExpansionState::Resolved);
+    CHECK(body(f, "reversedIncomingWhere").state == ExpansionState::Resolved);
+    CHECK(body(f, "redeclaredAssoc").state == ExpansionState::Resolved && body(f, "redeclaredAssocBound").state == ExpansionState::Resolved);
     const auto* signature = f.result.scalar_types->signature(f.id("nested", BindingKind::Function));
     CHECK(signature && signature->result.kind == Type::Nominal);
     Frontend mismatch;

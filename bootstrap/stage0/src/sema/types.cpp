@@ -1235,10 +1235,12 @@ private:
         for (usize p = 0; p < x.size(); ++p) if (x[p].name.sym != y[p].name.sym) return false;
         return true;
     }
-    bool same_method_inputs(BindingId a, BindingId b) {
+    // Compare inputs as seen from `receiver` (by default, the first method's owner). A lookup
+    // receiver may supply associated types that make inherited and required profiles agree.
+    bool same_method_inputs(BindingId a, BindingId b, Type receiver = {}) {
         if (!same_method_shape(a, b) || !method_inputs_known(a) || !method_inputs_known(b)) return false;
         if (cast<FunItem>(resolution_.binding(a).item)->sig.params.empty()) return true;
-        const auto receiver = schema_self(member_owner(a));
+        if (!known(receiver)) receiver = schema_self(member_owner(a));
         const auto x = owner_context(member_owner(a), receiver), y = owner_context(member_owner(b), receiver);
         const auto px = cast<FunItem>(resolution_.binding(a).item)->sig.params;
         const auto py = cast<FunItem>(resolution_.binding(b).item)->sig.params;
@@ -1264,14 +1266,14 @@ private:
         if (const auto it = types.find(name.id); it != types.end()) return {it->second};
         return {};
     }
-    void merge_members(std::vector<BindingId>& result, std::span<const BindingId> incoming) {
+    void merge_members(std::vector<BindingId>& result, std::span<const BindingId> incoming, Type receiver = {}) {
         const auto hides = [&](BindingId a, BindingId b) {
             if (a == b) return true;
             const auto& x = resolution_.binding(a);
             const auto& y = resolution_.binding(b);
             if (x.kind != BindingKind::Function || y.kind != BindingKind::Function)
                 return ancestry(member_owner(a), member_owner(b)) == Relation::Yes;
-            if (!same_method_inputs(a, b)) return false;
+            if (!same_method_inputs(a, b, receiver)) return false;
             return ancestry(member_owner(a), member_owner(b)) == Relation::Yes;
         };
         for (const auto candidate : incoming) {
@@ -1280,12 +1282,12 @@ private:
             result.push_back(candidate);
         }
     }
-    std::vector<BindingId> preferred_members(std::span<const BindingId> declarations) {
+    std::vector<BindingId> preferred_members(std::span<const BindingId> declarations, Type receiver = {}) {
         std::vector<BindingId> result;
         for (const auto candidate : declarations) {
             const bool hidden = std::ranges::any_of(declarations, [&](BindingId other) {
                 if (candidate == other || resolution_.binding(candidate).kind != BindingKind::Function ||
-                    resolution_.binding(other).kind != BindingKind::Function || !same_method_inputs(other, candidate)) return false;
+                    resolution_.binding(other).kind != BindingKind::Function || !same_method_inputs(other, candidate, receiver)) return false;
                 const bool candidate_interface = interface_owner(candidate), other_interface = interface_owner(other);
                 if (!other_interface && candidate_interface) return true;
                 return other_interface && candidate_interface && cast<FunItem>(resolution_.binding(other).item)->body &&
@@ -1319,18 +1321,32 @@ private:
                 continue;
             }
             if (own.empty() && fact.bases.size() == 1 && fact.state == ExpansionState::Resolved) {
-                cache[frame.id.value] = cache.at(fact.bases.front().value);
+                const auto parent = cache.at(fact.bases.front().value);
+                cache[frame.id.value] = parent;
+                // A descendant may supply associated types that let a class implementation
+                // satisfy an interface requirement which the parent could not compare.
+                if (parent->ids.size() > 1 && std::ranges::any_of(parent->ids, [&](BindingId id) {
+                        return resolution_.binding(id).kind == BindingKind::Function && interface_owner(id);
+                    })) {
+                    auto ids = preferred_members(parent->declarations, schema_self(frame.id));
+                    if (ids != parent->ids) {
+                        auto result = std::make_shared<MemberLookup>(*parent);
+                        result->ids = std::move(ids);
+                        cache[frame.id.value] = std::move(result);
+                    }
+                }
             } else {
                 auto result = std::make_shared<MemberLookup>();
                 result->state = fact.state;
                 result->declarations = own;
+                const auto receiver = schema_self(frame.id);
                 for (const auto base : fact.bases) {
                     const auto& parent = *cache.at(base.value);
                     if (parent.state == ExpansionState::Error) result->state = ExpansionState::Error;
                     else if (parent.state == ExpansionState::Deferred && result->state != ExpansionState::Error) result->state = ExpansionState::Deferred;
-                    merge_members(result->declarations, parent.declarations);
+                    merge_members(result->declarations, parent.declarations, receiver);
                 }
-                result->ids = preferred_members(result->declarations);
+                result->ids = preferred_members(result->declarations, receiver);
                 cache[frame.id.value] = result;
             }
             stack.pop_back();
@@ -1360,9 +1376,9 @@ private:
             for (const auto& clause : cast_type_decl(resolution_.binding(types_.descriptor(current)->declaration).item)->where)
                 if (clause.type->kind == TypeKind::SelfType) result.state = ExpansionState::Deferred;
             if (found->state != ExpansionState::Resolved) result.state = found->state;
-            merge_members(result.declarations, found->declarations);
+            merge_members(result.declarations, found->declarations, receiver.scalar());
         }
-        result.ids = preferred_members(result.declarations);
+        result.ids = preferred_members(result.declarations, receiver.scalar());
         return result;
     }
 
@@ -1427,7 +1443,8 @@ private:
                 return Type::Error;
             }
             const auto id = found.ids.front();
-            if (associated_alias(id)) receiver = project(receiver, id);
+            // Interfaces may also own nested nominal declarations; only aliases are projected.
+            if (resolution_.binding(id).kind == BindingKind::TypeAlias && associated_alias(id)) receiver = project(receiver, id);
             else if (const auto* alias = as<TypeAliasItem>(resolution_.binding(id).item); alias && alias->type && alias->generics.empty())
                 receiver = annotation(alias->type, owner_context(member_owner(id), receiver));
             else receiver = nominal(id);
@@ -2974,10 +2991,13 @@ private:
                     if (record.state == ResolutionState::Unresolved) node.value = {Type::Error};
                     else if (record.state == ResolutionState::Resolved && record.candidates.size() == 1 && value_binding(record.candidates.front()))
                         node.value = nodes_[record.candidates.front().value].value;
-                    if (record.state == ResolutionState::Resolved && record.candidates.size() == 1 && reference_contexts_.contains(expr)) {
+                    if (record.state == ResolutionState::Resolved && record.candidates.size() == 1 && reference_contexts_.contains(expr) &&
+                        value_binding(record.candidates.front())) {
                         const auto& field = nodes_[record.candidates.front().value];
-                        if (value_binding(record.candidates.front()) && field.annotation)
-                            node.value = {annotation(field.annotation, reference_contexts_.at(expr))};
+                        const auto context = reference_contexts_.at(expr);
+                        // Inferred field types are symbolic in their owner, so instantiate them through the receiver too.
+                        if (field.annotation) node.value = {annotation(field.annotation, context)};
+                        else node.value.type = substitute_type(node.value.type, context);
                     }
                 } else if (expr->kind == ExprKind::Name && !node.deps.empty()) node.value = nodes_[node.deps.front()].value;
                 break;

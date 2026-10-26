@@ -220,6 +220,33 @@ let qualifiedValue = Namespace(1).qualified()
     CHECK(f.value("unboundValue") == Type::Deferred && body(f, "unbound").state == ExpansionState::Deferred);
     CHECK(f.value("scopedValue") == Type::Int && f.value("qualifiedValue") == Type::Int);
 }
+
+void receiver_contexts_and_nested_interface_types() {
+    Frontend f;
+    f.check(R"(
+class Box<T>(x: T) { let value = x }
+let inferred: Int = Box(1).value
+interface I { type Item; fun echo(x: Item): Item }
+open class Parent { fun echo(x: Int): Int = x }
+class Child: Parent, I { type Item = Int }
+let echoed = Child().echo(1)
+abstract class Base: I { fun echo(x: Int): Int = x }
+class Leaf: Base { type Item = Int }
+let leafEchoed = Leaf().echo(1)
+interface Outer { class Nested {} }
+fun nested<T: Outer>(x: T): T.Nested { loop {} }
+)");
+    CHECK(f.value("inferred") == Type::Int && f.value("echoed") == Type::Int && f.value("leafEchoed") == Type::Int);
+    for (std::string_view name : {"echoed", "leafEchoed"}) {
+        const auto& call = f.call(name); // the class implementation, not the bodiless requirement
+        CHECK(call.state == CallState::Resolved && ast::cast<ast::FunItem>(f.result.resolution->binding(call.target).item)->body);
+    }
+    CHECK(body(f, "nested").state == ExpansionState::Resolved);
+    const auto* signature = f.result.scalar_types->signature(f.id("nested", BindingKind::Function));
+    CHECK(signature && signature->result.kind == Type::Nominal);
+    Frontend mismatch;
+    mismatch.check("class Box<T>(x: T) { let value = x }\nlet wrong: Bool = Box(1).value", {DiagCode::ScalarTypeMismatch});
+}
 } // namespace
 
 int main() {
@@ -229,4 +256,5 @@ int main() {
     self_defaults_and_properties();
     rejected_dependent_conformance();
     unsupported_contracts_stay_deferred();
+    receiver_contexts_and_nested_interface_types();
 }

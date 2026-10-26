@@ -52,13 +52,20 @@ foundation. Complete.
   bound-based lookup, associated projections, inferred generic returns, `Self`
   substitution, associated-type and stored-property witnesses, and generic
   conformers to known non-generic interfaces.
-- [ ] **Next: generic base substitution and built-in traits.** Instantiate
+- [x] Initial flow checks: all-path returns, definite initialization of locals,
+  `let`/parameter immutability, and contextual branch results, including `T?`
+  for an `if` without `else`.
+- [ ] **Next: native scalar vertical slice.** Compile a scalar Core subset
+  (functions, locals, loops, calls, checked integer arithmetic) through a typed
+  IR and naive x86_64 code to a static Linux x86_64 executable that returns its
+  exit code. Constructs outside the subset receive a diagnostic.
+- [ ] Generic base substitution and built-in traits. Instantiate
   generic base/interface graphs, derive `Copy`/`Sendable`/`Error`, and complete
   generic method contracts, associated defaults and receiver-dependent contexts.
 - [ ] Complete type checking: generic aliases, generics, optionals,
   generic calls, function-value inference, remaining numeric policies, receiver-dependent members,
   inheritance, visibility, and typed errors.
-- [ ] Definite initialization, moves, borrows and destructor checks.
+- [ ] Field/receiver initialization, moves, borrows and destructor checks.
 - [ ] Typed intermediate representation and lowering.
 - [ ] x86_64 code generation and COFF/ELF object writers.
 - [ ] Native PE/ELF linker, minimal runtime and entry points.

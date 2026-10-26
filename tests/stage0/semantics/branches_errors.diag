@@ -1,0 +1,12 @@
+branches_errors.phs:16:33: error[E0403]: 'if' without 'else' has no 'Int' value when its condition is false; add an 'else' or expect 'Int?'
+   16 | fun missingElse(d: Bool): Int = if d { 5 }
+      |                                 ^^^^^^^^^^
+branches_errors.phs:17:40: error[E0400]: expected 'Int', found 'Bool'
+   17 | fun mismatch(a: Int): Int = if a > 0 { true } else { 2 }
+      |                                        ^^^^
+branches_errors.phs:18:36: error[E0400]: expected 'Int', found 'Unit'
+   18 | let unit: Int = if true { 1 } else { }
+      |                                    ^^^
+branches_errors.phs:19:30: error[E0402]: integer literal is out of range for 'UInt8'
+   19 | let range: UInt8 = if true { 300 } else { 2 }
+      |                              ^^^

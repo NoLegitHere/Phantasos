@@ -223,7 +223,7 @@ signature cannot mention less-visible types.
 
 Stage0 validates these structural constraints and the type-alias forms in
 chapter 2 before running the name resolver below. Initial typing and hierarchy
-checks follow in 3.14–3.20; remaining typing, visibility, all-path return,
+checks follow in 3.14–3.23, and flow checks in 3.24; remaining typing, visibility,
 ownership and effect analysis remain on the [roadmap](../roadmap.md).
 
 ## 3.13 Lexical name resolution [Core]
@@ -313,8 +313,9 @@ built-in names retain their own identity.
 Discarded numeric expressions also default and undergo range checking. These
 include expression statements before a block's final statement, and all
 expression statements in ordinary function, initializer, destructor, loop and
-cleanup bodies. If a block's result is used, its final expression retains its
-deferred contextual type. Discarding a call does not default its arguments.
+cleanup bodies. If a block's result is used, its final expression takes the
+expected type when one is known (3.24) and otherwise retains its deferred
+contextual type. Discarding a call does not default its arguments.
 
 Scalar arithmetic (`+ - * /`) requires operands of the same numeric type.
 Remainder, wrapping arithmetic, shifts and bitwise operators require the same
@@ -338,7 +339,7 @@ an expression-bodied function infers its result from the body, defaulting
 numeric literals at the function boundary.
 An explicit bare `return` produces `Unit`, with the same optional lifting as
 `return ()`. Initializers and destructors also
-return `Unit`. This does not establish that every path returns a value.
+return `Unit`. Section 3.24 checks that every path of a block body returns.
 
 After successful validation and name resolution, stage0 checks these scalar
 rules and retains expression/binding types. `E0400` reports mismatches,
@@ -355,7 +356,8 @@ deferred types instead of defaulting prematurely (for example, an unchecked
 call argument could require `UInt64` rather than `Int`). Cyclic inference
 without an established type remains
 deferred. Generic calls, function-value inference, remaining numeric policies, initialization cycles,
-all-path returns, mutability, ownership and effects still need later passes.
+ownership and effects still need later passes; all-path returns, local
+initialization and binding mutability follow 3.24.
 Successful `check` therefore continues to mean only that implemented checks
 found no errors, not that the program is valid or executable.
 
@@ -399,7 +401,7 @@ through concrete explicit generic instantiations follow 3.21. Direct nominal met
 type-qualified calls follow 3.19.
 Known function-typed calls and primary constructors follow 3.18. Built-in numeric conversions follow section 3.16. The pass checks
 their supported scalar children. Constraints, effects, conventions, visibility, duplicate
-signature validity and all-path returns require later checks.
+signature validity require later checks; all-path returns follow 3.24.
 
 `E0410` reports calling a known scalar value, `E0411` no matching signature,
 and `E0412` an ambiguous call. Candidate notes point to declarations. Return
@@ -852,6 +854,53 @@ refinement, and inherited class implementations whose `Self` contract changes
 remain pending. Built-in trait derivation and general function-value/variance
 inference are also pending. Recursive or deep dependent queries stop at a bounded
 depth (64 nested queries) and retain deferred states; independently known failures
-still report diagnostics. Unsupported branch/block results, casts, all-path return
-checks and ownership/effect rules remain separate roadmap work. Passing `check`
-continues to establish only the implemented rules.
+still report diagnostics. Casts, inferred branch results without context and
+ownership/effect rules remain separate roadmap work. Passing `check` continues
+to establish only the implemented rules.
+
+## 3.24 Branch results and flow checks [Core]
+
+**Branch results.** When a block, `if`, `match` or `unsafe` expression is used
+where a type is expected (an annotation, an argument, an explicit return or an
+expression body with a declared result), each branch must produce that type.
+A block produces its final expression statement; a block ending in `return`,
+`throw`, `break`, `continue` or `loop` produces no value on that path; any
+other block produces `Unit`. Literals in each branch take the expected type.
+An `if` without `else` produces no value when its condition is false:
+
+```phantasos
+let v: Int? = if debug { 5 }   // Int?: 5, or none when debug is false
+let w: Int = if debug { 5 }    // E0403: add an else or expect Int?
+if debug { log("x") }          // statement: Unit
+```
+
+`else if` chains without a final `else` behave the same way. With an explicit
+`else`, both branches lift to the optional as usual. A used branch result
+without an expected type remains `Deferred`.
+
+**Flow checks.** After scalar typing succeeds, stage0 checks each function,
+initializer and destructor body. Analysis is structural and does not evaluate
+conditions: both arms of an `if` and both operands of `&&`, `||` and `??` are
+possible paths, `while` and `for` may run zero times, and `loop` exits only
+through `break`. A call to `panic` or to an expression of type `Never` ends
+its path. `match` is assumed exhaustive; exhaustiveness is checked separately.
+
+- **All-path return (`E0500`).** A block-bodied function whose declared result
+  is not `Unit` must reach `return`, `throw` or a diverging call on every path;
+  reaching the end of the body is an error. Expression bodies always produce
+  their value.
+- **Definite initialization (`E0501`).** A local declared without an
+  initializer must be assigned on every path before it is read, including by a
+  compound assignment. Unreachable code is not checked. A `defer` body is
+  checked against the state where it is registered.
+- **Immutable bindings (`E0502`).** Assignment and compound assignment may
+  target a `var` local or global, or an `inout` parameter. Other parameters,
+  `let` locals and globals, pattern and `for` bindings, and `if let` bindings
+  are read-only. A `let` local declared without an initializer may be assigned
+  once while it is definitely unassigned, so each path initializes it exactly
+  once. Assignment anywhere in a loop body counts as possibly repeated on the
+  next iteration.
+
+Field and receiver mutability (`mut fun`, `init` ordering), moves, borrows and
+destruction remain pending, as do stored-field initialization and global
+initialization order.

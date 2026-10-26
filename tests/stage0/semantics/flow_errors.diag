@@ -1,0 +1,78 @@
+flow_errors.phs:18:1: error[E0500]: function 'fallsOff' must return 'Int' on every path
+   18 | }
+      | ^
+flow_errors.phs:16:5: note: the end of the body is reachable without a 'return'
+   16 | fun fallsOff(a: Int): Int {
+      |     ^^^^^^^^
+flow_errors.phs:22:1: error[E0500]: function 'chain' must return 'Int' on every path
+   22 | }
+      | ^
+flow_errors.phs:20:5: note: the end of the body is reachable without a 'return'
+   20 | fun chain(a: Int): Int {
+      |     ^^^^^
+flow_errors.phs:26:1: error[E0500]: function 'whileOnly' must return 'Int' on every path
+   26 | }
+      | ^
+flow_errors.phs:24:5: note: the end of the body is reachable without a 'return'
+   24 | fun whileOnly(c: Bool): Int {
+      |     ^^^^^^^^^
+flow_errors.phs:30:1: error[E0500]: function 'breaks' must return 'Int' on every path
+   30 | }
+      | ^
+flow_errors.phs:28:5: note: the end of the body is reachable without a 'return'
+   28 | fun breaks(): Int {
+      |     ^^^^^^
+flow_errors.phs:35:12: error[E0501]: 'y' is used before it is initialized
+   35 |     return y
+      |            ^
+flow_errors.phs:33:9: note: declared here without an initializer
+   33 |     var y: Int
+      |         ^
+flow_errors.phs:41:12: error[E0501]: 'y' is used before it is initialized
+   41 |     return y
+      |            ^
+flow_errors.phs:39:9: note: declared here without an initializer
+   39 |     var y: Int
+      |         ^
+flow_errors.phs:46:5: error[E0501]: 'y' is used before it is initialized
+   46 |     y += 1
+      |     ^
+flow_errors.phs:45:9: note: declared here without an initializer
+   45 |     var y: Int
+      |         ^
+flow_errors.phs:52:25: error[E0502]: cannot assign to immutable 'x'
+   52 | fun parameter(x: Int) { x = 1 }
+      |                         ^
+flow_errors.phs:52:15: note: parameters are read-only unless declared 'inout'
+   52 | fun parameter(x: Int) { x = 1 }
+      |               ^
+flow_errors.phs:56:5: error[E0502]: cannot assign to immutable 'x'
+   56 |     x = 2
+      |     ^
+flow_errors.phs:55:9: note: declared with 'let' here
+   55 |     let x = 1
+      |         ^
+flow_errors.phs:62:5: error[E0502]: 'y' may already be initialized; a 'let' binding is assigned only once
+   62 |     y = 2
+      |     ^
+flow_errors.phs:60:9: note: declared with 'let' here
+   60 |     let y: Int
+      |         ^
+flow_errors.phs:67:15: error[E0502]: 'y' may already be initialized; a 'let' binding is assigned only once
+   67 |     while c { y = 1 }
+      |               ^
+flow_errors.phs:66:9: note: declared with 'let' here
+   66 |     let y: Int
+      |         ^
+flow_errors.phs:70:16: error[E0502]: cannot assign to immutable 'limit'
+   70 | fun global() { limit = 2 }
+      |                ^^^^^
+flow_errors.phs:50:5: note: declared with 'let' here
+   50 | let limit = 1
+      |     ^^^^^
+flow_errors.phs:73:23: error[E0502]: cannot assign to immutable 'v'
+   73 |     for v in values { v = 1 }
+      |                       ^
+flow_errors.phs:73:9: note: bound here; only 'var' locals can be reassigned
+   73 |     for v in values { v = 1 }
+      |         ^

@@ -29,7 +29,8 @@ struct CheckResult {
     // result can contain unresolved names; use diagnostics().has_errors(file)
     // to determine success.
     const Resolution* resolution;
-    // Null if earlier phases failed. A non-null result retains known/deferred
+    // Null if earlier phases failed. Flow checks run only after typing succeeds.
+    // A non-null result retains known/deferred
     // scalar facts, including on type errors; consult per-file diagnostics.
     // Alias definition errors retain alias records but gate value checking.
     const ScalarTypes* scalar_types;

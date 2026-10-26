@@ -255,7 +255,9 @@ let constructedSelf = ChainBox<Int>(2, makeChainBox())
 interface LeafTrait { fun read(): Int }
 interface Branch { type Child }
 interface RootType { type Item: Branch }
+class LeafBox<U: LeafTrait> {}
 fun multiProjectedWhere<T: RootType>(x: T.Item.Child): Int where T.Item.Child: LeafTrait = x.read()
+fun multiProjectedParam<T: RootType>(a: LeafBox<T.Item.Child>, x: T.Item.Child): Int = x.read()
 )");
     CHECK(f.value("inferred") == Type::Int && f.value("echoed") == Type::Int && f.value("leafEchoed") == Type::Int);
     CHECK(f.name(f.value("passed")) == "Target" && f.value("forwardRead") == Type::Int && f.value("inferredReqValue") == Type::Int);
@@ -265,7 +267,7 @@ fun multiProjectedWhere<T: RootType>(x: T.Item.Child): Int where T.Item.Child: L
         CHECK(call.state == CallState::Resolved && ast::cast<ast::FunItem>(f.result.resolution->binding(call.target).item)->body);
     }
     CHECK(body(f, "nested").state == ExpansionState::Resolved && body(f, "chained").state == ExpansionState::Resolved);
-    CHECK(body(f, "multiProjectedWhere").state == ExpansionState::Resolved);
+    CHECK(body(f, "multiProjectedWhere").state == ExpansionState::Resolved && body(f, "multiProjectedParam").state == ExpansionState::Resolved);
     const auto* signature = f.result.scalar_types->signature(f.id("nested", BindingKind::Function));
     CHECK(signature && signature->result.kind == Type::Nominal);
     Frontend mismatch;

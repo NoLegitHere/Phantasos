@@ -594,12 +594,10 @@ private:
                             } else if (type.kind != Type::TypeParameter) work.push_back(descriptor.element);
                         }
                     }
-                    if (!where.empty()) {
-                        const ScopedValue ready(bounds_ready_, true);
-                        for (usize p = 0; p < projection_types_.size(); ++p) {
-                            const auto descriptor = *types_.descriptor(projection_types_[p]);
-                            (void)project(descriptor.element, descriptor.declaration);
-                        }
+                    const ScopedValue ready(bounds_ready_, true);
+                    for (usize p = 0; p < projection_types_.size(); ++p) {
+                        const auto descriptor = *types_.descriptor(projection_types_[p]);
+                        (void)project(descriptor.element, descriptor.declaration);
                     }
                 }
             }

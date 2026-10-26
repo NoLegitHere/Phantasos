@@ -17,8 +17,10 @@
 #include <cstdio>
 #include <print>
 #include <span>
+#include <string>
 #include <string_view>
 
+#include "codegen/x86_64.hpp"
 #include "frontend/session.hpp"
 #include "syntax/ast_dump.hpp"
 #include "syntax/lexer.hpp"
@@ -35,6 +37,7 @@ constexpr std::string_view kUsage =
     "  check <file.phs>   check syntax, semantics, names, types and flow\n"
     "  gate <file.phs>    check, then check that stage0 can generate code for it\n"
     "  mir <file.phs>     print the MIR of a file that passes gate\n"
+    "  asm <file.phs>     print its x86_64 code as an assembly listing\n"
     "  version            print the version\n"
     "  help               print this message\n";
 
@@ -54,8 +57,14 @@ int run_frontend(std::string_view cmd, std::string_view path) {
         (void)session.check(*file);
     else if (cmd == "gate")
         (void)session.check_codegen(*file);
-    else if (const auto* program = session.lower(*file))
-        std::print("{}", phs::mir::dump(*program));
+    else if (const auto* program = session.lower(*file)) {
+        if (cmd == "mir") std::print("{}", phs::mir::dump(*program));
+        else {
+            std::string listing;
+            (void)phs::x86_64::emit(*program, &listing);
+            std::print("{}", listing);
+        }
+    }
     std::fflush(stdout);
     session.diagnostics().render(stderr);
     return session.diagnostics().has_errors(*file) ? 1 : 0;
@@ -78,7 +87,7 @@ int main(int argc, char** argv) {
         std::println("phantasos-stage0 {}", PHS_VERSION);
         return 0;
     }
-    if (cmd == "lex" || cmd == "parse" || cmd == "check" || cmd == "gate" || cmd == "mir") {
+    if (cmd == "lex" || cmd == "parse" || cmd == "check" || cmd == "gate" || cmd == "mir" || cmd == "asm") {
         if (args.size() != 3) {
             std::print(stderr, "{}", kUsage);
             return 2;

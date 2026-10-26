@@ -963,3 +963,12 @@ sign of its left operand. The `&+`, `&-` and `&*` forms wrap.
 Stage0 lowers checked programs to a typed MIR that makes this order
 explicit. `phantasos-stage0 mir <file>` prints it for a file that passes
 `gate` (3.25).
+
+Stage0's first x86_64 backend checks every trapping operation inline. A
+failed check calls `__phantasos_trap` with the trap code in the first
+argument register: 1 for overflow and 2 for division by zero. The signed
+minimum divided by `-1` is an overflow. `__phantasos_trap` does not return.
+Functions use the System V AMD64 calling convention and get the symbol
+`_P<length><name>` for their MIR name, so `fib` becomes `_P3fib` and an
+overload named `sub.1` becomes `_P5sub.1`. `phantasos-stage0 asm <file>` prints the code as a
+listing. These names and codes are a stage0 detail, not a stable ABI.

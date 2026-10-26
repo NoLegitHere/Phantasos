@@ -879,15 +879,16 @@ if debug { log("x") }          // statement: Unit
 without an expected type remains `Deferred`.
 
 **Flow checks.** After scalar typing succeeds, stage0 checks each function,
-initializer and destructor body. Analysis is structural and does not evaluate
+initializer and destructor body, and separately each parameter default and
+variable initializer. Analysis is structural and does not evaluate
 conditions: both arms of an `if` and both operands of `&&`, `||` and `??` are
 possible paths, `while` and `for` may run zero times, and `loop` exits only
 through `break`. A call to `panic` or a call of (non-optional) type `Never`
 ends its path. Inside `try?`, a `throw` or any call other than `panic` can
 leave the operand early and resume after the `try?` expression. `match` is assumed exhaustive
 (exhaustiveness is checked separately); a failed pattern or guard continues
-to the next arm with the guard's effects, and an arm with a wildcard or binding
-pattern always runs its guard.
+to the next arm with the guard's effects, an arm with a wildcard or binding
+pattern always runs its guard, and arms after an unguarded one are unreachable.
 
 - **All-path return (`E0500`).** A block-bodied function whose declared result
   is not `Unit` must reach `return`, `throw` or a diverging call on every path;

@@ -183,12 +183,17 @@ public:
             const auto [item, owner] = work.back();
             work.pop_back();
             if (const auto* type = as_type_decl(item)) {
+                defaults(type->ctor_params);
                 for (const Item* member : type->members) work.push_back({member, type});
             } else if (const auto* ext = as<ExternItem>(item)) {
                 for (const Item* nested : ext->items) work.push_back({nested, owner});
             } else if (const auto* fun = as<FunItem>(item)) {
+                defaults(fun->sig.params);
                 if (fun->body) callable(fun->sig.params, fun->body, fun);
+            } else if (const auto* var = as<VarItem>(item)) {
+                if (var->init) callable({}, var->init, nullptr);
             } else if (const auto* init = as<InitItem>(item)) {
+                defaults(init->params);
                 if (init->body) callable(init->has_params || !owner ? init->params : owner->ctor_params, init->body, nullptr);
             } else if (const auto* deinit = as<DeinitItem>(item)) {
                 if (deinit->body) callable({}, deinit->body, nullptr);
@@ -204,6 +209,12 @@ private:
     static constexpr usize kUntracked = static_cast<usize>(-1);
 
     State dead() const { return {Bits(tracked_, true), Bits(tracked_, false), false}; }
+
+    // Defaults and initializers are separate roots with their own locals.
+    void defaults(List<Param> params) {
+        for (const auto& param : params)
+            if (param.default_value) callable({}, param.default_value, nullptr);
+    }
 
     void callable(List<Param> params, const Expr* body, const FunItem* fun) {
         params_.clear();
@@ -394,6 +405,8 @@ private:
                 else if (arm.guard) merge(state, path);
                 eval(arm.body, path);
                 merge(out, path);
+                // Later arms are unreachable after an unguarded catch-all.
+                if (irrefutable && !arm.guard) break;
             }
             state = std::move(out);
         } else {

@@ -65,6 +65,15 @@ fun aborts(): Int {
     let unused = try? panic("stop")
 }
 
+fun catchAll(v: Int): Int {
+    var x: Int
+    match v {
+        _ -> { x = 1 }
+        0 -> {}
+    }
+    return x
+}
+
 fun guardFirst(v: Int): Int {
     var x: Int
     match v {

@@ -269,6 +269,10 @@ fun condition(c: Bool) {
     while unsafe { x = 1
         c } {}
 }
+fun defaulted(value: Int = unsafe { var x: Int
+    x }) {}
+let initializer = unsafe { var y: Int
+    y }
 fun maybe(): Never? = none
 fun optionalNever(): Int {
     maybe()
@@ -284,7 +288,8 @@ fun twoCleanups() {
     defer { x = 2 }
 }
 )", {DiagCode::MissingReturn, DiagCode::UninitializedUse, DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment,
-     DiagCode::MissingReturn, DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment});
+     DiagCode::MissingReturn, DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment,
+     DiagCode::UninitializedUse, DiagCode::UninitializedUse});
 
     Frontend valid;
     valid.check(R"(
@@ -302,6 +307,14 @@ fun aborts(): Int {
 fun cleanupOnly() {
     let x: Int
     defer { x = 1 }
+}
+fun catchAll(v: Int): Int {
+    var x: Int
+    match v {
+        _ -> { x = 1 }
+        0 -> {}
+    }
+    return x
 }
 fun guardFirst(v: Int): Int {
     var x: Int

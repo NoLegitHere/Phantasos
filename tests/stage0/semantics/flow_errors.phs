@@ -103,3 +103,6 @@ fun cleanupThenWrite() {
     defer { x = 1 }
     x = 2
 }
+
+fun defaulted(value: Int = unsafe { var x: Int
+    x }) {}

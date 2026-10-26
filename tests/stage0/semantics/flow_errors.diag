@@ -106,3 +106,9 @@ flow_errors.phs:104:5: error[E0502]: 'x' may already be initialized; a 'let' bin
 flow_errors.phs:102:9: note: declared with 'let' here
   102 |     let x: Int
       |         ^
+flow_errors.phs:108:5: error[E0501]: 'x' is used before it is initialized
+  108 |     x }) {}
+      |     ^
+flow_errors.phs:107:41: note: declared here without an initializer
+  107 | fun defaulted(value: Int = unsafe { var x: Int
+      |                                         ^

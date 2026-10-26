@@ -264,17 +264,22 @@ interface ReAssocBase { type Item: LeafTrait; fun get(): Item }
 interface ReAssocRefined: ReAssocBase { type Item }
 fun redeclaredAssoc<T: ReAssocRefined>(x: T): T.Item = x.get()
 fun redeclaredAssocBound<T: ReAssocRefined>(x: T): Int = x.get().read()
+class ProjectionConformer: I { type Item = Int; fun echo(x: Int): Int = x }
+fun takeProjected<T: I>(x: T, y: T.Item): T.Item = y
+let inferredProjected = takeProjected(ProjectionConformer(), 1)
+interface GenericEcho<A> { fun echo(x: A): A }
+fun forwardParamEcho<T: GenericEcho<U.Item>, U: Premise>(x: T, y: U.Item): U.Item = x.echo(y)
 )");
     CHECK(f.value("inferred") == Type::Int && f.value("echoed") == Type::Int && f.value("leafEchoed") == Type::Int);
     CHECK(f.name(f.value("passed")) == "Target" && f.value("forwardRead") == Type::Int && f.value("inferredReqValue") == Type::Int);
-    CHECK(f.name(f.value("constructedSelf")) == "ChainBox<Int>");
+    CHECK(f.name(f.value("constructedSelf")) == "ChainBox<Int>" && f.value("inferredProjected") == Type::Int);
     for (std::string_view name : {"echoed", "leafEchoed"}) {
         const auto& call = f.call(name); // the class implementation, not the bodiless requirement
         CHECK(call.state == CallState::Resolved && ast::cast<ast::FunItem>(f.result.resolution->binding(call.target).item)->body);
     }
     CHECK(body(f, "nested").state == ExpansionState::Resolved && body(f, "chained").state == ExpansionState::Resolved);
     CHECK(body(f, "multiProjectedWhere").state == ExpansionState::Resolved && body(f, "multiProjectedParam").state == ExpansionState::Resolved);
-    CHECK(body(f, "reversedIncomingWhere").state == ExpansionState::Resolved);
+    CHECK(body(f, "reversedIncomingWhere").state == ExpansionState::Resolved && body(f, "forwardParamEcho").state == ExpansionState::Resolved);
     CHECK(body(f, "redeclaredAssoc").state == ExpansionState::Resolved && body(f, "redeclaredAssocBound").state == ExpansionState::Resolved);
     const auto* signature = f.result.scalar_types->signature(f.id("nested", BindingKind::Function));
     CHECK(signature && signature->result.kind == Type::Nominal);
@@ -289,6 +294,12 @@ fun redeclaredAssocBound<T: ReAssocRefined>(x: T): Int = x.get().read()
     wrongInferredReq.check("interface I { let value = 1 }\nclass Bad: I { let value = true }", {DiagCode::MissingImplementation});
     Frontend wrongCtorSelf;
     wrongCtorSelf.check("class Box<T>(let value: T, let next: Self) { fun bad(): Box<Int> = Box<Int>(2, self) }", {DiagCode::NoMatchingCall});
+    Frontend wrongProjectedCall;
+    wrongProjectedCall.check("interface I { type Item }\nclass C: I { type Item = Int }\nfun take<T: I>(x: T, y: T.Item): T.Item = y\nlet bad = take(C(), true)",
+                             {DiagCode::NoMatchingCall});
+    Frontend forwardParamBound;
+    forwardParamBound.check("interface Root { type Item }\ninterface I<A> { fun echo(x: A): A }\nfun f<T: I<U.Item>, U: Root>(x: T): Bool = x.echo(true)",
+                            {DiagCode::NoMatchingCall});
 }
 } // namespace
 

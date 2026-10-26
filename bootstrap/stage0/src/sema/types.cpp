@@ -519,60 +519,65 @@ private:
             if (binding.kind == BindingKind::Type && binding.item->kind == ItemKind::Interface)
                 formal_bounds_[symbol(BindingId{i}).detail].push_back(nominal(BindingId{i}));
         }
+        std::unordered_set<usize> added_uncertain;
+        const auto mark_uncertain = [&](usize detail) {
+            if (uncertain_bounds_.insert(detail).second) added_uncertain.insert(detail);
+        };
         const auto add = [&](BindingId owner, Type source, const TypeExpr* syntax, usize context = 0, bool premise = true) {
             const auto bound = annotation(syntax, context);
             if (known(bound) && !symbolic(bound) && (bound.optional_depth || !protocol(bound))) {
-                constraint_error(owner, syntax->span); invalid_constraints_.insert(owner.value); return;
+                constraint_error(owner, syntax->span); invalid_constraints_.insert(owner.value); return true;
             }
-            if (!known(source) || concrete(source)) return;
-            if (source.optional_depth) { uncertain_bounds_.insert(source.detail); return; }
-            if (!premise) { uncertain_bounds_.insert(source.detail); return; }
-            if (!owned_formal(source, owner)) { uncertain_bounds_.insert(source.detail); return; }
-            if (!known(bound) || symbolic(bound)) { uncertain_bounds_.insert(source.detail); return; }
+            if (!known(source) || concrete(source)) return known(source) && known(bound);
+            if (source.optional_depth) { mark_uncertain(source.detail); return known(bound); }
+            if (!premise) { mark_uncertain(source.detail); return known(bound); }
+            if (!owned_formal(source, owner)) { mark_uncertain(source.detail); return known(bound); }
+            if (!known(bound) || symbolic(bound)) { mark_uncertain(source.detail); return known(bound); }
             auto& bounds = formal_bounds_[source.detail];
             if (std::ranges::find(bounds, bound) == bounds.end()) bounds.push_back(bound);
+            return true;
         };
         for (usize i = 0; i < resolution_.bindings().size(); ++i) {
             const auto id = BindingId{i};
             const auto& binding = resolution_.binding(id);
             if (binding.kind != BindingKind::Function && binding.kind != BindingKind::Type && binding.kind != BindingKind::TypeAlias) continue;
-            for (const auto& param : generic_parameters(id)) {
-                const auto source = symbol(generic_bindings_.at(param.name.span.lo));
-                for (const auto* bound : param.bounds) add(id, source, bound);
-            }
             List<WhereClause> where;
             if (const auto* fun = as<FunItem>(binding.item)) where = fun->sig.where;
             else if (const auto* type = as_type_decl(binding.item)) where = type->where;
-            for (const auto& clause : where) {
-                const auto source = annotation(clause.type);
-                if (binding.kind == BindingKind::Type && binding.item->kind == ItemKind::Interface && clause.type->kind == TypeKind::SelfType)
-                    for (const auto* bound : clause.bounds) add(id, source, bound, 0, false);
-                else for (const auto* bound : clause.bounds) add(id, source, bound);
-            }
             const auto* fun = as<FunItem>(binding.item);
-            if (!where.empty() || (fun && !fun->sig.generics.empty())) {
+            if (!generic_parameters(id).empty() || !where.empty() || (fun && !fun->sig.generics.empty())) {
                 // Incoming parameter bounds or nested projections may be needed to
                 // resolve later parameters and multi-step where-clause subjects.
-                std::unordered_set<usize> seen;
+                added_uncertain.clear();
                 for (usize count = std::numeric_limits<usize>::max(), pass = 0;; ++pass) {
                     usize before = 0;
                     for (const auto& [_, bounds] : formal_bounds_) before += bounds.size();
                     for (const auto& [_, bounds] : projection_bounds_) before += bounds.size();
                     if (before == count) break;
                     count = before;
-                    if (pass) {
-                        clear_deferred_annotations();
-                        for (const auto& clause : where) {
-                            const auto source = annotation(clause.type);
-                            if (binding.kind == BindingKind::Type && binding.item->kind == ItemKind::Interface && clause.type->kind == TypeKind::SelfType)
-                                for (const auto* bound : clause.bounds) add(id, source, bound, 0, false);
-                            else for (const auto* bound : clause.bounds) add(id, source, bound);
-                        }
+                    for (auto detail : added_uncertain) uncertain_bounds_.erase(detail);
+                    added_uncertain.clear();
+                    if (pass) clear_deferred_annotations();
+                    bool deferred = false;
+                    for (const auto& param : generic_parameters(id)) {
+                        const auto source = symbol(generic_bindings_.at(param.name.span.lo));
+                        for (const auto* bound : param.bounds) deferred |= !add(id, source, bound);
+                    }
+                    for (const auto& clause : where) {
+                        const auto source = annotation(clause.type);
+                        deferred |= !known(source);
+                        const bool self_clause = binding.kind == BindingKind::Type &&
+                            binding.item->kind == ItemKind::Interface && clause.type->kind == TypeKind::SelfType;
+                        for (const auto* bound : clause.bounds) deferred |= !add(id, source, bound, 0, !self_clause);
                     }
                     if (fun && !fun->sig.generics.empty()) {
                         std::unordered_set<usize> visited;
                         std::vector<Type> work;
-                        for (const auto& param : fun->sig.params) work.push_back(annotation(param.type));
+                        for (const auto& param : fun->sig.params) {
+                            const auto type = annotation(param.type);
+                            deferred |= !known(type);
+                            work.push_back(type);
+                        }
                         while (!work.empty()) {
                             const auto type = work.back(); work.pop_back();
                             const auto* pointer = types_.descriptor(type);
@@ -580,18 +585,18 @@ private:
                             const auto descriptor = *pointer;
                             if (type.kind == Type::Nominal) {
                                 const auto params = generic_parameters(descriptor.declaration);
-                                if (params.size() == descriptor.arguments.size() && seen.insert(type.detail).second) {
+                                if (params.size() == descriptor.arguments.size()) {
                                     const auto context = application(descriptor.declaration, descriptor.arguments, 0, fun->name.span).context;
                                     for (usize p = 0; p < params.size(); ++p)
-                                        for (const auto* bound : params[p].bounds) add(id, descriptor.arguments[p], bound, context);
-                                    bool pending_clause = false;
+                                        for (const auto* bound : params[p].bounds)
+                                            deferred |= !add(id, descriptor.arguments[p], bound, context);
                                     if (const auto* declaration = as_type_decl(resolution_.binding(descriptor.declaration).item))
                                         for (const auto& clause : declaration->where) {
                                             const auto subject = annotation(clause.type, context);
-                                            pending_clause |= !known(subject);
-                                            for (const auto* bound : clause.bounds) add(id, subject, bound, context);
+                                            deferred |= !known(subject);
+                                            for (const auto* bound : clause.bounds)
+                                                deferred |= !add(id, subject, bound, context);
                                         }
-                                    if (pending_clause) seen.erase(type.detail);
                                 }
                                 for (auto arg : descriptor.arguments) work.push_back(arg);
                             } else if (type.kind == Type::Function) {
@@ -601,14 +606,20 @@ private:
                         }
                     }
                     const ScopedValue ready(bounds_ready_, true);
+                    projection_bounds_.clear();
                     for (usize p = 0; p < projection_types_.size(); ++p) {
                         const auto descriptor = *types_.descriptor(projection_types_[p]);
+                        const bool was_uncertain = uncertain_bounds_.contains(projection_types_[p].detail);
                         (void)project(descriptor.element, descriptor.declaration);
+                        if (!was_uncertain && uncertain_bounds_.contains(projection_types_[p].detail))
+                            added_uncertain.insert(projection_types_[p].detail);
                     }
+                    if (!deferred) break;
                 }
             }
         }
         bounds_ready_ = true;
+        projection_bounds_.clear();
         clear_deferred_annotations();
         for (usize i = 0; i < projection_types_.size(); ++i) {
             const auto descriptor = *types_.descriptor(projection_types_[i]);
@@ -813,6 +824,7 @@ private:
                     }
                     continue;
                 }
+                if (pattern.kind == Type::Projection) continue;
                 if (pattern.kind != argument.kind) {
                     // These positions supply no inference evidence. Preserve
                     // the ordinary probe's deferred protocol/other conversions.

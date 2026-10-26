@@ -220,6 +220,10 @@
   has an error header.
 - `tests/stage0/asm/` runs `asm` and compares stdout with `*.lst` under the
   same rules.
+- `tests/stage0/run/` builds each program with `build`, runs it, and compares
+  its exit status with `*.exit` and its stderr with `*.stderr` (empty when
+  the file is missing). The build must succeed silently. These cases run only
+  on Linux x86_64 and are reported as skipped elsewhere.
 - Regenerate them with `python tests/run_golden.py --stage0 <exe> --update`
   and review the diff before committing.
   Lexer/parser fixtures are positive unless an existing `.diag` baseline has
@@ -230,4 +234,4 @@
   long AST/token traversal, and parser-state regression tests. These run on both
   platforms and in the sanitizer job, alongside the mutation fuzzer.
 - Run the mutation fuzzer with `--command check`, `--command gate`,
-  `--command mir` and `--command asm` as well as its default `parse` mode to exercise semantic validation after successful parses.
+  `--command mir`, `--command asm` and `--command build` as well as its default `parse` mode to exercise semantic validation after successful parses.

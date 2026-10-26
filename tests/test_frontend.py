@@ -76,6 +76,32 @@ class FrontendTests(unittest.TestCase):
                 if oversized:
                     self.assertIn(b"source file exceeds input limit of 67108864 bytes", result.stderr)
 
+    def test_build_command(self) -> None:
+        def build(*args: str):
+            return subprocess.run([str(self.exe), "build", *args], capture_output=True, timeout=30, cwd=self.directory.name)
+
+        self.source.write_text("fun main(): Int = 42\n", encoding="utf-8")
+        result = build("case.phs")
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, b"", b""))
+        self.assertEqual((Path(self.directory.name) / "case").read_bytes()[:4], b"\x7fELF")
+        named = Path(self.directory.name) / "named"
+        self.assertEqual(build(str(self.source), "-o", str(named)).returncode, 0)
+        self.assertTrue(named.exists())
+        for args in ((), (str(self.source), "-o"), (str(self.source), "-x", "out"), (str(self.source), "-o", "a", "b")):
+            with self.subTest(args=args):
+                result = build(*args)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn(b"usage:", result.stderr)
+        self.assertEqual(build(str(self.source), "-o", str(Path(self.directory.name) / "missing" / "out")).returncode, 2)
+
+        # Code outside the stage0 subset is reported and writes nothing.
+        self.source.write_text("fun main(): Float64 = 1.5\n", encoding="utf-8")
+        rejected = Path(self.directory.name) / "rejected"
+        result = build(str(self.source), "-o", str(rejected))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(b"error[E0600]", result.stderr)
+        self.assertFalse(rejected.exists())
+
     def test_nesting_limit(self) -> None:
         n = 2000
         cases = {

@@ -1,0 +1,27 @@
+// Copyright 2026 The Phantasos Authors
+// SPDX-License-Identifier: Apache-2.0
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// Narrow types wrap with &+ and &*, truncate on request and widen freely.
+
+fun main(): Int {
+    let a: Int8 = 100
+    let b = a &+ 100              // -56
+    let c: UInt8 = 200
+    let d = c &* 2                // 144
+    let e = UInt8.truncating(513) // 1
+    let f: UInt16 = 65535
+    let g = Int(b) + Int(d) + Int(e) + Int(f) - 65535   // 89
+    return g
+}

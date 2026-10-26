@@ -15,11 +15,15 @@
 
 // phantasos-stage0: the C++23 bootstrap compiler for Phantasos-Core.
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
 #include <print>
 #include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 
+#include "codegen/elf.hpp"
 #include "codegen/x86_64.hpp"
 #include "frontend/session.hpp"
 #include "syntax/ast_dump.hpp"
@@ -38,6 +42,9 @@ constexpr std::string_view kUsage =
     "  gate <file.phs>    check, then check that stage0 can generate code for it\n"
     "  mir <file.phs>     print the MIR of a file that passes gate\n"
     "  asm <file.phs>     print its x86_64 code as an assembly listing\n"
+    "  build <file.phs> [-o <out>]\n"
+    "                     compile it to a static Linux x86_64 executable\n"
+    "                     (default output: the file name without .phs)\n"
     "  version            print the version\n"
     "  help               print this message\n";
 
@@ -70,6 +77,42 @@ int run_frontend(std::string_view cmd, std::string_view path) {
     return session.diagnostics().has_errors(*file) ? 1 : 0;
 }
 
+int build(std::string_view path, std::filesystem::path out) {
+    phs::FrontendSession session;
+    const auto file = session.sources().load(path);
+    if (!file) {
+        std::println(stderr, "error: cannot read '{}': {}", path, file.error().message());
+        return 2;
+    }
+    const auto* program = session.lower(*file);
+    session.diagnostics().render(stderr);
+    if (!program) return 1;
+    const std::vector objects{phs::x86_64::emit(*program), phs::x86_64::runtime(*program)};
+    const auto image = phs::elf::link(objects, phs::x86_64::kEntrySymbol);
+    if (!image) {
+        std::println(stderr, "error: cannot link '{}': {}", path, image.error());
+        return 1;
+    }
+    if (out.empty()) out = std::filesystem::path(path).stem();
+    {
+        std::ofstream stream(out, std::ios::binary | std::ios::trunc);
+        stream.write(reinterpret_cast<const char*>(image->data()), static_cast<std::streamsize>(image->size()));
+        if (!stream) {
+            std::println(stderr, "error: cannot write '{}'", out.string());
+            return 2;
+        }
+    }
+    using std::filesystem::perms;
+    std::error_code ec;
+    std::filesystem::permissions(out, perms::owner_exec | perms::group_exec | perms::others_exec,
+                                 std::filesystem::perm_options::add, ec);
+    if (ec) {
+        std::println(stderr, "error: cannot make '{}' executable: {}", out.string(), ec.message());
+        return 2;
+    }
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -93,6 +136,12 @@ int main(int argc, char** argv) {
             return 2;
         }
         return run_frontend(cmd, args[2]);
+    }
+    if (cmd == "build") {
+        if (args.size() == 3) return build(args[2], {});
+        if (args.size() == 5 && std::string_view(args[3]) == "-o") return build(args[2], args[4]);
+        std::print(stderr, "{}", kUsage);
+        return 2;
     }
     std::print(stderr, "error: unknown command '{}'\n\n{}", cmd, kUsage);
     return 2;

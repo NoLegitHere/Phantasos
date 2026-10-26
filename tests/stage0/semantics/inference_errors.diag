@@ -40,3 +40,9 @@ inference_errors.phs:37:7: note: constrained declaration here
 inference_errors.phs:46:18: error[E0400]: expected 'Bool', found 'Parent'
    46 | let late: Bool = three(Child(), Sibling(), Parent())
       |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+inference_errors.phs:49:23: error[E0471]: type arguments do not satisfy interface constraints of 'Closed'
+   49 | let closedAnnotation: Closed
+      |                       ^^^^^^
+inference_errors.phs:48:7: note: constrained declaration here
+   48 | class Closed where Missing: Read {}
+      |       ^^^^^^

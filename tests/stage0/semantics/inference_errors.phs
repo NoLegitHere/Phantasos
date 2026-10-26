@@ -44,3 +44,6 @@ let selected = alternative<Unrelated>(stop(), extra: 1)
 class Sibling: Parent {}
 fun three<T>(a: T, b: T, c: T): T = a
 let late: Bool = three(Child(), Sibling(), Parent())
+
+class Closed where Missing: Read {}
+let closedAnnotation: Closed

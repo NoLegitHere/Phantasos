@@ -644,6 +644,9 @@ private:
                 if (!expanded.unknown_member.sym.empty())
                     diag_.error(DiagCode::UnknownType, expanded.unknown_member.span, "unknown type '{}' in '{}'",
                                 names_.str(expanded.unknown_member.sym), names_.str(resolution_.binding(expanded.member_owner).name.sym));
+                if (expanded.type.state == ExpansionState::Resolved && expanded.type.target.valid() &&
+                    resolution_.binding(expanded.type.target).kind == BindingKind::Type && generic_parameters(expanded.type.target).empty())
+                    remember_constraints(expanded.type.target, env, syntax->span);
                 value = expanded.type.scalar;
                 if (!known(value) && expanded.type.state == ExpansionState::Resolved && expanded.type.target.valid()) {
                     value = nominal(expanded.type.target);
@@ -1111,11 +1114,16 @@ private:
 
     void remember_constraints(BindingId id, usize context, Span span) {
         if (probing_constraints_ || !constrained(id)) return;
+        if (active_constraint_ && constraint_uses_[*active_constraint_].recursive) return;
         for (usize next = context; next; next = environments_[next].parent)
             for (const auto arg : environments_[next].arguments) if (!concrete(arg)) return;
         for (const auto& param : generic_parameters(id))
             if (!concrete(substituted(generic_bindings_.at(param.name.span.lo), context))) return;
-        if (constraint_spans_[id.value][context].insert(span.lo).second) constraint_uses_.push_back({id, context, span});
+        if (!constraint_spans_[id.value][context].insert(span.lo).second) return;
+        bool recursive = false;
+        for (auto parent = active_constraint_; parent; parent = constraint_uses_[*parent].parent)
+            if (constraint_uses_[*parent].declaration == id) { recursive = true; break; }
+        constraint_uses_.push_back({id, context, span, active_constraint_, recursive});
     }
     void constraint_error(BindingId id, Span span) {
         if (!reported_constraints_.insert(span.lo).second) return;
@@ -1125,7 +1133,12 @@ private:
     void validate_constraints() {
         for (usize i = 0; i < constraint_uses_.size(); ++i) {
             const auto use = constraint_uses_[i];
-            const auto state = constraint_status(use.declaration, use.context);
+            const ScopedValue active(active_constraint_, std::optional<usize>{i});
+            auto state = constraint_status(use.declaration, use.context);
+            // A declaration repeated along this dependency path may grow its
+            // arguments forever. Check its immediate facts, but do not enqueue
+            // further applications or claim that recursive validity is proven.
+            if (use.recursive && state != Relation::No) state = Relation::Deferred;
             CheckedConstraint record{.span = use.span, .declaration = use.declaration,
                                      .state = state == Relation::Yes ? ExpansionState::Resolved :
                                               state == Relation::No ? ExpansionState::Error : ExpansionState::Deferred};
@@ -2555,8 +2568,15 @@ private:
     std::unordered_map<u64, std::unordered_map<usize, std::shared_ptr<const MemberLookup>>> inherited_members_;
     std::vector<Walk> walk_;
     std::vector<Requirement> requirements_;
-    struct ConstraintUse { BindingId declaration; usize context; Span span; };
+    struct ConstraintUse {
+        BindingId declaration;
+        usize context;
+        Span span;
+        std::optional<usize> parent;
+        bool recursive = false;
+    };
     std::vector<ConstraintUse> constraint_uses_;
+    std::optional<usize> active_constraint_;
     std::unordered_map<usize, std::unordered_map<usize, std::unordered_set<u32>>> constraint_spans_;
     std::unordered_set<u32> reported_constraints_;
     std::vector<CheckedConstraint> constraints_;

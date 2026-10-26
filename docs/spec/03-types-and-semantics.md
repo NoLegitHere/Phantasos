@@ -782,6 +782,13 @@ inference cycles stay deferred. Declared ancestry alone is insufficient.
 `E0471` reports unsatisfied concrete constraints, including invalid concrete
 type/alias applications outside calls. `ScalarTypes::constraints()` retains
 application spans, declarations, arguments and resolved/deferred/error states.
+Ordinary non-generic nominal annotations also register concrete `where` uses,
+including qualified or wrapped annotations; construction is not required.
+Validation retains the declaration path for discovered applications. Repeating
+a declaration on that path stops further expansion of the recursive application
+and retains it as deferred, even when its arguments grow. Its immediate bounds
+can still report an independently known failure. Finite nested applications and
+independent roots continue to be validated.
 Structural type identities remain available independently of constraint validity.
 Selected call records retain inferred arguments and an inference flag alongside
 the substituted parameter types. Facts remain session-owned and ASTs unchanged.

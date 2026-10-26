@@ -347,6 +347,51 @@ let hierarchy = generic(Wrapper(1))
     for (const auto& contract : f.result.scalar_types->constraints()) CHECK(contract.state == ExpansionState::Deferred);
 }
 
+void nongeneric_nominal_constraints() {
+    Frontend bad;
+    bad.check("interface I {}\nclass Bad {}\nclass Closed where Bad: I {}\nlet value: Closed", {DiagCode::GenericConstraint});
+    CHECK(bad.result.scalar_types->constraints().size() == 1);
+    const auto& failure = bad.result.scalar_types->constraints().front();
+    CHECK(failure.declaration == bad.id("Closed", BindingKind::Type) && failure.arguments.empty() && failure.state == ExpansionState::Error);
+    Frontend good;
+    good.check("interface I {}\nclass Good: I {}\nclass Closed where Good: I {}\nlet value: Closed");
+    CHECK(good.result.scalar_types->constraints().size() == 1 && good.result.scalar_types->constraints().front().state == ExpansionState::Resolved);
+    Frontend qualified;
+    qualified.check("interface I {}\nclass Bad {}\nclass Outer { class Closed where Bad: I {} }\ntype Alias = Outer\nlet value: Alias.Closed", {DiagCode::GenericConstraint});
+    CHECK(qualified.result.scalar_types->constraints().size() == 1);
+    Frontend wrapped;
+    wrapped.check("interface I {}\nclass Bad {}\nclass Closed where Bad: I {}\nlet value: [Closed?]", {DiagCode::GenericConstraint});
+    Frontend barrier;
+    barrier.check("interface I {}\nclass Bad {}\nclass Outer { class Closed where Bad: I {} }\ntype Maybe = Outer?\nlet value: Maybe.Closed");
+    CHECK(barrier.value("value") == Type::Deferred && barrier.result.scalar_types->constraints().empty());
+}
+
+void recursive_constraint_expansion() {
+    for (std::string_view source : {
+        "interface I {}\nclass Box<T> where Box<[T]>: I {}\nlet value: Box<Int>",
+        "interface I {}\nclass Box<T> where Box<[T]>: I {}\nlet a: Box<Int>\nlet b: Box<Bool>",
+        "interface I {}\nclass Box<T> where Box<[T]>: I {}\nlet value = Box<Int>()",
+        "interface I {}\nclass Box<T> where Box<T>: I {}\nlet value: Box<Int>",
+        "interface I {}\nclass A<T> where B<[T]>: I {}\nclass B<U> where A<[U]>: I {}\nlet value: A<Int>",
+        "interface I {}\nclass A where B: I {}\nclass B where A: I {}\nlet value: A"
+    }) {
+        Frontend f; f.check(source);
+        const auto uses = f.result.scalar_types->constraints();
+        CHECK(!uses.empty() && uses.size() <= 8);
+        for (const auto& use : uses) CHECK(use.state == ExpansionState::Deferred);
+    }
+    Frontend independent;
+    independent.check("interface I {}\nclass Good: I {}\nclass Box<T: I> where Box<[T]>: I {}\nlet value: Box<Good>", {DiagCode::GenericConstraint});
+    CHECK(std::ranges::any_of(independent.result.scalar_types->constraints(), [](const auto& use) { return use.state == ExpansionState::Error; }));
+    Frontend finite;
+    finite.check("interface I {}\nclass Bad {}\nclass Inner<T: I> {}\nclass Outer<T> where Inner<T>: I {}\nlet value: Outer<Bad>", {DiagCode::GenericConstraint});
+    CHECK(finite.result.scalar_types->constraints().size() == 2);
+    Frontend erased;
+    erased.check("interface I {}\nclass Good: I {}\ntype Erase<T> = Good\nclass Box<T> where Erase<Box<[T]>>: I {}\nlet value: Box<Int>");
+    CHECK(erased.result.scalar_types->constraints().size() <= 4 &&
+          std::ranges::any_of(erased.result.scalar_types->constraints(), [](const auto& use) { return use.state == ExpansionState::Deferred; }));
+}
+
 void shared_patterns_and_deep_bounds() {
     Frontend shared;
     std::string source;
@@ -364,6 +409,8 @@ void shared_patterns_and_deep_bounds() {
 } // namespace
 
 int main() {
+    nongeneric_nominal_constraints();
+    recursive_constraint_expansion();
     nondependent_protocol_positions();
     late_nominal_anchors();
     speculative_constraint_uses();

@@ -37,7 +37,8 @@ Windows x64 and Linux x86_64:
 - [x] Initial composite/nominal identities, arrays, primary constructors and typed indirect calls
 - [x] Direct nominal field/method lookup, static/instance access and member call targets
 - [x] Initial inheritance graphs, inherited lookup, overrides, method conformance and nominal upcasts
-- [ ] Generics, dependent conformance, function-value inference, remaining numeric policies and ownership analysis
+- [x] Initial explicit generic applications and alias/signature/member substitution
+- [ ] Generic inference/constraints, dependent conformance, function-value inference, remaining numeric policies and ownership analysis
 - [ ] MIR, x86_64 codegen, COFF/ELF writers, linker, runtime
 - [ ] Workspace-aware build driver
 
@@ -69,7 +70,10 @@ method calls check arguments and infer returns. Static/instance access is checke
 through types, aliases, ordinary instances and implicit receivers. Non-generic
 hierarchies validate base kinds, finality and cycles. Inherited member/type lookup,
 method overrides, supported interface/abstract method requirements and nominal
-upcasts retain hierarchy and conformance-witness records. Generics,
+upcasts retain hierarchy and conformance-witness records. Explicit concrete generic
+applications substitute transparent aliases, constructor/function signatures and
+direct fields/methods of owners without bases; nominal arguments are invariant.
+Generic inference, bounds/body validation, generic inheritance,
 function-value inference, associated requirements, remaining numeric policies,
 dependent/property contracts, optional/ownership-wrapper member access and ownership analysis remain
 pending, so passing `check` does not yet establish program validity. Imports explicitly report that
@@ -138,6 +142,9 @@ valid until the session is destroyed. `CheckResult::scalar_types` is non-null
 when scalar checking ran; query expression and binding facts through it.
 Its `signature(BindingId)` and `call(CallExpr*)` queries expose scalar parameter
 and return types, selected function IDs, and argument-to-parameter mappings.
+Selected calls retain explicit function type arguments and substituted parameter
+types; member records retain their concrete receiver type. Declaration signatures
+remain shared and are never overwritten by an application's types.
 Function value bindings remain deferred; their return types live in signatures.
 `ScalarType` stores `kind`, `optional_depth` and a result-local descriptor ID.
 Use `descriptor(type)` for structural components and
@@ -146,8 +153,8 @@ Use `descriptor(type)` for structural components and
 conversion mode and source/destination types. Intrinsic conversion call targets
 refer to built-in type bindings, while ordinary call targets refer to functions.
 `alias(BindingId)` exposes an alias's expansion state, canonical target ID,
-type fact and optional depth. Nominal identity uses the canonical declaration;
-inheritance/conformance checking remains pending. Alias definition errors
+type fact and optional depth. Nominal identity includes the canonical declaration
+and concrete generic arguments; dependent inheritance/conformance remains pending. Alias definition errors
 retain these records and skip value checking for that file.
 `ScalarType::Deferred` means the type needs a later pass, while `Error` marks a
 diagnosed type failure. Numeric defaults are `Int` and `Float64`; a scalar

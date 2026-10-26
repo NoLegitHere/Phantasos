@@ -170,7 +170,7 @@ void qualified_dependencies_inside_composites() {
         }
         Frontend acyclic;
         acyclic.check(std::format("type Outer = {}\nclass Box<T> {{}}\nclass C {{ type Back = Int }}\ntype Prefix = C", target));
-        CHECK(acyclic.alias("Outer").state == (target == "Box<Prefix.Back>" ? ExpansionState::Deferred : ExpansionState::Resolved));
+        CHECK(acyclic.alias("Outer").state == ExpansionState::Resolved);
         CHECK(acyclic.alias("Back").state == ExpansionState::Resolved);
     }
     Frontend missing;
@@ -210,8 +210,9 @@ struct Int8 {}
 type Shadow = Int8
 let nominal: Shadow = Shadow()
 )", {DiagCode::UnknownType});
-    for (std::string_view name : {"Generic", "Recursive", "Applied", "Abstract", "Default", "RecursiveDefault", "Associated"})
+    for (std::string_view name : {"Generic", "Recursive", "Abstract", "Default", "RecursiveDefault", "Associated"})
         CHECK(f.alias(name).state == ExpansionState::Deferred);
+    CHECK(f.alias("Applied").scalar == Type::Int);
     CHECK(f.alias("UnknownMember").state == ExpansionState::Error);
     CHECK(f.alias("Array").scalar.kind == Type::Array);
     CHECK(f.alias("Shadow").state == ExpansionState::Resolved && f.alias("Shadow").scalar.kind == Type::Nominal);

@@ -395,7 +395,7 @@ diagnostic.
 A potentially matching generic/constrained signature, unsupported parameter type or pending
 argument type keeps selection deferred, even if another scalar candidate fits.
 Independently provable shape/type mismatches still eliminate candidates. Calls
-through generic instantiations remain deferred. Direct nominal methods and
+through concrete explicit generic instantiations follow 3.21. Direct nominal methods and
 type-qualified calls follow 3.19.
 Known function-typed calls and primary constructors follow 3.18. Built-in numeric conversions follow section 3.16. The pass checks
 their supported scalar children. Constraints, effects, conventions, visibility, duplicate
@@ -486,7 +486,7 @@ Dependent aliases retain an error fact without additional cycle diagnostics.
 Alias definition errors gate value checking for that file while retaining alias
 records; `parse` remains syntax-only. Traversal uses explicit work stacks.
 
-Generic aliases/instantiation, captured generic types and associated requirements
+Concrete generic aliases/instantiation follow 3.21. Captured generic types and associated requirements
 and their overrideable defaults remain deferred. Fully known composite targets
 normalize into canonical type descriptors (3.18).
 These forms are not unconditional transparent expansion edges in this pass.
@@ -500,7 +500,7 @@ Descriptors refer to other type facts by ID, not recursive owning objects.
 Aliases reuse the same identities. Nominal identity is the canonical declaration
 ID, including its enclosing scope; equal spellings in different scopes do not
 create equal types. Optional wrappers preserve descriptor identity. Generic
-instances and types capturing generic parameters remain deferred.
+instances follow 3.21; types capturing an enclosing generic owner remain deferred.
 
 Fully known composite annotations, parameters and return types participate in
 exact matching and optional lifting. Arrays are invariant; pointer mutability
@@ -580,13 +580,14 @@ Values take precedence over nested types with the same spelling.
 Method calls use the direct-call argument, label, default, overload and literal
 range rules. Only the selected method adds a return-inference dependency;
 rejected overloads cannot create inference cycles. A field of function type
-uses the positional indirect-call rules. Bound method values and explicit
-generic method instantiation remain deferred.
+uses the positional indirect-call rules. Bound method values remain deferred;
+concrete explicit generic method applications follow 3.21.
 
 `E0450` reports a missing receiver member when lookup is complete. `E0451`
 reports an incompatible static/instance receiver. Lexical type-qualified name
 errors retain the resolver's diagnostics. Known inherited lookup and `super`
-follow 3.20. Generic owners/captured generic types, optional chaining, ownership-wrapper
+follow 3.20. Concrete generic owners without bases follow 3.21. Captured generic
+types, generic inheritance, optional chaining, ownership-wrapper
 and built-in members, visibility, effects and smart casts still require later
 checking. Direct field facts of a derived owner can still be used.
 
@@ -675,3 +676,44 @@ Graph traversal is iterative. Lookup caches share results along inheritance
 chains and deduplicate diamonds; ancestry queries record visited declarations.
 Base/type normalization advances only newly known/error facts, preserving
 forward-declaration order and avoiding recursive owning type structures.
+
+## 3.21 Initial generic instantiation and substitution [Core]
+
+Stage0 normalizes explicit concrete type applications such as `Box<Int8>` and
+transparent aliases such as `type Rows<T> = [[T]]`. Type arguments participate
+in nominal identity and are invariant: `Box<Int>` and `Box<Bool>` are different
+types even when their declarations are identical. Type names include arguments.
+Substitution uses lexical generic binding IDs, not spellings; a method's own
+`T` can shadow its owner's `T` without capturing the owner's argument.
+
+Explicit function applications (`identity<Int8>(1)`) and method applications
+substitute parameter and annotated return types before ordinary call probing.
+Numeric and nested array literals receive context only from the selected
+signature, preserving range errors and overload ranking. Explicit type-argument
+count first filters overloads; no matching count reports `E0470`. Type/alias
+applications with a wrong count or arguments on a non-generic declaration also
+report `E0470`. Omitted type arguments remain pending inference.
+
+Primary constructors and direct fields/methods on concrete generic owners
+without bases substitute the receiver's arguments. Member type aliases and
+nominal `Self` types use the same environment. A method's explicit arguments
+extend its receiver environment. Existing static/instance receiver rules apply.
+Calls retain their selected declaration, explicit function type arguments and
+substituted parameter types; member records retain the concrete receiver type.
+Generic declaration signatures and shared AST/lexical references are unchanged.
+
+Normalization and alias traversal use explicit stacks and cache results per
+interned substitution environment. Generic alias cycles report `E0430`, including
+cycles whose arguments grow at each expansion. Repeated applications share
+canonical descriptors instead of expanding descriptor graphs as trees.
+
+This stage establishes application identities and supported signature facts,
+not complete generic program validity. Type-argument inference, bound/`where`
+satisfaction, checking generic bodies once against their bounds, captured
+nominal owners, generic base substitution/conformance, associated types and
+dependent properties remain pending. Calls with applicable unchecked constraints,
+non-default conventions or omitted dependent defaults remain deferred. Generic
+expression-body return inference still uses the declaration's available facts;
+bodies are not rechecked per application. Function/bound-method values, optional
+`none` arguments and lowering/monomorphization need later stages. Unsupported
+facts retain `Deferred`; passing `check` still proves only implemented rules.

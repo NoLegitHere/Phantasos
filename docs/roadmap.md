@@ -42,8 +42,12 @@ foundation. Complete.
   non-generic nominal receivers, static/instance access, aliases and retained targets.
 - [x] Initial inheritance/conformance: non-generic base graphs, cycles, inherited
   member/type/overload lookup, overrides, method requirements and nominal upcasts.
-- [ ] **Next: generic type checking.** Instantiation/substitution, `where`
-  constraints, associated types and dependent conformance contracts.
+- [x] Initial generic instantiation/substitution: concrete nominal and transparent
+  alias applications, explicit function/method arguments, substituted constructor
+  and direct member signatures, and canonical invariant instance identities.
+- [ ] **Next: generic inference and constraints.** Infer type arguments, check
+  generic bodies against bounds and `where` clauses, and complete associated
+  types, generic inheritance and dependent conformance contracts.
 - [ ] Complete type checking: generic aliases, generics, optionals,
   generic calls, function-value inference, remaining numeric policies, receiver-dependent members,
   inheritance, visibility, and typed errors.
@@ -55,11 +59,11 @@ foundation. Complete.
 
 `check` performs syntax, structural semantic validation, file-local lexical
 name resolution, initial scalar typing and direct scalar function calls.
-Unsupported type facts, including generic calls, function-value inference, remaining numeric policies and
+Unsupported type facts, including inferred/constrained generic calls, function-value inference, remaining numeric policies and
 block/branch results, are explicitly deferred. Direct nominal field and method
 lookup runs after receiver inference, including known inherited members and
 type aliases. Supported method requirements are checked with retained witnesses.
-Generic substitution, dependent/property contracts, visibility,
+Generic inference/bounds, captured owners, dependent/property contracts, visibility,
 optional/ownership-wrapper members and bound method values remain pending. A successful
 check does **not** yet imply that all members exist, types match, ownership is valid,
 or executable code can be generated. Imports receive an explicit unsupported

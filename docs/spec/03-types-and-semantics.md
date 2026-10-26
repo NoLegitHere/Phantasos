@@ -882,8 +882,11 @@ without an expected type remains `Deferred`.
 initializer and destructor body. Analysis is structural and does not evaluate
 conditions: both arms of an `if` and both operands of `&&`, `||` and `??` are
 possible paths, `while` and `for` may run zero times, and `loop` exits only
-through `break`. A call to `panic` or to an expression of type `Never` ends
-its path. `match` is assumed exhaustive; exhaustiveness is checked separately.
+through `break`. A call to `panic` or a call of (non-optional) type `Never`
+ends its path. Inside `try?`, a `throw` or any call can leave the operand
+early and resume after the `try?` expression. `match` is assumed exhaustive
+(exhaustiveness is checked separately); a failed pattern or guard continues
+to the next arm with the guard's effects.
 
 - **All-path return (`E0500`).** A block-bodied function whose declared result
   is not `Unit` must reach `return`, `throw` or a diverging call on every path;
@@ -898,8 +901,8 @@ its path. `match` is assumed exhaustive; exhaustiveness is checked separately.
   `let` locals and globals, pattern and `for` bindings, and `if let` bindings
   are read-only. A `let` local declared without an initializer may be assigned
   once while it is definitely unassigned, so each path initializes it exactly
-  once. Assignment anywhere in a loop body counts as possibly repeated on the
-  next iteration.
+  once. Assignment anywhere in a loop's condition or body counts as possibly
+  repeated on the next iteration.
 
 Field and receiver mutability (`mut fun`, `init` ordering), moves, borrows and
 destruction remain pending, as do stored-field initialization and global

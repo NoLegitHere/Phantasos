@@ -72,3 +72,28 @@ fun global() { limit = 2 }
 fun bound(values: [Int]) {
     for v in values { v = 1 }
 }
+
+fun caught(): Int {
+    let x = try? unsafe { throw 1 }
+}
+
+fun guarded(v: Int) {
+    let x: Int
+    match v {
+        _ if unsafe { x = 1
+            false } -> {}
+        _ -> { x = 2 }
+    }
+}
+
+fun condition(c: Bool) {
+    let x: Int
+    while unsafe { x = 1
+        c } {}
+}
+
+fun maybe(): Never? = none
+
+fun optionalNever(): Int {
+    maybe()
+}

@@ -76,3 +76,27 @@ flow_errors.phs:73:23: error[E0502]: cannot assign to immutable 'v'
 flow_errors.phs:73:9: note: bound here; only 'var' locals can be reassigned
    73 |     for v in values { v = 1 }
       |         ^
+flow_errors.phs:78:1: error[E0500]: function 'caught' must return 'Int' on every path
+   78 | }
+      | ^
+flow_errors.phs:76:5: note: the end of the body is reachable without a 'return'
+   76 | fun caught(): Int {
+      |     ^^^^^^
+flow_errors.phs:85:16: error[E0502]: 'x' may already be initialized; a 'let' binding is assigned only once
+   85 |         _ -> { x = 2 }
+      |                ^
+flow_errors.phs:81:9: note: declared with 'let' here
+   81 |     let x: Int
+      |         ^
+flow_errors.phs:91:20: error[E0502]: 'x' may already be initialized; a 'let' binding is assigned only once
+   91 |     while unsafe { x = 1
+      |                    ^
+flow_errors.phs:90:9: note: declared with 'let' here
+   90 |     let x: Int
+      |         ^
+flow_errors.phs:99:1: error[E0500]: function 'optionalNever' must return 'Int' on every path
+   99 | }
+      | ^
+flow_errors.phs:97:5: note: the end of the body is reachable without a 'return'
+   97 | fun optionalNever(): Int {
+      |     ^^^^^^^^^^^^^

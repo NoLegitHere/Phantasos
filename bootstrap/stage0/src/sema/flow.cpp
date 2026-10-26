@@ -15,7 +15,9 @@
 
 #include "sema/flow.hpp"
 
+#include <initializer_list>
 #include <unordered_map>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -305,20 +307,23 @@ private:
         }
     }
 
-    // A set of `let` locals that some statement inside body assigns.
-    Bits assigned_lets(const BlockExpr* body) const {
+    // A set of `let` locals that some statement inside a loop's condition or body assigns.
+    Bits assigned_lets(std::initializer_list<const Expr*> parts) const {
         Bits result(tracked_, false);
-        each_stmt(body, [&](const Stmt& stmt) {
-            const auto* assign = as<AssignStmt>(&stmt);
-            const auto* name = assign ? as<NameExpr>(unparen(assign->target)) : nullptr;
-            const auto* found = name ? local(target(*name)) : nullptr;
-            if (found && found->tracked != kUntracked && found->decl->binding != Binding::Var) result.set(found->tracked, true);
-        });
+        for (const Expr* part : parts) {
+            if (!part) continue;
+            each_stmt(part, [&](const Stmt& stmt) {
+                const auto* assign = as<AssignStmt>(&stmt);
+                const auto* name = assign ? as<NameExpr>(unparen(assign->target)) : nullptr;
+                const auto* found = name ? local(target(*name)) : nullptr;
+                if (found && found->tracked != kUntracked && found->decl->binding != Binding::Var) result.set(found->tracked, true);
+            });
+        }
         return result;
     }
 
     bool diverges(const CallExpr& call) const {
-        if (types_.expression(&call).kind == ScalarType::Never) return true;
+        if (types_.expression(&call) == ScalarType{ScalarType::Never}) return true;
         const auto* callee = as<NameExpr>(unparen(call.callee));
         if (!callee) return false;
         const auto id = target(*callee);
@@ -336,6 +341,14 @@ private:
             stack.pop_back();
             if (!done) {
                 if (control(*expr)) { control_flow(*expr, state); continue; }
+                if (const auto* unary = as<UnaryExpr>(expr); unary && unary->op == UnOp::TryOpt) {
+                    // A caught error resumes after the `try?` expression.
+                    caught_.push_back(dead());
+                    eval(unary->operand, state);
+                    merge(state, caught_.back());
+                    caught_.pop_back();
+                    continue;
+                }
                 stack.push_back({expr, true});
                 if (conditional(*expr)) { stack.push_back({cast<BinaryExpr>(expr)->lhs, false}); continue; }
                 children.clear();
@@ -346,6 +359,8 @@ private:
             }
             if (const auto* name = as<NameExpr>(expr)) read(*name, state);
             else if (const auto* call = as<CallExpr>(expr)) {
+                // Any call inside `try?` may throw after its operands have run.
+                if (!caught_.empty()) merge(caught_.back(), state);
                 if (diverges(*call)) state = dead();
             } else if (conditional(*expr)) {
                 // The right operand runs on only some paths.
@@ -364,11 +379,13 @@ private:
         } else if (const auto* match = as<MatchExpr>(&expr)) {
             eval(match->scrutinee, state);
             if (match->arms.empty()) return;
-            // Exhaustiveness is checked separately; some arm always runs.
+            // Exhaustiveness is checked separately; some arm always runs. A
+            // failed pattern or guard continues to the next arm with its effects.
             State out = dead();
             for (const auto& arm : match->arms) {
                 State path = state;
                 eval(arm.guard, path);
+                if (arm.guard) merge(state, path);
                 eval(arm.body, path);
                 merge(out, path);
             }
@@ -393,8 +410,9 @@ private:
 
     void loop(const Cond* cond, const BlockExpr* body, State& state, bool exits_normally) {
         // Assignment never removes initialization, so the loop head keeps the
-        // entry's definite facts; any `let` assigned in the body may already be set.
-        state.maybe.unite(assigned_lets(body));
+        // entry's definite facts; any `let` assigned in the condition or body
+        // may already be set when it runs again.
+        state.maybe.unite(assigned_lets({cond ? cond->expr : nullptr, body}));
         if (cond) eval(cond->expr, state);
         breaks_.push_back(dead());
         State path = state;
@@ -422,6 +440,7 @@ private:
                 break;
             case StmtKind::Throw:
                 eval(cast<ThrowStmt>(&stmt)->value, state);
+                if (!caught_.empty()) merge(caught_.back(), state);
                 state = dead();
                 break;
             case StmtKind::Break:
@@ -443,9 +462,12 @@ private:
             case StmtKind::Loop: loop(nullptr, cast<LoopStmt>(&stmt)->body, state, false); break;
             case StmtKind::Defer: {
                 // Cleanup reads see the state at registration and never initialize the scope.
+                // Its errors are handled inside it, never by an enclosing `try?`.
                 State cleanup = state;
                 breaks_.push_back(dead());
+                auto caught = std::exchange(caught_, {});
                 control_flow(*cast<DeferStmt>(&stmt)->body, cleanup);
+                caught_ = std::move(caught);
                 breaks_.pop_back();
                 break;
             }
@@ -470,6 +492,7 @@ private:
     std::unordered_map<u32, const Param*> params_;
     std::unordered_map<u32, Local> locals_;
     std::vector<State> breaks_;
+    std::vector<State> caught_;  // error exits of enclosing `try?` expressions
     usize tracked_ = 0;
 };
 

@@ -222,6 +222,62 @@ fun f(): Int {
 )", {DiagCode::ScalarTypeMismatch});
 }
 
+void caught_errors_guards_and_conditions() {
+    Frontend f;
+    f.check(R"(
+fun caught(): Int {
+    let x = try? unsafe { throw 1 }
+}
+fun caughtBeforeInit(c: Bool): Int {
+    var y: Int
+    let z = try? unsafe {
+        if c { throw 1 }
+        y = 2
+        1
+    }
+    return y
+}
+fun guarded(v: Int) {
+    let x: Int
+    match v {
+        _ if unsafe { x = 1
+            false } -> {}
+        _ -> { x = 2 }
+    }
+}
+fun condition(c: Bool) {
+    let x: Int
+    while unsafe { x = 1
+        c } {}
+}
+fun maybe(): Never? = none
+fun optionalNever(): Int {
+    maybe()
+}
+)", {DiagCode::MissingReturn, DiagCode::UninitializedUse, DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment,
+     DiagCode::MissingReturn});
+
+    Frontend valid;
+    valid.check(R"(
+fun arms(v: Int): Int {
+    let x: Int
+    match v {
+        0 -> { x = 1 }
+        _ -> { x = 2 }
+    }
+    return x
+}
+fun initialized(): Int {
+    var y: Int
+    let z = try? unsafe {
+        y = 1
+        throw 2
+    }
+    return y
+}
+)");
+}
+
 void long_trees() {
     std::string chain = "fun f(a: Bool): Int {\n    var y: Int\n    let c = a";
     for (int i = 0; i < 50000; ++i) chain += " || a";
@@ -244,5 +300,6 @@ int main() {
     immutability();
     branch_results();
     gated_by_type_errors();
+    caught_errors_guards_and_conditions();
     long_trees();
 }

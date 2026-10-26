@@ -118,3 +118,15 @@ flow_errors.phs:110:45: error[E0502]: cannot assign to immutable 'a'
 flow_errors.phs:110:19: note: parameters are read-only unless declared 'inout'
   110 | fun rewritesParam(a: Int, b: Int = unsafe { a = 1
       |                   ^
+flow_errors.phs:116:5: error[E0501]: 'x' is used before it is initialized
+  116 |     x }) {}
+      |     ^
+flow_errors.phs:115:34: note: declared here without an initializer
+  115 | class Derived: Base(unsafe { var x: Int
+      |                                  ^
+flow_errors.phs:119:27: error[E0502]: cannot assign to immutable 'a'
+  119 |     let b: Int = unsafe { a = 1
+      |                           ^
+flow_errors.phs:118:13: note: parameters are read-only unless declared 'inout'
+  118 | class Field(a: Int) {
+      |             ^

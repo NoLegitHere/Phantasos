@@ -289,9 +289,17 @@ fun twoCleanups() {
 }
 fun rewritesParam(a: Int, b: Int = unsafe { a = 1
     0 }) {}
+open class Base(x: Int) {}
+class Derived: Base(unsafe { var x: Int
+    x }) {}
+class Field(a: Int) {
+    let b: Int = unsafe { a = 1
+        0 }
+}
 )", {DiagCode::MissingReturn, DiagCode::UninitializedUse, DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment,
      DiagCode::MissingReturn, DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment,
-     DiagCode::UninitializedUse, DiagCode::UninitializedUse, DiagCode::ImmutableAssignment});
+     DiagCode::UninitializedUse, DiagCode::UninitializedUse, DiagCode::ImmutableAssignment,
+     DiagCode::UninitializedUse, DiagCode::ImmutableAssignment});
 
     Frontend valid;
     valid.check(R"(

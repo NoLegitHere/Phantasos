@@ -109,3 +109,13 @@ fun defaulted(value: Int = unsafe { var x: Int
 
 fun rewritesParam(a: Int, b: Int = unsafe { a = 1
     0 }) {}
+
+open class Base(x: Int) {}
+
+class Derived: Base(unsafe { var x: Int
+    x }) {}
+
+class Field(a: Int) {
+    let b: Int = unsafe { a = 1
+        0 }
+}

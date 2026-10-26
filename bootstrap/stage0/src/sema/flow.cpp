@@ -184,6 +184,8 @@ public:
             work.pop_back();
             if (const auto* type = as_type_decl(item)) {
                 defaults(type->ctor_params);
+                for (const auto& base : type->supers)
+                    for (const auto& arg : base.args) callable(type->ctor_params, arg.value, nullptr);
                 for (const Item* member : type->members) work.push_back({member, type});
             } else if (const auto* ext = as<ExternItem>(item)) {
                 for (const Item* nested : ext->items) work.push_back({nested, owner});
@@ -191,7 +193,8 @@ public:
                 defaults(fun->sig.params);
                 if (fun->body) callable(fun->sig.params, fun->body, fun);
             } else if (const auto* var = as<VarItem>(item)) {
-                if (var->init) callable({}, var->init, nullptr);
+                // Field initializers see the owner's primary-constructor parameters.
+                if (var->init) callable(owner ? owner->ctor_params : List<Param>{}, var->init, nullptr);
             } else if (const auto* init = as<InitItem>(item)) {
                 defaults(init->params);
                 if (init->body) callable(init->has_params || !owner ? init->params : owner->ctor_params, init->body, nullptr);

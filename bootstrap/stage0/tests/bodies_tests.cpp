@@ -245,14 +245,27 @@ interface Has { let value: Int }
 fun readHas<T: Has>(x: T): Int = x.value
 let forwardRead: Int = readHas(ForwardCell())
 class ForwardCell: Has { let value = 1 }
+interface InferredReq { let value = 1 }
+class InferredCell: InferredReq { let value = 2 }
+fun readInferred<T: InferredReq>(x: T): Int = x.value
+let inferredReqValue: Int = readInferred(InferredCell())
+class ChainBox<T>(let value: T, let next: Self) {}
+fun makeChainBox(): ChainBox<Int> { loop {} }
+let constructedSelf = ChainBox<Int>(2, makeChainBox())
+interface LeafTrait { fun read(): Int }
+interface Branch { type Child }
+interface RootType { type Item: Branch }
+fun multiProjectedWhere<T: RootType>(x: T.Item.Child): Int where T.Item.Child: LeafTrait = x.read()
 )");
     CHECK(f.value("inferred") == Type::Int && f.value("echoed") == Type::Int && f.value("leafEchoed") == Type::Int);
-    CHECK(f.name(f.value("passed")) == "Target" && f.value("forwardRead") == Type::Int);
+    CHECK(f.name(f.value("passed")) == "Target" && f.value("forwardRead") == Type::Int && f.value("inferredReqValue") == Type::Int);
+    CHECK(f.name(f.value("constructedSelf")) == "ChainBox<Int>");
     for (std::string_view name : {"echoed", "leafEchoed"}) {
         const auto& call = f.call(name); // the class implementation, not the bodiless requirement
         CHECK(call.state == CallState::Resolved && ast::cast<ast::FunItem>(f.result.resolution->binding(call.target).item)->body);
     }
     CHECK(body(f, "nested").state == ExpansionState::Resolved && body(f, "chained").state == ExpansionState::Resolved);
+    CHECK(body(f, "multiProjectedWhere").state == ExpansionState::Resolved);
     const auto* signature = f.result.scalar_types->signature(f.id("nested", BindingKind::Function));
     CHECK(signature && signature->result.kind == Type::Nominal);
     Frontend mismatch;
@@ -262,6 +275,10 @@ class ForwardCell: Has { let value = 1 }
     Frontend forwardMismatch;
     forwardMismatch.check("interface Has { let value: Int }\nfun read<T: Has>(x: T): Int = x.value\nlet wrong: Bool = read(Cell())\nclass Cell: Has { let value = 1 }",
                           {DiagCode::ScalarTypeMismatch});
+    Frontend wrongInferredReq;
+    wrongInferredReq.check("interface I { let value = 1 }\nclass Bad: I { let value = true }", {DiagCode::MissingImplementation});
+    Frontend wrongCtorSelf;
+    wrongCtorSelf.check("class Box<T>(let value: T, let next: Self) { fun bad(): Box<Int> = Box<Int>(2, self) }", {DiagCode::NoMatchingCall});
 }
 } // namespace
 

@@ -475,11 +475,13 @@ private:
         speculative_annotations_.emplace_back();
         return {ExpansionState::Resolved, context};
     }
-    Type context_self(usize context, BindingId owner = {}) const {
+    Type context_self(usize context, BindingId owner = {}) {
         while (context) {
             if (known(environments_[context].self) &&
                 (!owner.valid() || resolution_.binding(owner).item->kind == ItemKind::Interface || environments_[context].declaration == owner))
                 return environments_[context].self;
+            if (owner.valid() && environments_[context].declaration == owner && resolution_.binding(owner).item->kind != ItemKind::Interface)
+                return instance(owner, context);
             context = environments_[context].parent;
         }
         return Type::Deferred;
@@ -547,39 +549,57 @@ private:
                     for (const auto* bound : clause.bounds) add(id, source, bound, 0, false);
                 else for (const auto* bound : clause.bounds) add(id, source, bound);
             }
-            if (const auto* fun = as<FunItem>(binding.item); fun && !fun->sig.generics.empty()) {
-                // A well-formed incoming nominal type supplies its own bounds
-                // as premises for this callable's formal parameters. An earlier
-                // parameter may establish bounds needed to resolve a later one.
+            const auto* fun = as<FunItem>(binding.item);
+            if (!where.empty() || (fun && !fun->sig.generics.empty())) {
+                // Incoming parameter bounds or nested projections may be needed to
+                // resolve later parameters and multi-step where-clause subjects.
                 std::unordered_set<usize> seen;
-                for (usize count = std::numeric_limits<usize>::max();;) {
+                for (usize count = std::numeric_limits<usize>::max(), pass = 0;; ++pass) {
                     usize before = 0;
                     for (const auto& [_, bounds] : formal_bounds_) before += bounds.size();
+                    for (const auto& [_, bounds] : projection_bounds_) before += bounds.size();
                     if (before == count) break;
                     count = before;
-                    clear_deferred_annotations();
-                    std::vector<Type> work;
-                    for (const auto& param : fun->sig.params) work.push_back(annotation(param.type));
-                    while (!work.empty()) {
-                        const auto type = work.back(); work.pop_back();
-                        const auto* pointer = types_.descriptor(type);
-                        if (!pointer || !seen.insert(type.detail).second) continue;
-                        const auto descriptor = *pointer;
-                        if (type.kind == Type::Nominal) {
-                            const auto params = generic_parameters(descriptor.declaration);
-                            if (params.size() == descriptor.arguments.size()) {
-                                const auto context = application(descriptor.declaration, descriptor.arguments, 0, fun->name.span).context;
-                                for (usize p = 0; p < params.size(); ++p)
-                                    for (const auto* bound : params[p].bounds) add(id, descriptor.arguments[p], bound, context);
-                                if (const auto* declaration = as_type_decl(resolution_.binding(descriptor.declaration).item))
-                                    for (const auto& clause : declaration->where)
-                                        for (const auto* bound : clause.bounds) add(id, annotation(clause.type, context), bound, context);
-                            }
-                            for (auto arg : descriptor.arguments) work.push_back(arg);
-                        } else if (type.kind == Type::Function) {
-                            for (auto param : descriptor.parameters) work.push_back(param);
-                            work.push_back(descriptor.result); if (descriptor.throws) work.push_back(descriptor.error);
-                        } else if (type.kind != Type::TypeParameter) work.push_back(descriptor.element);
+                    if (pass) {
+                        clear_deferred_annotations();
+                        for (const auto& clause : where) {
+                            const auto source = annotation(clause.type);
+                            if (binding.kind == BindingKind::Type && binding.item->kind == ItemKind::Interface && clause.type->kind == TypeKind::SelfType)
+                                for (const auto* bound : clause.bounds) add(id, source, bound, 0, false);
+                            else for (const auto* bound : clause.bounds) add(id, source, bound);
+                        }
+                    }
+                    if (fun && !fun->sig.generics.empty()) {
+                        std::vector<Type> work;
+                        for (const auto& param : fun->sig.params) work.push_back(annotation(param.type));
+                        while (!work.empty()) {
+                            const auto type = work.back(); work.pop_back();
+                            const auto* pointer = types_.descriptor(type);
+                            if (!pointer || !seen.insert(type.detail).second) continue;
+                            const auto descriptor = *pointer;
+                            if (type.kind == Type::Nominal) {
+                                const auto params = generic_parameters(descriptor.declaration);
+                                if (params.size() == descriptor.arguments.size()) {
+                                    const auto context = application(descriptor.declaration, descriptor.arguments, 0, fun->name.span).context;
+                                    for (usize p = 0; p < params.size(); ++p)
+                                        for (const auto* bound : params[p].bounds) add(id, descriptor.arguments[p], bound, context);
+                                    if (const auto* declaration = as_type_decl(resolution_.binding(descriptor.declaration).item))
+                                        for (const auto& clause : declaration->where)
+                                            for (const auto* bound : clause.bounds) add(id, annotation(clause.type, context), bound, context);
+                                }
+                                for (auto arg : descriptor.arguments) work.push_back(arg);
+                            } else if (type.kind == Type::Function) {
+                                for (auto param : descriptor.parameters) work.push_back(param);
+                                work.push_back(descriptor.result); if (descriptor.throws) work.push_back(descriptor.error);
+                            } else if (type.kind != Type::TypeParameter) work.push_back(descriptor.element);
+                        }
+                    }
+                    if (!where.empty()) {
+                        const ScopedValue ready(bounds_ready_, true);
+                        for (usize p = 0; p < projection_types_.size(); ++p) {
+                            const auto descriptor = *types_.descriptor(projection_types_[p]);
+                            (void)project(descriptor.element, descriptor.declaration);
+                        }
                     }
                 }
             }
@@ -1501,11 +1521,14 @@ private:
             return Relation::Deferred;
         }
         const auto from_context = owner_context(member_owner(candidate), receiver);
-        if (!nodes_[candidate.value].annotation && !known(nodes_[candidate.value].value.type) && nodes_[candidate.value].state == 0)
-            pending_dependencies_.push_back(candidate.value);
+        const auto to_context = owner_context(member_owner(requirement), receiver);
+        for (const auto field : {candidate, requirement})
+            if (!nodes_[field.value].annotation && !known(nodes_[field.value].value.type) && nodes_[field.value].state == 0)
+                pending_dependencies_.push_back(field.value);
         const auto from = nodes_[candidate.value].annotation ? annotation(nodes_[candidate.value].annotation, from_context)
             : substitute_type(nodes_[candidate.value].value.type, from_context);
-        const auto to = annotation(nodes_[requirement.value].annotation, owner_context(member_owner(requirement), receiver));
+        const auto to = nodes_[requirement.value].annotation ? annotation(nodes_[requirement.value].annotation, to_context)
+            : substitute_type(nodes_[requirement.value].value.type, to_context);
         if (!known(from) || !known(to)) return Relation::Deferred;
         if (from != to) return Relation::No;
         type = from; implementation = candidate; return Relation::Yes;

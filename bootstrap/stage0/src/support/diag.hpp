@@ -94,6 +94,8 @@ enum class DiagCode : u16 {
     MissingReturn = 500,
     UninitializedUse = 501,
     ImmutableAssignment = 502,
+    UnsupportedCodegen = 600,
+    InvalidEntryPoint = 601,
 };
 
 constexpr std::string_view diag_code(DiagCode code) {
@@ -160,6 +162,8 @@ constexpr std::string_view diag_code(DiagCode code) {
         case DiagCode::MissingReturn: return "E0500";
         case DiagCode::UninitializedUse: return "E0501";
         case DiagCode::ImmutableAssignment: return "E0502";
+        case DiagCode::UnsupportedCodegen: return "E0600";
+        case DiagCode::InvalidEntryPoint: return "E0601";
     }
     unreachable();
 }

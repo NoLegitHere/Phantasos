@@ -58,11 +58,16 @@ public:
 
     [[nodiscard]] const ast::File* parse(FileId file);
     [[nodiscard]] CheckResult check(FileId file);
+    // Runs check, then the stage0 code generation subset gate (E0600/E0601)
+    // if checking succeeded. True when the file can be compiled by stage0.
+    [[nodiscard]] bool check_codegen(FileId file);
 
 private:
     struct FileState {
         const ast::File* syntax = nullptr;
         bool checked = false;
+        bool gated = false;
+        bool codegen = false;
         std::optional<Resolution> resolution;
         std::optional<ScalarTypes> scalar_types;
     };

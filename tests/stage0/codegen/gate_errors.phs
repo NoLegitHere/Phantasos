@@ -1,0 +1,50 @@
+// Copyright 2026 The Phantasos Authors
+// SPDX-License-Identifier: Apache-2.0
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// Expressions and statements outside the subset.
+
+fun text(): Int {
+    let s = "hi"
+    return if s == "hi" { 1 } else { 0 }
+}
+
+fun loops(n: Int): Int {
+    var total = 0
+    for x in 0..n { total += x }
+    defer { total = 0 }
+    total <<= 1
+    return total >> 1
+}
+
+fun matching(x: Int): Int = match x {
+    0 -> 1
+    _ -> 2
+}
+
+fun values(): Int {
+    let f = values
+    return 0
+}
+
+fun inferred(c: Bool): Int {
+    let v = if c { 1 } else { 2 }
+    return v + 1
+}
+
+fun blocks(): Int {
+    return unsafe { 0 }
+}
+
+fun main(): Int = 0

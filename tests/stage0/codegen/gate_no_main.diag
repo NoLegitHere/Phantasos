@@ -1,0 +1,3 @@
+gate_no_main.phs:1:1: error[E0601]: a program needs an entry point 'fun main()'
+    1 | // Copyright 2026 The Phantasos Authors
+      | ^

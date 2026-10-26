@@ -20,6 +20,7 @@ Layout (relative to tests/stage0):
     parser/*.phs       -> `parse`, stdout compared with *.ast
     diagnostics/*.phs  -> `check`, stderr compared with *.diag (must fail)
     semantics/*.phs    -> `check`, stderr compared with *.diag (may succeed)
+    codegen/*.phs      -> `gate`,  stderr compared with *.diag (may succeed)
 
 For lexer/parser tests, stderr is compared with *.diag when that file exists;
 otherwise the test must succeed with empty stderr.
@@ -41,7 +42,9 @@ SUITES = {
     "parser": ("parse", ".ast"),
     "diagnostics": ("check", None),
     "semantics": ("check", None),
+    "codegen": ("gate", None),
 }
+CHECK_SUITES = ("diagnostics", "semantics", "codegen")
 
 
 def norm(text: str) -> str:
@@ -68,13 +71,13 @@ def run_case(exe: Path, suite: str, src: Path, update: bool) -> list[str]:
     if out_ext:
         expected_files.append((src.with_suffix(out_ext), stdout))
     diag_file = src.with_suffix(".diag")
-    if suite in ("diagnostics", "semantics") or diag_file.exists() or (update and stderr):
+    if suite in CHECK_SUITES or diag_file.exists() or (update and stderr):
         expected_files.append((diag_file, stderr))
 
     if update:
         if proc.returncode not in (0, 1):
             return [f"abnormal exit code {proc.returncode}; expected files not updated"]
-        if suite in ("diagnostics", "semantics"):
+        if suite in CHECK_SUITES:
             expected_code = check_exit_code(suite, src, stderr)
             if proc.returncode != expected_code:
                 return [f"expected exit code {expected_code}, got {proc.returncode}; expected files not updated"]
@@ -106,7 +109,7 @@ def run_case(exe: Path, suite: str, src: Path, update: bool) -> list[str]:
     # anything else is a crash or infrastructure failure.
     if proc.returncode not in (0, 1):
         failures.append(f"abnormal exit code {proc.returncode}")
-    elif suite in ("diagnostics", "semantics"):
+    elif suite in CHECK_SUITES:
         if stdout:
             failures.append(f"unexpected stdout:\n{stdout}")
         if diag_file.exists():

@@ -297,7 +297,8 @@ private:
         const Place fixed{Access::Immutable, subject, field.declared, std::string(field.note)};
         if (field.is_static) return field.var ? Place{Access::Mutable} : fixed;
         if (base.access == Access::Unknown) return {};
-        if (!field.var) return fixed;
+        // A `let` field can't give back write access that a borrow took away.
+        if (!field.var) return base.access == Access::ReadOnly ? base : fixed;
         // Value types are immutable all the way down; a class object can be
         // changed through any reference that is not a borrow.
         if (storage == Storage::Value) return base;
@@ -305,9 +306,23 @@ private:
         return {};
     }
 
+    // A bare field name inside a method. Inherited fields are found by the
+    // type pass, so their lexical reference stays deferred.
+    const ResolvedBinding* implicit_field(const NameExpr& name) const {
+        const auto id = target(name);
+        if (id.valid()) return resolution_.binding(id).kind == BindingKind::Field ? &resolution_.binding(id) : nullptr;
+        const auto* record = types_.member(&name);
+        if (!record || record->state != ResolutionState::Resolved || record->candidates.size() != 1) return nullptr;
+        const auto& binding = resolution_.binding(record->candidates.front());
+        return binding.kind == BindingKind::Field ? &binding : nullptr;
+    }
+
     Place name_place(const NameExpr& name) const {
         const auto id = target(name);
-        if (!id.valid()) return {};
+        if (!id.valid()) {
+            const auto* field = implicit_field(name);
+            return field ? field_place(*field, self_, self_storage_) : Place{};
+        }
         const auto& binding = resolution_.binding(id);
         const auto subject = "'" + std::string(names_.str(name.name.sym)) + "'";
         switch (binding.kind) {
@@ -346,7 +361,7 @@ private:
             expr = unparen(member->base);
         }
         Place result;
-        if (expr->kind == ExprKind::SelfValue) result = self_;
+        if (expr->kind == ExprKind::SelfValue || expr->kind == ExprKind::Super) result = self_;
         else if (expr->kind == ExprKind::Call) result = {Access::Temporary, "a temporary value"};
         else if (const auto* name = as<NameExpr>(expr)) result = name_place(*name);
         for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
@@ -405,8 +420,10 @@ private:
         if (checked->receiver) {
             found = place(checked->receiver);
             kind = storage(types_.expression(checked->receiver));
-        } else if (unparen(call.callee)->kind == ExprKind::Name) {
-            found = self_;
+        } else {
+            const Expr* callee = unparen(call.callee);
+            if (const auto* generic = as<GenericInstExpr>(callee)) callee = unparen(generic->base);
+            if (callee->kind == ExprKind::Name) found = self_;
         }
         const bool rejected = found.access == Access::ReadOnly ||
                               (kind == Storage::Value && (found.access == Access::Immutable || found.access == Access::Temporary));
@@ -488,7 +505,10 @@ private:
 
     void write(const NameExpr& name, State& state) {
         const auto id = target(name);
-        if (!id.valid()) return;
+        if (!id.valid()) {
+            if (const auto* field = implicit_field(name)) write_field(name, *field);
+            return;
+        }
         const auto& binding = resolution_.binding(id);
         switch (binding.kind) {
             case BindingKind::Local: {
@@ -524,20 +544,21 @@ private:
                 if (var && var->binding != Binding::Var) immutable(name, binding.name.span, "declared with 'let' here");
                 return;
             }
-            case BindingKind::Field: {
-                // An implicit `self` field.
-                const Place found = field_place(binding, self_, self_storage_);
-                if (found.access == Access::Unknown || found.access == Access::Mutable) return;
-                const auto field = names_.str(name.name.sym);
-                if (found.declared.lo != binding.name.span.lo)
-                    restricted(name.span, std::format("cannot assign to field '{}' because 'self' is {}", field,
-                                                      describe(found.access)), found);
-                else
-                    restricted(name.span, std::format("cannot assign to immutable field '{}'", field), found);
-                return;
-            }
+            case BindingKind::Field: write_field(name, binding); return;
             default: return;
         }
+    }
+
+    // An assignment to a bare field name, through the implicit `self`.
+    void write_field(const NameExpr& name, const ResolvedBinding& binding) {
+        const Place found = field_place(binding, self_, self_storage_);
+        if (found.access == Access::Unknown || found.access == Access::Mutable) return;
+        const auto field = names_.str(name.name.sym);
+        if (found.declared.lo != binding.name.span.lo)
+            restricted(name.span, std::format("cannot assign to field '{}' because 'self' is {}", field,
+                                              describe(found.access)), found);
+        else
+            restricted(name.span, std::format("cannot assign to immutable field '{}'", field), found);
     }
 
     // A set of `let` locals that some statement inside a loop's condition or body assigns.

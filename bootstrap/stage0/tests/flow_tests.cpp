@@ -295,6 +295,34 @@ fun main() {
      DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment,
      DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment,
      DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment});
+    Frontend h;
+    h.check(R"(
+open class Base(var x: Int, let y: Int) {
+    mut fun bump() { x += 1 }
+}
+class Derived: Base(1, 2) {
+    fun look() {
+        super.x = 1
+        super.bump()
+        x = 1
+        y = 2
+    }
+}
+class Child(var n: Int) {
+    mut fun grow() { n += 1 }
+}
+class Parent(let child: Child) {}
+fun change(p: Parent) {
+    p.child.n = 1
+    p.child.grow()
+}
+struct Counter(var n: Int) {
+    mut fun bump<T>() { n += 1 }
+    fun read() { bump<Int>() }
+}
+)", {DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment,
+     DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment,
+     DiagCode::ImmutableAssignment});
 }
 
 void branch_results() {

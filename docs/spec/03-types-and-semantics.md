@@ -925,8 +925,11 @@ pattern always runs its guard, and arms after an unguarded one are unreachable.
     to every field along a path like `a.b.c`.
   - A class or actor instance can be modified through any reference except a
     borrow: a default or `borrow` parameter, or `self` outside a `mut fun`.
-  - Inside a method, a bare field name or method call uses `self`, which is
-    read-only unless the method is a `mut fun`. Assigning to `self` itself
+    A borrow stays read-only through every field along the path, `let` or
+    `var`.
+  - Inside a method, a bare field name or method call, including an inherited
+    field or an explicitly specialized generic method, uses `self`, and so does
+    `super`. `self` is read-only unless the method is a `mut fun`. Assigning to `self` itself
     follows the same rule. In an `init` or `deinit`, fields of `self` can
     always be assigned, since construction rules are separate.
 

@@ -118,3 +118,45 @@ field_mutability_errors.phs:64:5: error[E0502]: cannot call 'mut fun bump' becau
 field_mutability_errors.phs:23:36: note: declared with 'let' here
    23 | struct Outer(var inner: Inner, let fixed: Inner) {
       |                                    ^^^^^
+field_mutability_errors.phs:74:9: error[E0502]: cannot assign to field 'x' because 'self' is read-only
+   74 |         super.x = 1
+      |         ^^^^^^^
+field_mutability_errors.phs:73:9: note: 'self' is read-only in a method without 'mut'
+   73 |     fun look() {
+      |         ^^^^
+field_mutability_errors.phs:75:9: error[E0502]: cannot call 'mut fun bump' because 'self' is read-only
+   75 |         super.bump()
+      |         ^^^^^^^^^^
+field_mutability_errors.phs:73:9: note: 'self' is read-only in a method without 'mut'
+   73 |     fun look() {
+      |         ^^^^
+field_mutability_errors.phs:76:9: error[E0502]: cannot assign to field 'x' because 'self' is read-only
+   76 |         x = 1
+      |         ^
+field_mutability_errors.phs:73:9: note: 'self' is read-only in a method without 'mut'
+   73 |     fun look() {
+      |         ^^^^
+field_mutability_errors.phs:77:9: error[E0502]: cannot assign to field 'y' because 'self' is read-only
+   77 |         y = 2
+      |         ^
+field_mutability_errors.phs:73:9: note: 'self' is read-only in a method without 'mut'
+   73 |     fun look() {
+      |         ^^^^
+field_mutability_errors.phs:85:5: error[E0502]: cannot assign to field 'n' because 'p' is read-only
+   85 |     p.child.n = 1
+      |     ^^^^^^^^^
+field_mutability_errors.phs:84:12: note: parameters are read-only unless declared 'inout'
+   84 | fun change(p: Parent) {
+      |            ^
+field_mutability_errors.phs:86:5: error[E0502]: cannot call 'mut fun grow' because 'p' is read-only
+   86 |     p.child.grow()
+      |     ^^^^^^^^^^^^
+field_mutability_errors.phs:84:12: note: parameters are read-only unless declared 'inout'
+   84 | fun change(p: Parent) {
+      |            ^
+field_mutability_errors.phs:90:18: error[E0502]: cannot call 'mut fun bump' because 'self' is read-only
+   90 |     fun read() { bump<Int>() }
+      |                  ^^^^^^^^^
+field_mutability_errors.phs:90:9: note: 'self' is read-only in a method without 'mut'
+   90 |     fun read() { bump<Int>() }
+      |         ^^^^

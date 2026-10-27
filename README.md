@@ -219,8 +219,12 @@ fan-out, trees and forests), build with `-DCMAKE_BUILD_TYPE=RelWithDebInfo
 ```sh
 python tests/stress/profile_hierarchy.py --stage0 build/prof/phantasos-stage0 --classes 10000,50000,200000
 python tests/stress/profile_hierarchy.py --stage0 build/prof/phantasos-stage0 --shapes chain --perf  # hottest functions (Linux perf)
+python tests/stress/profile_hierarchy.py --stage0 build/prof/phantasos-stage0 --classes 10000 --massif # peak heap by source line (valgrind)
 python tests/stress/gen_hierarchy.py --shape tree --classes 200000 -o big.phs                        # just the input file
 ```
+
+CI runs it at 5000 classes with `--max-kib-per-class`, which fails if peak
+memory per class grows past the budget.
 
 The build separates the `phantasos-stage0` CLI from the `phantasos_frontend`
 static library (CMake alias `Phantasos::Frontend`). Link the library to reuse

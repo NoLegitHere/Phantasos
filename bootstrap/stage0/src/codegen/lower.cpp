@@ -187,9 +187,29 @@ private:
     // ------------------------------------------------------------ facts
 
     Type lower_type(ScalarType type) {
+        if (type.kind == ScalarType::Tuple) return tuple(type);
         if (type.kind != ScalarType::Nominal) return scalar_type(type);
         PHS_ASSERT(type.optional_depth == 0);
         return structure(types_.descriptor(type)->declaration);
+    }
+
+    // A tuple type's layout, built once per type; its fields are the elements.
+    Type tuple(ScalarType type) {
+        PHS_ASSERT(type.optional_depth == 0);
+        if (const auto it = tuples_.find(type.detail); it != tuples_.end()) return aggregate(it->second);
+        Layout layout;
+        layout.name = types_.type_name(type, resolution_, names_);
+        layout.tuple = true;
+        const auto elements = types_.descriptor(type)->parameters;
+        for (usize i = 0; i < elements.size(); ++i) {
+            layout.fields.push_back(lower_type(elements[i]));
+            layout.names.push_back(std::to_string(i));
+        }
+        place_fields(program_, layout);
+        const auto index = static_cast<u32>(program_.layouts.size());
+        program_.layouts.push_back(std::move(layout));
+        tuples_.emplace(type.detail, index);
+        return aggregate(index);
     }
 
     // A struct's layout, built once; the gate rejects recursive structs.
@@ -330,6 +350,17 @@ private:
             case StmtKind::Var: {
                 const auto& var = *cast<VarStmt>(&stmt);
                 const Reg init = var.init ? any(var.init) : Reg{};
+                if (!var.names.empty()) {
+                    // Destructuring: one local per element of the tuple.
+                    for (usize i = 0; i < var.names.size(); ++i) {
+                        const auto id = values_.at(var.names[i].span.lo);
+                        const Reg dst = reg(lower_type(types_.binding(id)));
+                        locals_[id.value] = dst;
+                        // A diverging initializer has already ended the block.
+                        if (init.valid()) emit({.op = Op::Field, .dst = dst, .a = init, .imm = i});
+                    }
+                    return;
+                }
                 const auto id = values_.at(var.name.span.lo);
                 const Reg dst = reg(lower_type(types_.binding(id)));
                 locals_[id.value] = dst;
@@ -422,10 +453,16 @@ private:
     Place place(const Expr* expr) {
         Place out;
         expr = unparen(expr);
-        for (const auto* member = as<MemberExpr>(expr); member; member = as<MemberExpr>(expr)) {
-            out.fields.push_back(field(*member));
-            out.types.push_back(lower_type(scalar(member)));
-            expr = unparen(member->base);
+        while (true) {
+            if (const auto* member = as<MemberExpr>(expr)) {
+                out.fields.push_back(field(*member));
+                out.types.push_back(lower_type(scalar(member)));
+                expr = unparen(member->base);
+            } else if (const auto* element = as<TupleFieldExpr>(expr)) {
+                out.fields.push_back(element->index);
+                out.types.push_back(lower_type(scalar(element)));
+                expr = unparen(element->base);
+            } else break;
         }
         if (const auto* name = as<NameExpr>(expr); name && implicit_field(*name)) {
             out.fields.push_back(implicit_field(*name).value());
@@ -483,6 +520,10 @@ private:
                     work.push_back(checked->receiver);
             } else if (const auto* member = as<MemberExpr>(expr)) {
                 work.push_back(member->base);
+            } else if (const auto* element = as<TupleFieldExpr>(expr)) {
+                work.push_back(element->base);
+            } else if (const auto* tuple = as<TupleExpr>(expr)) {
+                for (const Expr* e : tuple->elems) work.push_back(e);
             }
         }
         return false;
@@ -650,6 +691,47 @@ private:
                     values.push_back(dst);
                     break;
                 }
+                case ExprKind::TupleField: {
+                    const auto& element = *cast<TupleFieldExpr>(expr);
+                    if (stage == 0) {
+                        tasks.push_back({element.base});
+                        break;
+                    }
+                    tasks.pop_back();
+                    const Reg base = values.back();
+                    values.pop_back();
+                    // A diverging base has already ended the block.
+                    if (!base.valid()) {
+                        values.push_back({});
+                        break;
+                    }
+                    (void)lower_type(scalar(element.base));
+                    const Reg dst = reg(lower_type(scalar(expr)));
+                    emit({.op = Op::Field, .dst = dst, .a = base, .imm = element.index});
+                    values.push_back(dst);
+                    break;
+                }
+                case ExprKind::Tuple: {
+                    // Elements run left to right, then the tuple is built whole.
+                    const auto& tuple = *cast<TupleExpr>(expr);
+                    if (stage < tuple.elems.size()) {
+                        tasks.push_back({tuple.elems[stage]});
+                        break;
+                    }
+                    tasks.pop_back();
+                    const auto count = static_cast<std::ptrdiff_t>(tuple.elems.size());
+                    std::vector<Reg> elements(values.end() - count, values.end());
+                    values.resize(values.size() - static_cast<usize>(count));
+                    // A diverging element has already ended the block.
+                    if (std::ranges::any_of(elements, [](Reg r) { return !r.valid(); })) {
+                        values.push_back({});
+                        break;
+                    }
+                    const Reg dst = reg(lower_type(scalar(expr)));
+                    emit({.op = Op::Make, .dst = dst, .args = std::move(elements)});
+                    values.push_back(dst);
+                    break;
+                }
                 case ExprKind::Call: {
                     const auto& call = *cast<CallExpr>(expr);
                     // A method's receiver value runs before the arguments; a
@@ -784,6 +866,7 @@ private:
     std::unordered_map<const FunItem*, u32> functions_;
     std::unordered_map<std::string, u64> strings_;  // literal bytes to their index in program_.strings
     std::unordered_map<usize, u32> layouts_;  // struct declaration binding to its index in program_.layouts
+    std::unordered_map<usize, u32> tuples_;   // tuple type descriptor to its index in program_.layouts
     std::unordered_map<u32, u32> fields_;     // field declaration offset to its declaration index
     std::unordered_map<const FunItem*, BindingId> owners_;  // a method's struct
     Reg self_;  // the current method's receiver

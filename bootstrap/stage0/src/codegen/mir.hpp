@@ -28,8 +28,9 @@
 // traps on overflow, and division and remainder also trap on a zero divisor.
 // A String is two words, a pointer to its UTF-8 bytes and their length; stage0
 // strings are literals, passed around whole. A struct is an aggregate value
-// with a Layout (abi.md A.2); aggregates are built whole, read one field at a
-// time, and updated by copying them with one field replaced.
+// with a Layout (abi.md A.2), and so is a tuple, whose fields are its elements;
+// aggregates are built whole, read one field at a time, and updated by copying
+// them with one field replaced.
 
 namespace phs::mir {
 
@@ -99,7 +100,8 @@ inline bool is_inout(const Function& fun, u32 param) { return param < fun.inout.
 // Fields keep declaration order; offsets place them by decreasing alignment,
 // stable among equal alignments, and the size is a multiple of the alignment.
 struct Layout {
-    std::string name;
+    std::string name;  // a struct's name, or a tuple type's spelling
+    bool tuple = false;  // fields named 0, 1, ...
     std::vector<Type> fields;
     std::vector<std::string> names;
     std::vector<u32> offsets;
@@ -110,7 +112,7 @@ struct Program {
     std::vector<Function> functions;
     u32 main = 0;
     std::vector<std::string> strings;  // literal bytes, each distinct value once
-    std::vector<Layout> layouts;       // each struct type once
+    std::vector<Layout> layouts;       // each struct and tuple type once
 };
 
 std::string type_name(const Program& program, Type type);

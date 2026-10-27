@@ -29,6 +29,9 @@ ABI**.
   size is rounded up to a multiple of it. A `String` field is two words with
   8-byte alignment. For example, `struct Flags(on: Bool, level: Int8, mask:
   UInt32)` puts `mask` at 0, `on` at 4 and `level` at 5, and takes 8 bytes.
+- A tuple is laid out like a struct whose fields are its elements, in
+  order, so `(Bool, Int, Int8)` puts element 1 at 0, element 0 at 8 and
+  element 2 at 9, and takes 16 bytes. It is passed like that struct too.
 
 ## A.3 Class objects
 ```

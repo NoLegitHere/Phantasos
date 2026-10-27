@@ -969,22 +969,25 @@ the subset, so that nothing half-checked reaches code generation:
   `String` values come from literals and are only passed around whole: as
   locals, arguments, results and fields. A plain struct whose fields all have
   value types of the subset is a value type too; a struct with a field of
-  any other type is rejected along with the field.
+  any other type is rejected along with the field. So is a non-optional
+  tuple whose elements all have value types of the subset.
 - **Statements.** `let` and `var` locals, with or without an initializer;
   assignment and compound assignment to locals, to `self` in a `mut fun`,
-  and to fields of either at any depth; `if`, `while`, `loop`, `break`,
+  and to fields of either at any depth, tuple elements included; tuple
+  destructuring with `let (a, b) = e` and `var (a, b) = e`; `if`, `while`, `loop`, `break`,
   `continue` and `return`.
 - **Expressions.** Integer, Boolean and string literals, `()`, local and
   parameter names, parentheses, direct calls to top-level functions, `print`
   (3.27), integer conversions, primary constructors of supported structs,
   reads of their fields, calls to their methods with an explicit or implicit
-  receiver, `self` and bare field names inside methods, unary `-`, `!` and `~`, arithmetic including
+  receiver, `self` and bare field names inside methods, tuple literals and
+  `.0` element reads, unary `-`, `!` and `~`, arithmetic including
   the wrapping forms, `&`, `|`, `^`, comparisons, `&&` and `||`. Used `if` and block
   results are allowed where their type is known (3.24).
 
 Everything else reports `E0600`. That includes shifts, `for`, `defer`,
 `throw`, `match`, `unsafe` blocks, operators on strings, string interpolation,
-floating-point values, arrays, tuples,
+floating-point values, arrays, comparisons of tuples,
 optionals, classes, enums, interfaces, members other than struct fields and
 method calls, method values, globals, and function values. A `mut fun` call
 needs a receiver rooted in a local, `self` or a field of `self`. A local whose
@@ -1114,5 +1117,6 @@ tuple, a parameter or a temporary they are `E0502`. Elements of class type
 still allow their fields to change through the reference.
 
 Equality and ordering of tuples remain deferred, like other composite
-comparisons; arithmetic on tuples is `E0401`. Stage0 type-checks tuples but does
-not generate code for them yet (3.25).
+comparisons; arithmetic on tuples is `E0401`. Stage0 generates code for tuples
+of the subset (3.25); they use the struct layout and passing of abi.md A.2 and
+A.6, with elements in place of fields.

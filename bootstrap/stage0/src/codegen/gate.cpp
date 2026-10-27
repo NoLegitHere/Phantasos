@@ -15,6 +15,7 @@
 
 #include "codegen/gate.hpp"
 
+#include <algorithm>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -225,11 +226,17 @@ private:
         const auto children = [&](const TypeDeclItem& type) {
             std::vector<usize> out;
             for (const auto& param : type.ctor_params) {
-                const auto field = types_.binding(values_.at(param.name.span.lo));
-                const auto* descriptor = field.kind == ScalarType::Nominal && !field.optional_depth
-                                             ? types_.descriptor(field) : nullptr;
-                if (descriptor && by_id.contains(descriptor->declaration.value))
-                    out.push_back(descriptor->declaration.value);
+                // A field holds the structs inside its tuples too.
+                std::vector<ScalarType> held{types_.binding(values_.at(param.name.span.lo))};
+                while (!held.empty()) {
+                    const auto field = held.back();
+                    held.pop_back();
+                    if (field.optional_depth) continue;
+                    const auto* descriptor = types_.descriptor(field);
+                    if (field.kind == ScalarType::Tuple) held.insert(held.end(), descriptor->parameters.begin(), descriptor->parameters.end());
+                    else if (field.kind == ScalarType::Nominal && by_id.contains(descriptor->declaration.value))
+                        out.push_back(descriptor->declaration.value);
+                }
             }
             return out;
         };
@@ -271,6 +278,12 @@ private:
 
     bool supported_type(ScalarType type) const {
         if (supported_scalar(type)) return true;
+        if (type.kind == ScalarType::Tuple && !type.optional_depth) {
+            // Elements hold values, so they cannot be 'Unit' or 'Never'.
+            return std::ranges::all_of(types_.descriptor(type)->parameters, [&](ScalarType element) {
+                return element.kind != ScalarType::Unit && element.kind != ScalarType::Never && supported_type(element);
+            });
+        }
         if (type.kind != ScalarType::Nominal || type.optional_depth) return false;
         const auto* descriptor = types_.descriptor(type);
         return descriptor && descriptor->arguments.empty() && structs_.contains(descriptor->declaration.value);
@@ -364,7 +377,23 @@ private:
             case StmtKind::Var: {
                 const auto& var = *cast<VarStmt>(&stmt);
                 if (!var.names.empty()) {
-                    unsupported(var.span, "tuple destructuring");
+                    // Destructuring: every name needs a stored type of its own.
+                    bool supported = true;
+                    for (const Name& name : var.names) {
+                        const auto bound = values_.find(name.span.lo);
+                        const auto local = bound == values_.end() ? ScalarType{} : types_.binding(bound->second);
+                        if (local.kind == ScalarType::Deferred) {
+                            ok_ = false;
+                            diag_.error(DiagCode::UnsupportedCodegen, name.span,
+                                        "stage0 code generation needs the type of '{}'; add a type annotation",
+                                        names_.str(name.sym));
+                            supported = false;
+                        } else supported &= stored(name.span, local, "locals");
+                    }
+                    if (supported) {
+                        work.push_back({var.init, true});
+                        return;
+                    }
                     for (const Name& name : var.names)
                         if (const auto bound = values_.find(name.span.lo); bound != values_.end()) rejected_.insert(bound->second.value);
                     return;
@@ -421,6 +450,11 @@ private:
 
     void expression(const Expr& expr, bool used, std::vector<Work>& work) {
         if (!supported_kind(expr)) return;
+        if (const auto* binary = as<BinaryExpr>(&expr); binary && (types_.expression(binary->lhs).kind == ScalarType::Tuple ||
+                                                                 types_.expression(binary->rhs).kind == ScalarType::Tuple)) {
+            unsupported(expr.span, "comparisons of tuples");
+            return;
+        }
         if (const auto* name = as<NameExpr>(&expr)) {
             if (const auto id = target(*name); id.valid() && rejected_.contains(id.value)) return;
         }
@@ -467,6 +501,17 @@ private:
                 work.push_back({member.base, true});
                 return;
             }
+            case ExprKind::Tuple: {
+                const auto& tuple = *cast<TupleExpr>(&expr);
+                for (usize i = tuple.elems.size(); i-- > 0;) work.push_back({tuple.elems[i], true});
+                return;
+            }
+            case ExprKind::TupleField: {
+                const auto& element = *cast<TupleFieldExpr>(&expr);
+                if (!type(element.base->span, types_.expression(element.base))) return;
+                work.push_back({element.base, true});
+                return;
+            }
             case ExprKind::Block: {
                 const auto& block = *cast<BlockExpr>(&expr);
                 for (usize i = block.stmts.size(); i-- > 0;) {
@@ -499,7 +544,8 @@ private:
         switch (expr.kind) {
             case ExprKind::Int: case ExprKind::Bool: case ExprKind::String: case ExprKind::Unit: case ExprKind::Name:
             case ExprKind::Paren: case ExprKind::Unary: case ExprKind::Binary: case ExprKind::Call: case ExprKind::Block:
-            case ExprKind::If: case ExprKind::Member: case ExprKind::SelfValue:
+            case ExprKind::If: case ExprKind::Member: case ExprKind::SelfValue: case ExprKind::Tuple:
+            case ExprKind::TupleField:
                 return true;
             default:
                 unsupported(expr.span, expr_name(expr.kind));
@@ -524,15 +570,23 @@ private:
                 for (const auto& arg : call->args) work.push_back(arg.value);
             } else if (const auto* member = as<MemberExpr>(expr)) {
                 work.push_back(member->base);
+            } else if (const auto* element = as<TupleFieldExpr>(expr)) {
+                work.push_back(element->base);
+            } else if (const auto* tuple = as<TupleExpr>(expr)) {
+                for (const Expr* e : tuple->elems) work.push_back(e);
             }
         }
         return false;
     }
 
-    // A local, the receiver or one of its fields, and fields below them.
+    // A local, the receiver or one of its fields, and fields or tuple elements below them.
     bool place(const Expr* expr) const {
         expr = unparen(expr);
-        while (const auto* member = as<MemberExpr>(expr)) expr = unparen(member->base);
+        while (true) {
+            if (const auto* member = as<MemberExpr>(expr)) expr = unparen(member->base);
+            else if (const auto* element = as<TupleFieldExpr>(expr)) expr = unparen(element->base);
+            else break;
+        }
         if (expr->kind == ExprKind::SelfValue) return true;
         const auto* name = as<NameExpr>(expr);
         const auto id = name ? target(*name) : BindingId{};

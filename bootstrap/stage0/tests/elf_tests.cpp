@@ -89,11 +89,11 @@ fun main(): Int {
 void headers() {
     Built built(kFib);
     const auto& image = built.image;
-    CHECK(image.size() > 128);
+    CHECK(image.size() > 176);
     CHECK(std::memcmp(image.data(), "\x7F" "ELF\x02\x01\x01", 7) == 0);
     CHECK(read(image, 16, 2) == 2);   // ET_EXEC
     CHECK(read(image, 18, 2) == 62);  // EM_X86_64
-    CHECK(read(image, 56, 2) == 1);   // one program header
+    CHECK(read(image, 56, 2) == 2);   // code and read-only data
     CHECK(read(image, 64, 4) == 1);   // PT_LOAD
     CHECK(read(image, 68, 4) == 5);   // R+X
     CHECK(read(image, 72, 8) == 0);
@@ -103,20 +103,85 @@ void headers() {
 
     // The entry is _start, which the runtime object places first.
     const u64 runtime_base = (built.objects[0].text.size() + 15) / 16 * 16;
-    CHECK(read(image, 24, 8) == elf::kBaseAddress + 128 + runtime_base);
-    CHECK(load_size == 128 + runtime_base + built.objects[1].text.size());
+    CHECK(read(image, 24, 8) == elf::kBaseAddress + 176 + runtime_base);
+    CHECK(load_size == 176 + runtime_base + built.objects[1].text.size());
 
-    // .symtab names every defined symbol.
+    // The runtime's panic messages are in a page-aligned, read-only segment
+    // that is not executable.
+    const u64 data = 64 + 56;
+    CHECK(read(image, data, 4) == 1 && read(image, data + 4, 4) == 4);  // PT_LOAD, R
+    const u64 data_offset = read(image, data + 8, 8);
+    CHECK(data_offset % 0x1000 == 0 && data_offset >= load_size);
+    CHECK(read(image, data + 16, 8) == elf::kBaseAddress + data_offset);
+    CHECK(read(image, data + 32, 8) == built.objects[1].rodata.size());
+    const std::string_view rodata(reinterpret_cast<const char*>(image.data() + data_offset), built.objects[1].rodata.size());
+    CHECK(rodata == "panic: arithmetic overflow\npanic: division by zero\n");
+
+    // .symtab names every defined symbol, locals first.
     const u64 shoff = read(image, 40, 8);
-    CHECK(read(image, 60, 2) == 5 && read(image, 62, 2) == 4);
-    const u64 symtab = shoff + 2 * 64, strtab = shoff + 3 * 64;
+    CHECK(read(image, 60, 2) == 6 && read(image, 62, 2) == 5);
+    const u64 rodata_section = shoff + 2 * 64, symtab = shoff + 3 * 64, strtab = shoff + 4 * 64;
+    CHECK(read(image, rodata_section + 8, 8) == 2 && read(image, rodata_section + 24, 8) == data_offset);
     CHECK(read(image, symtab + 4, 4) == 2 && read(image, strtab + 4, 4) == 3);
+    CHECK(read(image, symtab + 40, 4) == 4 && read(image, symtab + 44, 4) == 3);  // link, first global
     const u64 symbols = read(image, symtab + 24, 8), strings = read(image, strtab + 24, 8);
     std::vector<std::string> names;
-    for (u64 at = symbols + 24; at < symbols + read(image, symtab + 32, 8); at += 24)
+    std::vector<u64> info;
+    for (u64 at = symbols + 24; at < symbols + read(image, symtab + 32, 8); at += 24) {
         names.emplace_back(reinterpret_cast<const char*>(image.data() + strings + read(image, at, 4)));
-    for (const auto* expected : {"_P3fib", "_P5sumTo", "_P4main", "_start", "__phantasos_trap"})
-        CHECK(std::ranges::find(names, expected) != names.end());
+        info.push_back(read(image, at + 4, 1) | read(image, at + 6, 2) << 8);
+    }
+    CHECK((names[0] == ".Lstr0" && names[1] == ".Lstr1"));
+    CHECK(info[0] == (0 << 4 | 1 | 2 << 8) && info[1] == info[0]);  // STB_LOCAL, STT_OBJECT, .rodata
+    for (const auto* expected : {"_P3fib", "_P5sumTo", "_P4main", "_start", "__phantasos_trap"}) {
+        const auto found = std::ranges::find(names, expected);
+        CHECK(found != names.end() && info[found - names.begin()] == (1 << 4 | 2 | 1 << 8));
+    }
+}
+
+// Literals are interned per object: identical bytes share a local symbol.
+void literals() {
+    obj::Object object;
+    const u32 hello = object.literal("hello");
+    const u32 world = object.literal("world");
+    CHECK(object.literal("hello") == hello && hello != world);
+    CHECK(object.literal("") != hello);
+    CHECK(object.rodata == std::vector<u8>{'h', 'e', 'l', 'l', 'o', 'w', 'o', 'r', 'l', 'd'});
+    const auto& symbol = object.symbols[world];
+    CHECK(symbol.defined && symbol.local && symbol.section == obj::Section::Rodata);
+    CHECK(symbol.offset == 5 && symbol.size == 5 && symbol.name == ".Lstr1");
+}
+
+// Each object's relocations resolve its own local symbols, even when another
+// object uses the same local name, and reach the data in the second segment.
+void local_relocations() {
+    const auto object = [](std::string_view bytes, bool entry) {
+        obj::Object o;
+        const u32 literal = o.literal(bytes);
+        if (entry) o.symbols.push_back({"_start", true, 0, 7});
+        o.text = {0x48, 0x8D, 0x35, 0, 0, 0, 0};  // lea rsi, [rip+literal]
+        o.relocations.push_back({3, literal, -4});
+        return o;
+    };
+    const std::array objects{object("first", true), object("second", false)};
+    CHECK(objects[0].symbols[0].name == objects[1].symbols[0].name);
+    const auto image = elf::link(objects, "_start");
+    CHECK(image);
+    const u64 data_offset = read(*image, 64 + 56 + 8, 8);
+    for (const auto [code, data] : {std::pair<u64, u64>{0, 0}, {16, 16}}) {
+        const i64 rel = static_cast<i32>(read(*image, 176 + code + 3, 4));
+        const u64 target = elf::kBaseAddress + 176 + code + 7 + rel;
+        CHECK(target == elf::kBaseAddress + data_offset + data);
+    }
+    CHECK(std::string_view(reinterpret_cast<const char*>(image->data() + data_offset), 5) == "first");
+    CHECK(std::string_view(reinterpret_cast<const char*>(image->data() + data_offset + 16), 6) == "second");
+
+    // Without data there is a single segment and an empty .rodata section.
+    obj::Object code;
+    code.text = {0xC3};
+    code.symbols.push_back({"_start", true, 0, 1});
+    const auto bare = elf::link(std::span(&code, 1), "_start");
+    CHECK(bare && read(*bare, 56, 2) == 1 && read(*bare, read(*bare, 40, 8) + 2 * 64 + 32, 8) == 0);
 }
 
 void link_errors() {
@@ -139,7 +204,9 @@ void runtime_listing() {
     CHECK(listing.contains("call _P4main"));
     CHECK(listing.contains("mov edi, eax"));
     CHECK(listing.contains("mov edi, 101"));
-    CHECK(listing.contains("db \"panic: division by zero\\n\""));
+    CHECK(listing.contains("lea rsi, [rip+.Lstr1]"));
+    CHECK(listing.contains(".rodata\n    0000  .Lstr0:  db \"panic: arithmetic overflow\\n\""));
+    CHECK(listing.contains("    001b  .Lstr1:  db \"panic: division by zero\\n\""));
 
     Built unit("fun main() {}\n");
     (void)x86_64::runtime(*unit.program, &listing);
@@ -243,6 +310,8 @@ fun main(): Int {
 int main() {
     headers();
     link_errors();
+    literals();
+    local_relocations();
     runtime_listing();
 #ifdef PHS_EXEC
     executables();

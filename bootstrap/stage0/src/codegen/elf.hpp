@@ -24,11 +24,13 @@
 #include "codegen/object.hpp"
 
 // A static linker and writer for Linux x86_64 ELF64 executables. It lays the
-// objects' code out one after another, resolves each relocation against the
-// symbols the objects define, and writes an ET_EXEC image with one read-only,
-// executable PT_LOAD segment. Section headers and a symbol table are included
-// so that objdump, readelf and debuggers can name the code; the loader needs
-// only the program header.
+// objects' code and read-only data out one after another, resolves each
+// relocation against the symbols the objects define (local symbols only within
+// their own object), and writes an ET_EXEC image with a read-only, executable
+// PT_LOAD segment for the code and, when there is data, a page-aligned
+// read-only one for it. Section headers and a symbol table are included so
+// that objdump, readelf and debuggers can name the code; the loader needs only
+// the program headers.
 
 namespace phs::elf {
 

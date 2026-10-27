@@ -22,6 +22,7 @@ fun describe(count: Int, total: UInt, done: Bool) {
     print(value: total)
     print(done && count > 0)
     print(-1)
+    print(if done { count } else { 0 })
     let result: Unit = print("returns Unit")
 }
 

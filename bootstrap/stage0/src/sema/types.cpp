@@ -2830,9 +2830,20 @@ private:
             record.state = CallState::Error;
             return Value{Type::Error};
         }
-        if (unavailable(source)) return Value{};
         Type parameter = source.type;
-        if (source.literal == Literal::Integer) parameter = Type::Int;
+        if (unavailable(source)) {
+            // Branching arguments are checked through their tails, so probe each
+            // overload as ordinary calls do and keep the best fitting match.
+            std::optional<std::pair<Probe, Type>> best;
+            for (const Type candidate : {Type{Type::String}, Type{Type::Int}, Type{Type::UInt}, Type{Type::Bool}}) {
+                const auto p = probe(expressions_.at(arg), candidate);
+                if (p.deferred) return Value{};
+                if (p.matches && (!best || std::pair{!p.fits, p.score} < std::pair{!best->first.fits, best->first.score}))
+                    best = {p, candidate};
+            }
+            if (!best) return reject("");
+            parameter = best->second;
+        } else if (source.literal == Literal::Integer) parameter = Type::Int;
         else if (source.literal != Literal::None || source.type.optional_depth ||
                  (source.type != Type::String && source.type != Type::Int && source.type != Type::UInt &&
                   source.type != Type::Bool && source.type != Type::Never))

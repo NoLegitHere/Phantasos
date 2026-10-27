@@ -236,20 +236,29 @@ let c = print(1)
 let d = print(value: n)
 let e = print(flag && false)
 let f = print(-5 * 2)
+let g = print(if flag { 1 } else { 2 })
+let h = print(if flag { n } else { 2 })
+let i = print(if flag { "yes" } else { text })
+let j = print(match flag { true -> false
+    _ -> flag })
 )");
     const std::pair<std::string_view, Type> expected[] = {
-        {"a", Type::String}, {"b", Type::String}, {"c", Type::Int}, {"d", Type::UInt}, {"e", Type::Bool}, {"f", Type::Int}};
+        {"a", Type::String}, {"b", Type::String}, {"c", Type::Int}, {"d", Type::UInt}, {"e", Type::Bool}, {"f", Type::Int},
+        {"g", Type::Int}, {"h", Type::UInt}, {"i", Type::String}, {"j", Type::Bool}};
     for (const auto& [name, parameter] : expected) {
         const auto& call = prints.call(name);
         CHECK(call.state == CallState::Resolved && call.kind == CallKind::Builtin);
         CHECK(call.parameters == std::vector<usize>{0} && call.parameter_types == std::vector<Type>{parameter});
         CHECK(prints.type(name) == Type::Unit);
-        CHECK(prints.result.scalar_types->expression(prints.expr(name)->args[0].value) == parameter);
+        // As for ordinary call arguments, a branch is typed through its tails, not itself.
+        CHECK(name >= "g" || prints.result.scalar_types->expression(prints.expr(name)->args[0].value) == parameter);
     }
     CHECK(prints.call("a").target == prints.binding("print", BindingKind::BuiltinValue));
 
     for (std::string_view bad : {"print()", "print(1, 2)", "print(text: \"a\")", "print(Int8(1))", "print(1.5)",
-                                 "print(UInt64(1))", "print([1])", "print(print(1))", "print(maybe)"}) {
+                                 "print(UInt64(1))", "print([1])", "print(print(1))", "print(maybe)",
+                                 "print(if true { Int8(1) } else { Int8(2) })", "print(if true { 1 })",
+                                 "print(if true { 1 } else { \"a\" })", "print(if true { 1.5 } else { 2.5 })"}) {
         Frontend rejected;
         rejected.check(std::format("let maybe: Int? = none\nlet bad = {}", bad), {DiagCode::NoMatchingCall});
         CHECK(rejected.call("bad").state == CallState::Error && rejected.call("bad").kind == CallKind::Builtin);

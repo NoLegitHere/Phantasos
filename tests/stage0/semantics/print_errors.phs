@@ -26,4 +26,5 @@ fun main() {
     print(1, 2)
     print(text: "a")
     print(print(1))
+    print(if true { small } else { small })
 }

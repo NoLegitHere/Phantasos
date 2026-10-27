@@ -18,6 +18,7 @@
 #include <string>
 
 #include "sema/resolve.hpp"
+#include "support/node_map.hpp"
 
 namespace phs {
 
@@ -249,13 +250,13 @@ public:
 
 private:
     friend class ScalarChecker;
-    std::unordered_map<const ast::Expr*, ScalarType> expressions_;
+    NodeMap<const ast::Expr*, ScalarType> expressions_;
     std::vector<ScalarType> bindings_;
     std::unordered_map<usize, ScalarSignature> signatures_;
-    std::unordered_map<const ast::CallExpr*, CheckedCall> calls_;
+    NodeMap<const ast::CallExpr*, CheckedCall> calls_;
     std::unordered_map<const ast::CallExpr*, CheckedConversion> conversions_;
     std::unordered_map<const ast::Expr*, BindingId> functions_;
-    std::unordered_map<const ast::Expr*, CheckedMember> members_;
+    NodeMap<const ast::Expr*, CheckedMember> members_;
     std::unordered_map<usize, CheckedHierarchy> hierarchies_;
     AliasExpansion aliases_;
     TypeTable types_;

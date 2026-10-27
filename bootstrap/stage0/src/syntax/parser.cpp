@@ -16,6 +16,7 @@
 #include "syntax/parser.hpp"
 
 #include <algorithm>
+#include <concepts>
 #include <format>
 #include <optional>
 #include <string>
@@ -123,6 +124,7 @@ private:
     template <typename T>
     T* mk(Span s) {
         T* n = arena_.make<T>();
+        if constexpr (std::derived_from<T, Expr>) n->id = ++expr_ids_;
         n->span = s;
         return n;
     }
@@ -706,6 +708,7 @@ private:
     TypeExpr* new_type(TypeKind k, Span s) {
         TypeExpr* t = arena_.make<TypeExpr>();
         t->kind = k;
+        t->id = ++type_ids_;
         t->span = s;
         return t;
     }
@@ -1713,6 +1716,8 @@ private:
     bool no_leading_dot_ = false;
     bool cast_type_ = false;
     bool lexer_reported_unclosed_ = false;
+    u32 expr_ids_ = 0;  // last ast::Expr id given out
+    u32 type_ids_ = 0;  // last ast::TypeExpr id given out
     std::vector<u32> lexer_error_offsets_;
     std::vector<std::pair<usize, Token>> split_log_;
 };

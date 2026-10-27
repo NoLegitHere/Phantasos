@@ -3795,25 +3795,25 @@ private:
     bool probing_constraints_ = false;
     std::unordered_set<u32> reported_applications_;
     std::vector<Node> nodes_;
-    std::unordered_map<const Expr*, usize> expressions_;
+    NodeMap<const Expr*, usize> expressions_;
     // A promoted constructor field and its parameter have separate binding
     // IDs at the same name span. Both inherit the declaration's annotation.
     std::unordered_multimap<u32, usize> declarations_;
     std::unordered_map<usize, usize> function_nodes_;
     std::unordered_map<usize, ScalarSignature> signatures_;
     std::unordered_map<const FunItem*, std::unordered_map<u32, usize>> parameter_indices_;
-    std::unordered_map<const ast::CallExpr*, CheckedCall> calls_;
+    NodeMap<const ast::CallExpr*, CheckedCall> calls_;
     std::unordered_map<const ast::CallExpr*, CheckedConversion> conversions_;
-    std::unordered_map<const Expr*, CheckedMember> members_;
-    std::unordered_set<const Expr*> direct_callees_;
+    NodeMap<const Expr*, CheckedMember> members_;
+    NodeMap<const Expr*, bool> direct_callees_;  // a set
     std::unordered_map<const Expr*, std::vector<BindingId>> function_names_;  // candidates of names used as function values
     std::unordered_map<const Expr*, BindingId> functions_;
     std::unordered_map<usize, Type> function_errors_;  // the error type of each throwing function
     struct PendingSelection { usize index; Type expected; Span span; };
     std::vector<PendingSelection> pending_selections_;  // overload selections waiting on inferred results
     bool inferred_ = false;  // every inference node is finished
-    std::unordered_map<const Expr*, usize> reference_contexts_;
-    std::unordered_map<const CallExpr*, usize> call_contexts_;
+    NodeMap<const Expr*, usize> reference_contexts_;
+    NodeMap<const CallExpr*, usize> call_contexts_;
     std::unordered_map<const Expr*, ExpandedType> entities_;
     std::unordered_map<usize, BindingId> member_owners_;
     static constexpr usize kIndexedScope = 32;  // scopes with at least this many bindings are indexed by name

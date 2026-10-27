@@ -54,6 +54,7 @@ enum class TypeKind : u8 { Path, Optional, Shared, Weak, Pointer, Array, Unit, S
 
 struct TypeExpr {
     TypeKind kind = TypeKind::Error;
+    u32 id = 0;  // nonzero, unique within its file; keys side tables (NodeMap)
     Span span;
     Path path;                     // Path
     List<TypeExpr*> args;          // Path: generic args; Fun: parameter types; Tuple: element types
@@ -86,13 +87,14 @@ enum class CastOp : u8 { Is, As, AsOpt };
 
 struct Expr {
     ExprKind kind;
+    u32 id = 0;  // nonzero, unique within its file; keys side tables (NodeMap)
     Span span;
 };
 
 template <ExprKind K>
 struct ExprOf : Expr {
     static constexpr ExprKind kKind = K;
-    ExprOf() : Expr{K, {}} {}
+    ExprOf() : Expr{K, 0, {}} {}
 };
 
 struct Arg {

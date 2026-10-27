@@ -1,0 +1,65 @@
+// Copyright 2026 The Phantasos Authors
+// SPDX-License-Identifier: Apache-2.0
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// Writes and 'mut fun' calls through immutable places (spec 3.3): 'let'
+// bindings and fields, borrowed parameters, 'self' outside a 'mut fun', and
+// temporary values.
+
+struct Inner(var n: Int) {
+    mut fun bump() { n += 1 }
+}
+struct Outer(var inner: Inner, let fixed: Inner) {
+    static let limit: Int = 3
+    fun look() {
+        inner.n = 1
+        inner.bump()
+        bump2()
+        self.inner.bump()
+        self = Outer(Inner(1), Inner(2))
+    }
+    mut fun bump2() {
+        fixed.n = 2
+        fixed.bump()
+    }
+}
+class Box(var value: Int) {
+    let size: Int = 1
+    mut fun grow() { value += 1 }
+    fun peek(): Int {
+        value = 2
+        grow()
+        return value
+    }
+}
+fun borrowed(b: Box, o: Outer) {
+    b.value = 1
+    b.grow()
+    o.inner.n = 1
+    o.inner.bump()
+}
+fun make(): Inner = Inner(1)
+fun main() {
+    let o = Outer(Inner(1), Inner(2))
+    o.inner.n = 4
+    o.inner.bump()
+    make().n = 1
+    make().bump()
+    let b = Box(1)
+    b.size = 2
+    Outer.limit = 4
+    var p = o
+    p.fixed.n = 1
+    p.fixed.bump()
+}

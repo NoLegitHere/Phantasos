@@ -192,6 +192,216 @@ fun bound(values: [Int]) {
      DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment});
 }
 
+void field_mutability() {
+    Frontend f;
+    f.check(R"(
+struct Inner(var n: Int) {
+    mut fun bump() { n += 1 }
+}
+struct Outer(var inner: Inner, let fixed: Inner) {
+    var count: Int = 0
+    static var total: Int = 0
+    init(n: Int) {
+        inner = Inner(n)
+        fixed = Inner(n)
+    }
+    mut fun step() {
+        inner.bump()
+        self.inner.n = 2
+        count += 1
+        bump2()
+        total += 1
+        self = Outer(n: 1)
+    }
+    mut fun bump2() { inner.n -= 1 }
+    fun read(): Int = inner.n + count
+}
+class Box(var value: Int) {
+    let size: Int = 1
+    mut fun grow() { value += 1 }
+    fun peek(): Int = value
+}
+fun own_box(b: own Box) { b.value = 1; b.grow() }
+fun take(o: inout Outer) { o.inner.n = 3; o.step(); o.inner.bump() }
+fun main() {
+    var o = Outer(n: 1)
+    o.inner.n = 4
+    o.count += 2
+    o.step()
+    o.inner.bump()
+    take(o: o)
+    let b = Box(1)
+    b.value = 2
+    b.grow()
+    Box(3).grow()
+    Box(3).value = 4
+    Outer.total = 5
+    var s = shared Box(1)
+    s.grow()
+}
+)");
+    Frontend g;
+    g.check(R"(
+struct Inner(var n: Int) {
+    mut fun bump() { n += 1 }
+}
+struct Outer(var inner: Inner, let fixed: Inner) {
+    static let limit: Int = 3
+    fun look() {
+        inner.n = 1
+        inner.bump()
+        bump2()
+        self.inner.bump()
+        self = Outer(Inner(1), Inner(2))
+    }
+    mut fun bump2() {
+        fixed.n = 2
+        fixed.bump()
+    }
+}
+class Box(var value: Int) {
+    let size: Int = 1
+    mut fun grow() { value += 1 }
+    fun peek(): Int {
+        value = 2
+        grow()
+        return value
+    }
+}
+fun borrowed(b: Box, o: Outer) {
+    b.value = 1
+    b.grow()
+    o.inner.n = 1
+    o.inner.bump()
+}
+fun make(): Inner = Inner(1)
+fun main() {
+    let o = Outer(Inner(1), Inner(2))
+    o.inner.n = 4
+    o.inner.bump()
+    make().n = 1
+    make().bump()
+    let b = Box(1)
+    b.size = 2
+    Outer.limit = 4
+    var p = o
+    p.fixed.n = 1
+    p.fixed.bump()
+}
+)", {DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment,
+     DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment,
+     DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment,
+     DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment,
+     DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment,
+     DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment,
+     DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment});
+    Frontend h;
+    h.check(R"(
+open class Base(var x: Int, let y: Int) {
+    mut fun bump() { x += 1 }
+}
+class Derived: Base(1, 2) {
+    fun look() {
+        super.x = 1
+        super.bump()
+        x = 1
+        y = 2
+    }
+}
+class Child(var n: Int) {
+    mut fun grow() { n += 1 }
+}
+class Parent(let child: Child) {}
+fun change(p: Parent) {
+    p.child.n = 1
+    p.child.grow()
+}
+struct Counter(var n: Int) {
+    mut fun bump<T>() { n += 1 }
+    fun read() { bump<Int>() }
+}
+)", {DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment,
+     DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment,
+     DiagCode::ImmutableAssignment});
+    Frontend projections;
+    projections.check(R"(
+class Cell(var value: Int) {
+    mut fun grow() { value += 1 }
+}
+struct Pair(var a: Int)
+fun change(p: Cell?, cells: [Cell], pairs: [Pair]) {
+    p!.value = 1
+    p!.grow()
+    cells[0].value = 1
+    cells[0].grow()
+    pairs[0].a = 1
+    pairs[0] = Pair(2)
+}
+fun fixed() {
+    let numbers = [1, 2]
+    numbers[0] = 3
+    let pair: Pair? = Pair(1)
+    pair!.a = 2
+}
+fun allowed(cells: inout [Cell], p: own Cell?) {
+    var numbers = [1, 2]
+    numbers[0] = 3
+    cells[0].value = 1
+    p!.grow()
+    let owned = [Cell(1)]
+    owned[0].grow()
+}
+)", {DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment,
+     DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment});
+    Frontend roots;
+    roots.check(R"(
+struct Slot(var a: Int) {
+    mut fun bump() { a += 1 }
+}
+interface Has {
+    var value: Int
+    fun reset() { value = 0 }
+}
+fun change<T: Has>(x: T) { x.value = 1 }
+class Holder(let value: Int?, var spare: Int?) {}
+fun unwrap(h: Holder) {
+    h.value! = 2
+    h.spare! = 3
+}
+fun literals() {
+    [Slot(1)][0].a = 2
+    [Slot(1)][0].bump()
+}
+)", {DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment,
+     DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment});
+    Frontend arguments;
+    arguments.check(R"(
+struct Slot(var a: Int, let b: Int)
+fun bump(x: inout Int) { x += 1 }
+fun swap(s: inout Slot) {}
+fun pass(n: Int, slot: Slot) {
+    bump(x: n)
+    bump(x: slot.a)
+    let s = Slot(1, 2)
+    swap(s: s)
+    bump(x: s.a)
+    var t = Slot(1, 2)
+    bump(x: t.b)
+    bump(x: 3)
+    swap(s: Slot(1, 2))
+}
+fun fine(x: inout Int) {
+    var t = Slot(1, 2)
+    bump(x: t.a)
+    swap(s: t)
+    bump(x: x)
+    var n = 0
+    bump(x: n)
+}
+)", {DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment,
+     DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment});
+}
+
 void branch_results() {
     Frontend f;
     f.check(R"(
@@ -366,6 +576,7 @@ int main() {
     missing_returns();
     initialization();
     immutability();
+    field_mutability();
     branch_results();
     gated_by_type_errors();
     caught_errors_guards_and_conditions();

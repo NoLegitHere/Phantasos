@@ -82,7 +82,7 @@ let implicit = point.implicit()
 let picked = point.pick(true)
 let defaulted = point.shift()
 let labeled = (point.shift)(amount: 3)
-fun write(p: Point) { p.x = 1 }
+fun write(p: inout Point) { p.x = 1 }
 )");
     for (std::string_view name : {"field", "inferred", "method", "computed", "chained", "implicit", "defaulted", "labeled"})
         CHECK(f.value(name) == Type::Int8);

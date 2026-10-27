@@ -433,6 +433,8 @@ struct File {
     FileId file;
     List<Import> imports;
     List<Item*> items;
+    u32 expr_ids = 0;  // Expr ids run from 1 to this
+    u32 type_ids = 0;  // TypeExpr ids run from 1 to this
 };
 
 // ---------------------------------------------------------------- casting

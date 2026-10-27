@@ -54,6 +54,8 @@ public:
     iterator end() { return entries_.end(); }
     const_iterator end() const { return entries_.end(); }
     bool contains(K key) const { return slot_of(key) != 0; }
+    // Sizes the slot table for ids up to max_id, so it never grows by doubling.
+    void reserve_ids(u32 max_id) { slots_.reserve(max_id + 1); }
     usize size() const { return entries_.size(); }
     bool empty() const { return entries_.empty(); }
 

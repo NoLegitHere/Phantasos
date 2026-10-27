@@ -16,6 +16,7 @@
 #include "sema/types.hpp"
 #include "support/scoped_value.hpp"
 
+#include <algorithm>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -200,7 +201,14 @@ public:
         collect_formal_bounds();
         collect_bound_uses();
         clear_deferred_annotations();
+        // One node per binding, function and expression (plus one per
+        // destructuring); reserving them avoids doubling a large table.
+        const auto functions = std::ranges::count(resolution_.bindings(), BindingKind::Function, &ResolvedBinding::kind);
+        nodes_.reserve(resolution_.bindings().size() + static_cast<usize>(functions) + file.expr_ids);
         nodes_.resize(resolution_.bindings().size());
+        expressions_.reserve_ids(file.expr_ids);
+        members_.reserve_ids(file.expr_ids);
+        reference_contexts_.reserve_ids(file.expr_ids);
         for (usize i = 0; i < resolution_.bindings().size(); ++i) {
             const auto& b = resolution_.bindings()[i];
             if (b.kind != BindingKind::BuiltinType && b.kind != BindingKind::BuiltinValue)

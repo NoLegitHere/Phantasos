@@ -75,6 +75,8 @@ public:
         f->file = file_;
         f->imports = arena_.copy(imports);
         f->items = arena_.copy(items);
+        f->expr_ids = expr_ids_;
+        f->type_ids = type_ids_;
         return f;
     }
 

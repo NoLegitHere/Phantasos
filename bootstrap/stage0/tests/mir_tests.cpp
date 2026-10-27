@@ -275,6 +275,9 @@ fun main(): Int {
                         "    %7: @L = with %7, b, %12\n"));
     CHECK(result("struct P(var x: Int8, var y: Int)\nfun main(): Int {\n    var p = P(x: 1, y: 2)\n    let q = p\n"
                  "    p.x = -5\n    p.y *= 3\n    return Int(p.x) * 100 + p.y * 10 + Int(q.x)\n}\n") == -500 + 60 + 1);
+    // Parentheses around a whole target, a field or a local.
+    CHECK(result("struct P(var x: Int)\nfun main(): Int {\n    var p = P(x: 1)\n    (p.x) = 2\n    (p.x) += 3\n"
+                 "    var n = 1\n    (n) += 4\n    ((p)) = P(x: p.x * 10)\n    (p).x += 1\n    return p.x + n\n}\n") == 56);
     CHECK(traps("struct P(var x: UInt8)\nfun main(): Int {\n    var p = P(x: 0)\n    p.x -= 1\n    return 0\n}\n"));
     // Field values trap like any other arithmetic.
     CHECK(traps("struct P(x: Int8)\nfun main(): Int {\n    let p = P(x: 127)\n    return Int(P(x: p.x + 1).x)\n}\n"));

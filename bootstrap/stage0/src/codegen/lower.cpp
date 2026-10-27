@@ -299,8 +299,9 @@ private:
             }
             case StmtKind::Assign: {
                 const auto& assign = *cast<AssignStmt>(&stmt);
-                if (const auto* member = as<MemberExpr>(assign.target)) return assign_field(assign, *member);
-                const Reg dst = local(*cast<NameExpr>(assign.target));
+                const Expr* place = unparen(assign.target);
+                if (const auto* member = as<MemberExpr>(place)) return assign_field(assign, *member);
+                const Reg dst = local(*cast<NameExpr>(place));
                 if (assign.op == AssignOp::Assign) {
                     copy(dst, any(assign.value));
                     return;

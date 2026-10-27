@@ -323,6 +323,36 @@ struct Counter(var n: Int) {
 )", {DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment,
      DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment,
      DiagCode::ImmutableAssignment});
+    Frontend projections;
+    projections.check(R"(
+class Cell(var value: Int) {
+    mut fun grow() { value += 1 }
+}
+struct Pair(var a: Int)
+fun change(p: Cell?, cells: [Cell], pairs: [Pair]) {
+    p!.value = 1
+    p!.grow()
+    cells[0].value = 1
+    cells[0].grow()
+    pairs[0].a = 1
+    pairs[0] = Pair(2)
+}
+fun fixed() {
+    let numbers = [1, 2]
+    numbers[0] = 3
+    let pair: Pair? = Pair(1)
+    pair!.a = 2
+}
+fun allowed(cells: inout [Cell], p: own Cell?) {
+    var numbers = [1, 2]
+    numbers[0] = 3
+    cells[0].value = 1
+    p!.grow()
+    let owned = [Cell(1)]
+    owned[0].grow()
+}
+)", {DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment,
+     DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment});
 }
 
 void branch_results() {

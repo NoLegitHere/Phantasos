@@ -352,27 +352,37 @@ private:
         }
     }
 
-    // Member chains are walked iteratively from their root.
+    static const Expr* projected(const Expr& expr) {
+        if (const auto* member = as<MemberExpr>(&expr)) return member->base;
+        if (const auto* index = as<IndexExpr>(&expr)) return index->base;
+        if (const auto* unwrap = as<UnwrapExpr>(&expr)) return unwrap->operand;
+        return nullptr;
+    }
+
+    // Member, index and unwrap chains are walked iteratively from their root.
+    // Array elements and unwrapped optionals keep the access of their container.
     Place place(const Expr* expr) const {
-        std::vector<const MemberExpr*> chain;
+        std::vector<const Expr*> chain;
         expr = unparen(expr);
-        while (const auto* member = as<MemberExpr>(expr)) {
-            chain.push_back(member);
-            expr = unparen(member->base);
+        while (const Expr* base = projected(*expr)) {
+            chain.push_back(expr);
+            expr = unparen(base);
         }
         Place result;
         if (expr->kind == ExprKind::SelfValue || expr->kind == ExprKind::Super) result = self_;
         else if (expr->kind == ExprKind::Call) result = {Access::Temporary, "a temporary value"};
         else if (const auto* name = as<NameExpr>(expr)) result = name_place(*name);
         for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
-            const auto* record = types_.member(*it);
+            const auto* member = as<MemberExpr>(*it);
+            if (!member) continue;
+            const auto* record = types_.member(member);
             if (!record || record->state != ResolutionState::Resolved || record->candidates.size() != 1 ||
                 resolution_.binding(record->candidates.front()).kind != BindingKind::Field)
                 return {};
             // A type receiver names a static field, which ignores the base.
             if (record->type_receiver) result = {};
             result = field_place(resolution_.binding(record->candidates.front()), result,
-                                 storage(types_.expression((*it)->base)));
+                                 storage(types_.expression(member->base)));
         }
         return result;
     }
@@ -389,9 +399,18 @@ private:
     void write_place(const Expr& target) {
         const Expr* inner = unparen(&target);
         const auto* member = as<MemberExpr>(inner);
-        if (!member && inner->kind != ExprKind::SelfValue) return;
+        const bool element = inner->kind == ExprKind::Index;
+        if (!member && !element && inner->kind != ExprKind::SelfValue) return;
         const Place found = place(inner);
         if (found.access == Access::Unknown || found.access == Access::Mutable) return;
+        if (element) {
+            if (found.access == Access::Temporary)
+                restricted(target.span, "cannot assign to an element of a temporary value", found);
+            else
+                restricted(target.span, std::format("cannot assign to an element because {} is {}", found.subject,
+                                                    describe(found.access)), found);
+            return;
+        }
         if (!member) {
             restricted(target.span, std::format("cannot assign to {} 'self'", describe(found.access)), found);
             return;

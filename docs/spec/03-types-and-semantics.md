@@ -922,7 +922,9 @@ pattern always runs its guard, and arms after an unguarded one are unreachable.
     `inout` parameter, `self` inside a `mut fun`, or a `var` field of such a
     place. A `let` binding, any other parameter, a pattern binding or a
     temporary value such as a call result can't be modified. The rule applies
-    to every field along a path like `a.b.c`.
+    to every field along a path like `a.b.c`. Array elements (`a[i]`) and
+    unwrapped optionals (`p!`) keep the access of their container, so
+    assigning to an element of a `let` array is also an error.
   - A class or actor instance can be modified through any reference except a
     borrow: a default or `borrow` parameter, or `self` outside a `mut fun`.
     A borrow stays read-only through every field along the path, `let` or

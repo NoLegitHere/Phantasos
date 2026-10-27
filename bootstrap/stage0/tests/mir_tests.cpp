@@ -324,6 +324,21 @@ fun main(): Int {
     return a * 1000 + b
 }
 )") == 102 * 1000 + 23);
+    // So does an earlier argument when a later receiver holds the `mut fun` call.
+    CHECK(result(R"(
+struct P(var x: Int) {
+    fun get(): Int = x
+    mut fun bump(): P {
+        x += 1
+        return self
+    }
+}
+fun pair(a: P, n: Int): Int = a.x * 10 + n
+fun main(): Int {
+    var p = P(x: 1)
+    return pair(p, p.bump().get())
+}
+)") == 12);
     // Nested receivers are written back through every enclosing struct.
     CHECK(result(R"(
 struct In(var n: Int8) {

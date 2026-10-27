@@ -479,6 +479,8 @@ private:
                 work.push_back(binary->rhs);
             } else if (const auto* call = as<CallExpr>(expr)) {
                 for (const auto& arg : call->args) work.push_back(arg.value);
+                if (const CheckedCall* checked = types_.call(call); checked && checked->receiver)
+                    work.push_back(checked->receiver);
             } else if (const auto* member = as<MemberExpr>(expr)) {
                 work.push_back(member->base);
             }

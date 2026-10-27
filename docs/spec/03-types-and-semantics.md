@@ -124,6 +124,11 @@ the fields that were already initialized are destroyed.
 
 ## 3.6 Optionals and absence of null [Core]
 - Phantasos has no null. `T?` holds either `none` or a `T`.
+- `none` only fits an optional type. Where the expected type is a concrete
+  non-optional type, such as `let x: Int = none`, a `none` value (or a branch
+  tail that is `none`) is a type mismatch (E0400). An argument that is `none`
+  rules out every overload whose parameter there is non-optional (E0411 when
+  none is left).
 - The ways to use an optional are `if let x = opt`, `opt?.member`,
   `opt ?? fallback`, `match`, and `opt!`. `opt!` panics with a source
   location if the value is `none`.
@@ -728,8 +733,8 @@ default requires established compatible expression facts in its declaration
 environment, even when its parameter annotation is already concrete. Supplied
 arguments bypass the default; known defaults work in either declaration order.
 Generic expression-body return inference still uses the declaration's available facts;
-bodies are not rechecked per application. Function/bound-method values, optional
-`none` arguments and lowering/monomorphization need later stages. Unsupported
+bodies are not rechecked per application. Function/bound-method values, `none`
+arguments for optional or generic parameters (3.6) and lowering/monomorphization need later stages. Unsupported
 facts retain `Deferred`; passing `check` still proves only implemented rules.
 
 ## 3.22 Initial generic argument inference and constraints [Core]

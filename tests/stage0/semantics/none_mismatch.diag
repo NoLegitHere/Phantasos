@@ -1,0 +1,39 @@
+none_mismatch.phs:26:21: error[E0400]: expected 'Int', found 'none'
+   26 | fun number(): Int = none
+      |                     ^^^^
+none_mismatch.phs:29:12: error[E0400]: expected 'Bool', found 'none'
+   29 |     return none
+      |            ^^^^
+none_mismatch.phs:33:5: error[E0411]: arguments do not match any callable signature
+   33 |     take(none)
+      |     ^^^^^^^^^^
+none_mismatch.phs:20:5: note: candidate 'take(x: Int)'
+   20 | fun take(x: Int) {}
+      |     ^^^^
+none_mismatch.phs:34:5: error[E0411]: arguments do not match any callable signature
+   34 |     take((none))
+      |     ^^^^^^^^^^^^
+none_mismatch.phs:20:5: note: candidate 'take(x: Int)'
+   20 | fun take(x: Int) {}
+      |     ^^^^
+none_mismatch.phs:35:5: error[E0411]: arguments do not match any callable signature
+   35 |     pick(none)
+      |     ^^^^^^^^^^
+none_mismatch.phs:22:5: note: candidate 'pick(x: Int)'
+   22 | fun pick(x: Int) {}
+      |     ^^^^
+none_mismatch.phs:23:5: note: candidate 'pick(x: String)'
+   23 | fun pick(x: String) {}
+      |     ^^^^
+none_mismatch.phs:37:18: error[E0400]: expected 'Int', found 'none'
+   37 |     let a: Int = none
+      |                  ^^^^
+none_mismatch.phs:39:34: error[E0400]: expected 'Bool', found 'none'
+   39 |     let c: Bool = if b == none { none } else { false }
+      |                                  ^^^^
+none_mismatch.phs:40:24: error[E0400]: expected 'Int', found 'none'
+   40 |     let d: [Int] = [1, none]
+      |                        ^^^^
+none_mismatch.phs:42:5: error[E0400]: expected 'Int', found 'none'
+   42 |     e = none
+      |     ^^^^^^^^

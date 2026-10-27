@@ -273,6 +273,21 @@ let j = print(match flag { true -> false
     local.check("let print = 3\nlet bad = print(1)", {DiagCode::NotCallable});
 }
 
+void none_needs_optional_parameters() {
+    for (std::string_view bad : {"let bad = take(none)", "let bad = take((none))", "let bad = pick(none)"}) {
+        Frontend rejected;
+        rejected.check(std::format("fun take(x: Int) {{}}\nfun pick(x: Int) {{}}\nfun pick(x: String) {{}}\n{}", bad),
+                       {DiagCode::NoMatchingCall});
+        CHECK(rejected.call("bad").state == CallState::Error);
+    }
+    // Optional and generic parameters may still receive none; those stay deferred.
+    Frontend optional;
+    optional.check("fun maybe(x: Int?) {}\nfun same<T>(x: T): T = x\nlet a = maybe(none)\nlet b: Int? = same(none)");
+    CHECK(optional.call("a").state != CallState::Error && optional.call("b").state != CallState::Error);
+    Frontend annotated;
+    annotated.check("let a: Int = none\nlet b: Int? = none", {DiagCode::ScalarTypeMismatch});
+}
+
 void recursion_and_stable_results() {
     Frontend f;
     f.check(R"(
@@ -347,6 +362,7 @@ int main() {
     overloads_and_literal_ranges();
     deferred_and_noncallable();
     prelude_print();
+    none_needs_optional_parameters();
     recursion_and_stable_results();
     eliminated_overloads_do_not_create_return_cycles();
     long_forward_call_chain();

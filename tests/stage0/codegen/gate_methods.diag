@@ -1,0 +1,21 @@
+gate_methods.phs:21:16: error[E0600]: stage0 code generation does not support static methods yet
+   21 |     static fun zero(): Factory = Factory(seed: 0)
+      |                ^^^^
+gate_methods.phs:25:9: error[E0600]: stage0 code generation does not support generic functions yet
+   25 |     fun scaled<T>(by: T): Int = count
+      |         ^^^^^^
+gate_methods.phs:26:17: error[E0600]: stage0 code generation does not support values of type 'Float64' yet
+   26 |     fun real(): Float64 = 1.0
+      |                 ^^^^^^^
+gate_methods.phs:30:20: error[E0600]: stage0 code generation does not support values of type 'Float64' yet
+   30 | struct Rejected(x: Float64) {
+      |                    ^^^^^^^
+gate_methods.phs:36:9: error[E0600]: stage0 code generation needs the type of 'f'; add a type annotation
+   36 |     let f = c.get
+      |         ^
+gate_methods.phs:37:9: error[E0600]: stage0 code generation does not support values of type 'Float64' yet
+   37 |     let r = Rejected(x: 2.0).get()
+      |         ^
+gate_methods.phs:38:12: error[E0600]: stage0 code generation does not support calls to methods other than those of supported structs yet
+   38 |     return c.scaled(by: 2) + c.get()
+      |            ^^^^^^^^

@@ -110,6 +110,12 @@ public:
     bool run(const File& file) {
         for (const auto& import : file.imports) unsupported(import.span, "imports");
         structs(file);
+        std::vector<const FunItem*> methods;
+        for (const Item* item : file.items)
+            if (item->kind == ItemKind::Struct && structs_.contains(items_.at(item).value))
+                for (const Item* member : as_type_decl(item)->members)
+                    if (const auto* method = as<FunItem>(member)) methods.push_back(method);
+        functions_.insert(methods.begin(), methods.end());
         std::vector<const FunItem*> mains;
         for (const Item* item : file.items) {
             if (item->kind == ItemKind::Struct) continue;
@@ -123,6 +129,7 @@ public:
         }
         for (const Item* item : file.items)
             if (const auto* fun = as<FunItem>(item)) function(*fun);
+        for (const auto* method : methods) function(*method);
         entry(file, mains);
         return ok_;
     }
@@ -187,8 +194,14 @@ private:
             if (param.conv != Convention::Default) unsupported(param.name.span, "parameter conventions");
             if (param.default_value) unsupported(param.default_value->span, "parameter defaults");
         }
-        for (const Item* member : type.members)
+        for (const Item* member : type.members) {
+            // Instance methods; their signatures and bodies are checked like functions.
+            if (const auto* method = as<FunItem>(member)) {
+                if (has_modifier(method->mods, Modifier::Static)) unsupported(method->name.span, "static methods");
+                continue;
+            }
             unsupported(member->name.sym.empty() ? member->span : member->name.span, member_name(member->kind));
+        }
         const bool result = ok_;
         ok_ = ok_ && before;
         return result;
@@ -196,7 +209,6 @@ private:
 
     static std::string_view member_name(ItemKind kind) {
         switch (kind) {
-            case ItemKind::Fun: return "methods";
             case ItemKind::Var: return "fields declared in a struct body";
             case ItemKind::Init: return "initializers";
             case ItemKind::Deinit: return "deinitializers";
@@ -388,11 +400,7 @@ private:
                 }
                 // A local, or a field of a local struct at any depth; the
                 // target's member reads check the fields themselves.
-                const Expr* root = unparen(assign.target);
-                while (const auto* member = as<MemberExpr>(root)) root = unparen(member->base);
-                const auto* name = as<NameExpr>(root);
-                const auto id = name ? target(*name) : BindingId{};
-                if (!id.valid() || resolution_.binding(id).kind != BindingKind::Local) {
+                if (!place(assign.target)) {
                     unsupported(assign.target->span, "assignment to anything but a local variable or its fields");
                     return;
                 }
@@ -418,7 +426,8 @@ private:
         if (!control && actual.kind == ScalarType::Deferred && mentions_rejected(expr)) return;
         if (!control && !type(expr.span, actual)) return;
         switch (expr.kind) {
-            case ExprKind::Int: case ExprKind::Bool: case ExprKind::String: case ExprKind::Unit: return;
+            case ExprKind::Int: case ExprKind::Bool: case ExprKind::String: case ExprKind::Unit: case ExprKind::SelfValue:
+                return;
             case ExprKind::Name: name(*cast<NameExpr>(&expr)); return;
             case ExprKind::Paren: work.push_back({cast<ParenExpr>(&expr)->inner, used}); return;
             case ExprKind::Unary: work.push_back({cast<UnaryExpr>(&expr)->operand, true}); return;
@@ -482,7 +491,7 @@ private:
         switch (expr.kind) {
             case ExprKind::Int: case ExprKind::Bool: case ExprKind::String: case ExprKind::Unit: case ExprKind::Name:
             case ExprKind::Paren: case ExprKind::Unary: case ExprKind::Binary: case ExprKind::Call: case ExprKind::Block:
-            case ExprKind::If: case ExprKind::Member:
+            case ExprKind::If: case ExprKind::Member: case ExprKind::SelfValue:
                 return true;
             default:
                 unsupported(expr.span, expr_name(expr.kind));
@@ -512,10 +521,22 @@ private:
         return false;
     }
 
+    // A local, the receiver or one of its fields, and fields below them.
+    bool place(const Expr* expr) const {
+        expr = unparen(expr);
+        while (const auto* member = as<MemberExpr>(expr)) expr = unparen(member->base);
+        if (expr->kind == ExprKind::SelfValue) return true;
+        const auto* name = as<NameExpr>(expr);
+        const auto id = name ? target(*name) : BindingId{};
+        return id.valid() &&
+               (resolution_.binding(id).kind == BindingKind::Local || resolution_.binding(id).kind == BindingKind::Field);
+    }
+
     void name(const NameExpr& name) {
         const auto id = target(name);
         const auto kind = id.valid() ? resolution_.binding(id).kind : BindingKind::Import;
-        if (kind == BindingKind::Local || kind == BindingKind::Parameter) return;
+        // A bare field name inside a method reads the receiver's field.
+        if (kind == BindingKind::Local || kind == BindingKind::Parameter || kind == BindingKind::Field) return;
         if (kind == BindingKind::Function) unsupported(name.span, "function values");
         else unsupported(name.span, "this name");
     }
@@ -545,6 +566,24 @@ private:
                 return;
             }
             for (usize i = call.args.size(); i-- > 0;) work.push_back({call.args[i].value, true});
+            return;
+        }
+        if (checked && checked->kind == CallKind::Method) {
+            // Instance methods of supported structs, on an explicit or implicit receiver.
+            const bool resolved = checked->state == CallState::Resolved && checked->target.valid() &&
+                                  checked->type_arguments.empty();
+            const auto* fun = resolved ? as<FunItem>(resolution_.binding(checked->target).item) : nullptr;
+            if (!fun || !functions_.contains(fun)) {
+                unsupported(call.callee->span, "calls to methods other than those of supported structs");
+                return;
+            }
+            // A `mut fun` changes its receiver in place.
+            if (has_modifier(fun->mods, Modifier::Mut) && checked->receiver && !place(checked->receiver)) {
+                unsupported(checked->receiver->span, "'mut fun' calls on anything but a local variable or its fields");
+                return;
+            }
+            for (usize i = call.args.size(); i-- > 0;) work.push_back({call.args[i].value, true});
+            if (checked->receiver) work.push_back({checked->receiver, true});
             return;
         }
         const auto* callee = as<NameExpr>(call.callee);

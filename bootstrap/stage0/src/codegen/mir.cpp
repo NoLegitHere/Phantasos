@@ -166,7 +166,8 @@ std::string dump(const Program& program) {
         if (f) out += '\n';
         out += std::format("fun @{}(", fun.name);
         for (u32 p = 0; p < fun.params; ++p)
-            out += std::format("{}%{}: {}", p ? ", " : "", p, name_of(fun.regs[p]));
+            out += std::format("{}{}%{}: {}", p ? ", " : "", is_inout(fun, p) ? "inout " : "", p,
+                               name_of(fun.regs[p]));
         out += std::format(") -> {}{} {{\n", name_of(fun.result), f == program.main ? " entry" : "");
         for (usize b = 0; b < fun.blocks.size(); ++b) {
             const auto& block = fun.blocks[b];

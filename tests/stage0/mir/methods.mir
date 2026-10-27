@@ -1,0 +1,54 @@
+struct @Point { x: i64 +0, y: i64 +8 } size 16 align 8
+
+struct @Line { from: @Point +0, to: @Point +16 } size 32 align 8
+
+fun @Point.sum(%0: @Point) -> i64 {
+bb0:
+    %1: i64 = field %0, x
+    %2: i64 = field %0, y
+    %3: i64 = add %1, %2
+    ret %3
+}
+
+fun @Point.shift(inout %0: @Point, %1: i64) -> unit {
+bb0:
+    %2: i64 = field %0, x
+    %3: i64 = add %2, %1
+    %0: @Point = with %0, x, %3
+    %4: i64 = call @Point.sum(%0)
+    %0: @Point = with %0, y, %4
+    ret
+}
+
+fun @Line.stretch(inout %0: @Line) -> unit {
+bb0:
+    %1: @Point = field %0, from
+    %2: i64 = call @Point.sum(%1)
+    %3: @Point = field %0, to
+    call @Point.shift(%3, %2)
+    %0: @Line = with %0, to, %3
+    ret
+}
+
+fun @main() -> i64 entry {
+bb0:
+    %0: i64 = const 1
+    %1: i64 = const 2
+    %2: @Point = make %0, %1
+    %3: i64 = const 3
+    %4: i64 = const 4
+    %5: @Point = make %3, %4
+    %6: @Line = make %2, %5
+    %7: @Line = copy %6
+    call @Line.stretch(%7)
+    %8: i64 = const 1
+    %9: @Point = field %7, from
+    call @Point.shift(%9, %8)
+    %7: @Line = with %7, from, %9
+    %10: @Point = field %7, to
+    %11: i64 = field %10, y
+    %12: @Point = field %7, from
+    %13: i64 = call @Point.sum(%12)
+    %14: i64 = add %11, %13
+    ret %14
+}

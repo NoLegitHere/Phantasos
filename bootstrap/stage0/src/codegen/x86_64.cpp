@@ -37,9 +37,10 @@ constexpr Reg kArgs[] = {RDI, RSI, RDX, RCX, R8, R9};
 
 // Where a value is passed: System V gives each word an integer register while
 // they last, but a two-word value takes two registers or goes on the stack
-// whole. A value over two words is passed by address (abi.md A.6), and a
-// result over two words is returned through a hidden pointer in the first
-// argument register. Stack words count up from the first stack argument.
+// whole. A value over two words is passed by address (abi.md A.6), and so is
+// an inout value, which the callee writes back before it returns. A result
+// over two words is returned through a hidden pointer in the first argument
+// register. Stack words count up from the first stack argument.
 struct Place {
     u32 words = 1;
     i32 reg = -1;    // first register in kArgs, or -1 on the stack
@@ -54,12 +55,13 @@ struct Places {
 
 bool indirect(const mir::Program& program, Type type) { return mir::words(program, type) > 2; }
 
-Places places(const mir::Program& program, const std::vector<mir::Type>& types, bool indirect_result) {
+Places places(const mir::Program& program, const mir::Function& callee, const std::vector<mir::Type>& types) {
     Places out;
-    u32 next = indirect_result ? 1 : 0;
-    for (const auto type : types) {
+    u32 next = indirect(program, callee.result) ? 1 : 0;
+    for (u32 i = 0; i < types.size(); ++i) {
+        const Type type = types[i];
         Place place{mir::words(program, type)};
-        if (indirect(program, type)) place = {.words = 1, .address = true};
+        if (indirect(program, type) || mir::is_inout(callee, i)) place = {.words = 1, .address = true};
         if (next + place.words <= std::size(kArgs)) {
             place.reg = static_cast<i32>(next);
             next += place.words;
@@ -506,11 +508,18 @@ private:
             used += 8;
             result_ = -used;
         }
+        // Where each inout parameter's value goes back to.
+        written_.clear();
+        for (u32 p = 0; p < fun.params; ++p)
+            if (mir::is_inout(fun, p)) {
+                used += 8;
+                written_.push_back({p, -used});
+            }
         as_.prologue();
         const auto frame = (used + 15) / 16 * 16;
         if (frame) as_.adjust_rsp(-frame);
         if (sret) as_.store(result_, RDI);
-        const auto params = places(program_, std::vector<Type>(fun.regs.begin(), fun.regs.begin() + fun.params), sret);
+        const auto params = places(program_, fun, std::vector<Type>(fun.regs.begin(), fun.regs.begin() + fun.params));
         // Registers first, so that copying a value passed by address cannot clobber them.
         for (u32 p = 0; p < fun.params; ++p) {
             const auto& place = params.values[p];
@@ -523,6 +532,8 @@ private:
             const auto stack = [&](u32 w) { return 16 + 8 * static_cast<i32>(place.stack + w); };
             if (place.address) {
                 as_.load(RSI, place.reg >= 0 ? slot({p}) : stack(0));
+                for (const auto& [param, at] : written_)
+                    if (param == p) as_.store(at, RSI);
                 copy(RBP, slot({p}), RSI, 0, size(fun.regs[p]));
             } else if (place.reg < 0) {
                 for (u32 w = 0; w < place.words; ++w) {
@@ -757,8 +768,9 @@ private:
     void call(const mir::Inst& inst) {
         std::vector<Type> types;
         for (const auto arg : inst.args) types.push_back(fun_->regs[arg.id]);
-        const bool sret = indirect(program_, program_.functions[inst.callee].result);
-        const auto args = places(program_, types, sret);
+        const auto& callee = program_.functions[inst.callee];
+        const bool sret = indirect(program_, callee.result);
+        const auto args = places(program_, callee, types);
         // rsp stays 16-byte aligned at the call.
         const i32 pad = args.stack_words % 2 ? 8 : 0;
         if (pad) as_.adjust_rsp(-pad);
@@ -804,6 +816,10 @@ private:
                 }
                 break;
             case Term::Ret:
+                for (const auto& [param, at] : written_) {
+                    as_.load(RSI, at);
+                    copy(RSI, 0, RBP, slot({param}), size(fun_->regs[param]));
+                }
                 if (block.value.valid()) {
                     const Type type = fun_->regs[block.value.id];
                     if (indirect(program_, type)) {
@@ -828,6 +844,7 @@ private:
     const mir::Function* fun_ = nullptr;
     std::vector<i32> slots_;
     i32 result_ = 0;  // the slot holding a large result's destination address
+    std::vector<std::pair<u32, i32>> written_;  // inout parameters and the slots holding their addresses
     std::unordered_map<std::string_view, u32> runtime_;  // print entries by name
     std::vector<Assembler::Label> blocks_;
     Assembler::Label overflow_ = 0, divide_ = 0;

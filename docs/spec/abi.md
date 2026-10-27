@@ -92,6 +92,10 @@ parameters in this order:
   A larger result is written through `ret*` in `rdi`, and the callee returns
   that address in `rax`. Stage0 has no floating-point fields yet, so every
   eightbyte is of the INTEGER class.
+- Stage0 passes a method's receiver as its first parameter after `ret*`, like
+  any other struct argument. A `mut fun` receiver is `inout`: it is passed by
+  address whatever its size. The callee copies it in, and it writes the final
+  value back through that address before it returns.
 
 ## A.7 Symbol mangling
 ```

@@ -69,7 +69,7 @@ struct Inst {
     u64 imm = 0;          // Const: the value, sign-extended for signed types; Str: index into Program::strings;
                           // Field, With: the field's declaration index
     u32 callee = 0;       // Call: function index
-    std::vector<Reg> args;  // Call: arguments in parameter order; Make: field values
+    std::vector<Reg> args;  // Call: arguments in parameter order, a method's receiver first; Make: field values
 };
 
 enum class Term : u8 { Br, CondBr, Ret, Unreachable };
@@ -86,9 +86,15 @@ struct Function {
     Span span;
     std::vector<Type> regs;  // register types; parameters come first
     u32 params = 0;
+    // Per parameter: an inout parameter's final value is written back to the
+    // caller's argument register when the call returns. A `mut fun` receiver
+    // is inout. Empty when no parameter is inout.
+    std::vector<bool> inout;
     Type result = Type::Unit;
     std::vector<Block> blocks;  // blocks[0] is the entry; every block is reachable
 };
+
+inline bool is_inout(const Function& fun, u32 param) { return param < fun.inout.size() && fun.inout[param]; }
 
 // Fields keep declaration order; offsets place them by decreasing alignment,
 // stable among equal alignments, and the size is a multiple of the alignment.

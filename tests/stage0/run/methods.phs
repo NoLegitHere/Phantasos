@@ -1,0 +1,67 @@
+// Copyright 2026 The Phantasos Authors
+// SPDX-License-Identifier: Apache-2.0
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// Methods on structs: a hidden receiver, bare field names, implicit and
+// explicit calls, overloads, recursion, and `mut fun` changes that reach the
+// caller's local, nested field or the enclosing method's receiver.
+
+struct Counter(var count: Int8, var step: Int) {
+    fun next(): Int = Int(count) + step
+    mut fun bump(): Int {
+        count += 1
+        return Int(count)
+    }
+    mut fun bump(by: Int8) { count += by }
+    mut fun replace(with: Counter) { self = with }
+}
+
+struct Big(var a: Int, var b: Int, var c: Int, var inner: Counter, var name: String) {
+    fun label(): String = name
+    fun sum(extra: Int): Int = a + b + c + inner.next() + extra
+    mut fun grow(): Big {
+        a += 1
+        inner.bump(by: 2)
+        self.inner.step *= 10
+        return self
+    }
+    fun copyWith(n: String): Big = Big(a: a, b: b, c: c, inner: inner, name: n)
+    fun fact(n: Int): Int {
+        if n <= 1 { return 1 }
+        return n * fact(n - 1)
+    }
+}
+
+fun pair(c: Counter, n: Int): Int = c.next() * 1000 + n
+
+fun main(): Int {
+    var c = Counter(count: 1, step: 1)
+    print(pair(c, c.bump()))          // c is read before bump: 2 * 1000 + 2
+    print(c.next())                   // 3
+    var big = Big(a: 1, b: 2, c: 3, inner: c, name: "big")
+    let before = big.grow()
+    print(before.a)                   // 2
+    print(Int(big.inner.count))       // 4
+    print(big.inner.step)             // 10
+    big.inner.bump(by: 3)
+    print(Int(big.inner.count))       // 7
+    print(big.inner.bump())           // 8
+    print(big.sum(100))               // 2+2+3 + (8+10) + 100 = 125
+    print(big.copyWith("other").label())
+    print(Counter(count: 5, step: 6).next())  // 11
+    c.replace(with: Counter(count: 9, step: 9))
+    print(c.next())                   // 18
+    print(big.fact(10))
+    return 0
+}

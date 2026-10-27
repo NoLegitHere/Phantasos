@@ -32,7 +32,9 @@
 // literals live in .rodata. A struct lies in its slots with the layout of
 // abi.md A.2, narrow fields at their own size. Up to two words it travels like
 // a String; a larger one is passed by address and copied in by the callee,
-// and a larger result is written through a hidden pointer in rdi.
+// and a larger result is written through a hidden pointer in rdi. An inout
+// parameter, such as a `mut fun` receiver, is passed by address and written
+// back before the callee returns.
 //
 // A failed check calls the runtime's trap entry with a Trap code in edi; the
 // entry does not return.

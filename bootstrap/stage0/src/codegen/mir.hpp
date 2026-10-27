@@ -51,11 +51,12 @@ enum class Op : u8 {
     Eq, Ne, Lt, Le, Gt, Ge,
     Widen, Truncate,
     Call,
+    Print,  // writes a's value and a newline to standard output
 };
 
 struct Inst {
     Op op;
-    Reg dst;              // invalid for a call without a value
+    Reg dst;              // invalid for a call without a value and for print
     Reg a, b;             // operands; comparisons use the operand type
     u64 imm = 0;          // Const: the value, sign-extended for signed types; Str: index into Program::strings
     u32 callee = 0;       // Call: function index

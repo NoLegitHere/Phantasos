@@ -936,15 +936,15 @@ the subset, so that nothing half-checked reaches code generation:
 - **Statements.** `let` and `var` locals, with or without an initializer;
   assignment and compound assignment to locals; `if`, `while`, `loop`, `break`,
   `continue` and `return`.
-- **Expressions.** Integer, Boolean and string literals, `()`, local and parameter
-  names, parentheses, direct calls to top-level functions, integer
-  conversions, unary `-`, `!` and `~`, arithmetic including the wrapping
-  forms, `&`, `|`, `^`, comparisons, `&&` and `||`. Used `if` and block
+- **Expressions.** Integer, Boolean and string literals, `()`, local and
+  parameter names, parentheses, direct calls to top-level functions, `print`
+  (3.27), integer conversions, unary `-`, `!` and `~`, arithmetic including
+  the wrapping forms, `&`, `|`, `^`, comparisons, `&&` and `||`. Used `if` and block
   results are allowed where their type is known (3.24).
 
 Everything else reports `E0600`. That includes shifts, `for`, `defer`,
 `throw`, `match`, `unsafe` blocks, operators on strings, string interpolation,
-`print` (3.27), floating-point values, arrays,
+floating-point values, arrays,
 optionals, types and members, globals, and function values. A local whose
 type is still deferred also reports `E0600` and needs an annotation. One
 `E0600` is reported per construct, and uses of a rejected local are not
@@ -1013,5 +1013,8 @@ When a write to standard output fails, the program panics (3.7). Once `std`
 exists (P2), the prelude `print` forwards to `std.io` with the same signature
 and output.
 
-Stage0 generates code for `String` values (3.25) but not yet for `print`;
-`gate` reports calls to it as `E0600`.
+Stage0 generates code for `print` on Linux x86_64: each call writes its bytes
+with the `write` system call, retrying after a partial write or `EINTR`. Any
+other failure, such as a full disk or a closed descriptor, panics with
+`panic: cannot write to standard output` (exit status 101). Writing to a
+closed pipe raises `SIGPIPE`, whose default action ends the process first.

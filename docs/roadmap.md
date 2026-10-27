@@ -71,7 +71,7 @@ foundation. Complete.
   - [x] Prelude `print` and its call checking.
   - [x] Read-only data in objects and ELF executables.
   - [x] MIR and x86_64 for two-word `String` values; gate accepts them.
-  - [ ] Runtime write and integer formatting; gate accepts `print`.
+  - [x] Runtime write and integer formatting; gate accepts `print`.
   - [ ] Run tests that compare standard output.
 - [ ] Generic base substitution and built-in traits. Instantiate
   generic base/interface graphs, derive `Copy`/`Sendable`/`Error`, and complete

@@ -111,3 +111,8 @@ type     = 'i1'|'i2'|'i4'|'i8'|'u1'|'u2'|'u4'|'u8'|'f4'|'f8'|'b'|'c'|'s'
   executable `PT_LOAD` segment for code and a separate, page-aligned
   read-only, non-executable one for `.rodata` (string bytes such as the panic
   messages). Identical byte strings within an object share one copy.
+- The stage0 runtime also provides the prelude `print` (spec 3.27) as
+  `_P$print_string` (`rdi:rsi`), `_P$print_int`, `_P$print_uint` and
+  `_P$print_bool` (`rdi`). Each writes its value and a newline to standard
+  output through `_P$write`, which retries partial writes and `EINTR` and
+  otherwise panics with `panic: cannot write to standard output`.

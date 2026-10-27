@@ -36,24 +36,36 @@
 
 namespace phs::x86_64 {
 
-enum class Trap : u32 { Overflow = 1, DivideByZero = 2 };
+enum class Trap : u32 { Overflow = 1, DivideByZero = 2, WriteFailed = 3 };
 
 inline constexpr std::string_view kTrapSymbol = "__phantasos_trap";
 inline constexpr std::string_view kEntrySymbol = "_start";
 inline constexpr u32 kPanicExitStatus = 101;
 
+// Runtime entries behind the prelude print, one per overload (abi.md A.8).
+// Each writes its argument and a newline to standard output: a String in
+// rdi:rsi, an Int or UInt in rdi, or a Bool (0 or 1) in rdi.
+inline constexpr std::string_view kPrintString = "_P$print_string";
+inline constexpr std::string_view kPrintInt = "_P$print_int";
+inline constexpr std::string_view kPrintUInt = "_P$print_uint";
+inline constexpr std::string_view kPrintBool = "_P$print_bool";
+
 // "_P" followed by the length-prefixed MIR name (abi.md A.7, without a package).
 [[nodiscard]] std::string symbol_name(const mir::Function& function);
 
 // Symbols 0..n-1 are the program's functions in order; the trap entry follows,
-// then the program's string literals as local .rodata symbols.
+// then, as they are first used, print entries and string literals (local
+// .rodata symbols).
 // When listing is non-null it receives a readable assembly listing.
 [[nodiscard]] obj::Object emit(const mir::Program& program, std::string* listing = nullptr);
 
 // The stage0 Linux runtime for a program: _start calls the program's main and
 // passes its result (0 for a Unit main) to exit_group, and the trap entry
-// writes "panic: <reason>" to stderr and exits with kPanicExitStatus. It uses
-// raw system calls only; main stays an undefined symbol for the linker.
+// writes "panic: <reason>" to stderr and exits with kPanicExitStatus. The
+// print entries format integers in decimal and Bool as true or false, and
+// write with retries after partial writes and EINTR; any other failure panics
+// with WriteFailed. It uses raw system calls only; main stays an undefined
+// symbol for the linker.
 [[nodiscard]] obj::Object runtime(const mir::Program& program, std::string* listing = nullptr);
 
 }  // namespace phs::x86_64

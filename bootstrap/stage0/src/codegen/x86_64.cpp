@@ -19,6 +19,7 @@
 #include <format>
 #include <iterator>
 #include <limits>
+#include <unordered_map>
 #include <vector>
 
 namespace phs::x86_64 {
@@ -308,6 +309,25 @@ public:
         end(start, std::format("lea {}, [rip+{}]", name(dst), object_.symbols[symbol].name));
     }
     void syscall() { raw({0x0F, 0x05}, "syscall"); }
+    void ret() { raw({0xC3}, "ret"); }
+    // op r64, imm8 forms of the 83 group: add /0, sub /5, cmp /7.
+    void alu_imm8(u8 ext, std::string_view mnemonic, Reg r, std::int8_t value) {
+        const auto start = begin();
+        rex(true, 0, r);
+        byte(0x83);
+        byte(modrm(ext, r));
+        byte(static_cast<u8>(value));
+        end(start, std::format("{} {}, {}", mnemonic, name(r), int{value}));
+    }
+    // mov byte [base], src for a base other than rsp, rbp, r12 and r13.
+    void store_byte(Reg base, Reg src) {
+        PHS_ASSERT(base != RSP && base != RBP && src < RSP);
+        const auto start = begin();
+        rex(false, src, base);
+        byte(0x88);
+        byte(static_cast<u8>((src & 7) << 3 | (base & 7)));
+        end(start, std::format("mov byte [{}], {}", name(base), kByte[src]));
+    }
 
 private:
     static constexpr u64 kUnplaced = std::numeric_limits<u64>::max();
@@ -468,6 +488,7 @@ private:
 
     void instruction(const mir::Inst& inst) {
         if (inst.op == Op::Call) return call(inst);
+        if (inst.op == Op::Print) return print(inst);
         const Type type = fun_->regs[inst.dst.id];
         if (type == Type::Str) return string(inst);
         const Type operand = inst.a.valid() ? fun_->regs[inst.a.id] : type;
@@ -516,7 +537,7 @@ private:
                 as_.setcc(compare(inst.op, sign));
                 break;
             }
-            case Op::Call: case Op::Str: break;
+            case Op::Call: case Op::Str: case Op::Print: break;
         }
         as_.store(slot(inst.dst), RAX);
     }
@@ -572,6 +593,21 @@ private:
             as_.group3(6, "div", RCX);
         }
         if (op == Op::Rem) as_.mov(RAX, RDX);
+    }
+
+    // print: the runtime entry for the argument's type (Int, UInt, Bool or String).
+    void print(const mir::Inst& inst) {
+        const Type type = fun_->regs[inst.a.id];
+        const auto entry = type == Type::Str ? kPrintString
+                         : type == Type::Bool ? kPrintBool
+                         : mir::is_signed(type) ? kPrintInt
+                                                : kPrintUInt;
+        PHS_ASSERT(type == Type::Str || type == Type::Bool || type == Type::I64 || type == Type::U64);
+        auto [found, added] = runtime_.try_emplace(entry, static_cast<u32>(object_.symbols.size()));
+        if (added) object_.symbols.push_back({std::string(entry), false});
+        as_.load(RDI, slot(inst.a));
+        if (type == Type::Str) as_.load(RSI, slot(inst.a) + 8);
+        as_.call(found->second);
     }
 
     void call(const mir::Inst& inst) {
@@ -632,6 +668,7 @@ private:
     Assembler as_;
     const mir::Function* fun_ = nullptr;
     std::vector<i32> slots_;
+    std::unordered_map<std::string_view, u32> runtime_;  // print entries by name
     std::vector<Assembler::Label> blocks_;
     Assembler::Label overflow_ = 0, divide_ = 0;
     bool used_overflow_ = false, used_divide_ = false;
@@ -641,6 +678,7 @@ private:
 // Linux x86_64 system call numbers.
 constexpr u32 kSysWrite = 1;
 constexpr u32 kSysExitGroup = 231;
+constexpr std::int8_t kEintr = 4;
 
 class Runtime {
 public:
@@ -651,11 +689,22 @@ public:
         const auto& main = program_.functions[program_.main];
         const u32 start = symbol(std::string(kEntrySymbol), true);
         const u32 trap = symbol(std::string(kTrapSymbol), true);
+        const u32 write = symbol("_P$write", true);
+        const u32 decimal = symbol("_P$print_decimal", true);
+        const u32 print_string = symbol(std::string(kPrintString), true);
+        const u32 print_int = symbol(std::string(kPrintInt), true);
+        const u32 print_uint = symbol(std::string(kPrintUInt), true);
+        const u32 print_bool = symbol(std::string(kPrintBool), true);
         const u32 main_symbol = symbol(symbol_name(main), false);
         static constexpr std::string_view kOverflow = "panic: arithmetic overflow\n";
         static constexpr std::string_view kDivide = "panic: division by zero\n";
+        static constexpr std::string_view kWrite = "panic: cannot write to standard output\n";
         const u32 overflow = object_.literal(kOverflow);
         const u32 divide = object_.literal(kDivide);
+        const u32 write_failed = object_.literal(kWrite);
+        const u32 newline = object_.literal("\n");
+        const u32 yes = object_.literal("true\n");
+        const u32 no = object_.literal("false\n");
 
         // The kernel enters with rsp 16-byte aligned, so the call leaves main
         // with the alignment System V expects.
@@ -668,14 +717,19 @@ public:
         end(start);
 
         begin(trap, "edi holds the trap code");
-        const auto write = as_.label();
-        as_.cmp32_imm8(RDI, static_cast<u8>(Trap::DivideByZero));
+        const auto not_divide = as_.label(), report = as_.label();
         as_.lea(RSI, overflow);
         as_.mov32_imm(RDX, static_cast<u32>(kOverflow.size()));
-        as_.jcc(NE, write);
+        as_.cmp32_imm8(RDI, static_cast<u8>(Trap::DivideByZero));
+        as_.jcc(NE, not_divide);
         as_.lea(RSI, divide);
         as_.mov32_imm(RDX, static_cast<u32>(kDivide.size()));
-        as_.place(write);
+        as_.place(not_divide);
+        as_.cmp32_imm8(RDI, static_cast<u8>(Trap::WriteFailed));
+        as_.jcc(NE, report);
+        as_.lea(RSI, write_failed);
+        as_.mov32_imm(RDX, static_cast<u32>(kWrite.size()));
+        as_.place(report);
         as_.mov32_imm(RDI, 2);  // stderr
         as_.mov32_imm(RAX, kSysWrite);
         as_.syscall();
@@ -683,6 +737,111 @@ public:
         exit();
         as_.patch();
         end(trap);
+
+        begin(write, "writes rsi bytes at rdi to stdout");
+        const auto next = as_.label(), done = as_.label(), failed = as_.label();
+        as_.mov(R8, RDI);
+        as_.mov(R9, RSI);
+        as_.place(next);
+        as_.test(R9);
+        as_.jcc(E, done);
+        as_.mov32_imm(RDI, 1);  // stdout
+        as_.mov(RSI, R8);
+        as_.mov(RDX, R9);
+        as_.mov32_imm(RAX, kSysWrite);
+        as_.syscall();
+        as_.alu_imm8(7, "cmp", RAX, -kEintr);
+        as_.jcc(E, next);
+        as_.test(RAX);
+        as_.jcc(LE, failed);  // an error, or no progress
+        as_.alu(0x01, "add", R8, RAX);
+        as_.alu(0x29, "sub", R9, RAX);
+        as_.jump(next);
+        as_.place(done);
+        as_.ret();
+        as_.place(failed);
+        as_.mov32_imm(RDI, static_cast<u32>(Trap::WriteFailed));
+        as_.call(trap);
+        as_.ud2();
+        as_.patch();
+        end(write);
+
+        // Digits are written backwards into a stack buffer that ends with the
+        // newline; 20 digits, a sign and the newline fit in 32 bytes.
+        begin(decimal, "rdi: magnitude, rsi: nonzero when negative");
+        const auto digit = as_.label(), unsigned_ = as_.label();
+        as_.prologue();
+        as_.adjust_rsp(-32);
+        as_.mov(RAX, RDI);
+        as_.mov(R9, RSI);
+        as_.mov(R8, RBP);
+        as_.alu_imm8(5, "sub", R8, 1);
+        as_.mov32_imm(RDX, '\n');
+        as_.store_byte(R8, RDX);
+        as_.mov32_imm(RCX, 10);
+        as_.place(digit);
+        as_.zero_edx();
+        as_.group3(6, "div", RCX);
+        as_.alu_imm8(0, "add", RDX, '0');
+        as_.alu_imm8(5, "sub", R8, 1);
+        as_.store_byte(R8, RDX);
+        as_.test(RAX);
+        as_.jcc(NE, digit);
+        as_.test(R9);
+        as_.jcc(E, unsigned_);
+        as_.mov32_imm(RDX, '-');
+        as_.alu_imm8(5, "sub", R8, 1);
+        as_.store_byte(R8, RDX);
+        as_.place(unsigned_);
+        as_.mov(RDI, R8);
+        as_.mov(RSI, RBP);
+        as_.alu(0x29, "sub", RSI, R8);
+        as_.call(write);
+        as_.epilogue();
+        as_.patch();
+        end(decimal);
+
+        begin(print_string, "rdi:rsi is the String");
+        as_.call(write);
+        as_.lea(RDI, newline);
+        as_.mov32_imm(RSI, 1);
+        as_.call(write);
+        as_.ret();
+        end(print_string);
+
+        begin(print_int, "rdi is the Int");
+        const auto positive = as_.label();
+        as_.zero32(RSI);
+        as_.test(RDI);
+        as_.jcc(GE, positive);
+        // The magnitude of the minimum is its own bit pattern, read unsigned.
+        as_.group3(3, "neg", RDI);
+        as_.mov32_imm(RSI, 1);
+        as_.place(positive);
+        as_.call(decimal);
+        as_.ret();
+        as_.patch();
+        end(print_int);
+
+        begin(print_uint, "rdi is the UInt");
+        as_.zero32(RSI);
+        as_.call(decimal);
+        as_.ret();
+        end(print_uint);
+
+        begin(print_bool, "rdi is the Bool");
+        const auto chosen = as_.label();
+        as_.test(RDI);
+        as_.lea(RDI, yes);
+        as_.mov32_imm(RSI, 5);
+        as_.jcc(NE, chosen);
+        as_.lea(RDI, no);
+        as_.mov32_imm(RSI, 6);
+        as_.place(chosen);
+        as_.call(write);
+        as_.ret();
+        as_.patch();
+        end(print_bool);
 
         as_.rodata();
     }

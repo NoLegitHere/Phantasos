@@ -75,6 +75,11 @@ parameters in this order:
 - `borrow` parameters of aggregates larger than 2 pointers are passed by
   address. `inout` is always passed by address.
 - `own` parameters transfer ownership: the callee destroys them.
+- Stage0 passes a `String` as a 16-byte aggregate of two words, a pointer to
+  its UTF-8 bytes and their length, as System V does for such a struct: in two
+  consecutive integer argument registers when both are free, otherwise both
+  words on the stack (later scalars may still take the remaining register),
+  and it returns one in `rax:rdx`. String literals live in `.rodata` (A.8).
 
 ## A.7 Symbol mangling
 ```

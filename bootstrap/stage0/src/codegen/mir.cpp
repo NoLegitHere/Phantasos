@@ -32,6 +32,7 @@ std::string_view type_name(Type type) {
         case Type::U16: return "u16";
         case Type::U32: return "u32";
         case Type::U64: return "u64";
+        case Type::Str: return "string";
     }
     unreachable();
 }
@@ -46,8 +47,14 @@ u32 bit_width(Type type) {
         case Type::I16: case Type::U16: return 16;
         case Type::I32: case Type::U32: return 32;
         case Type::I64: case Type::U64: return 64;
+        case Type::Str: return 128;
     }
     unreachable();
+}
+
+u32 words(Type type) {
+    if (type == Type::Unit || type == Type::Never) return 0;
+    return type == Type::Str ? 2 : 1;
 }
 
 namespace {
@@ -56,6 +63,7 @@ std::string_view op_name(Op op) {
     switch (op) {
         case Op::Const: return "const";
         case Op::Copy: return "copy";
+        case Op::Str: return "str";
         case Op::Neg: return "neg";
         case Op::Not: return "not";
         case Op::BitNot: return "bitnot";
@@ -90,6 +98,20 @@ std::string constant(Type type, u64 bits) {
     return std::format("{}", bits);
 }
 
+// String literals print quoted, with escapes for quotes, backslashes and
+// control characters; other UTF-8 bytes print as they are.
+std::string literal(std::string_view bytes) {
+    std::string out = "\"";
+    for (const char c : bytes) {
+        if (c == '"' || c == '\\') out += std::format("\\{}", c);
+        else if (c == '\n') out += "\\n";
+        else if (c == '\t') out += "\\t";
+        else if (static_cast<u8>(c) < 0x20 || c == 0x7F) out += std::format("\\u{{{:X}}}", static_cast<u8>(c));
+        else out += c;
+    }
+    return out + '"';
+}
+
 }  // namespace
 
 std::string dump(const Program& program) {
@@ -111,6 +133,7 @@ std::string dump(const Program& program) {
                 out += op_name(inst.op);
                 switch (inst.op) {
                     case Op::Const: out += ' ' + constant(fun.regs[inst.dst.id], inst.imm); break;
+                    case Op::Str: out += ' ' + literal(program.strings[inst.imm]); break;
                     case Op::Call:
                         out += std::format(" @{}(", program.functions[inst.callee].name);
                         for (usize a = 0; a < inst.args.size(); ++a) out += (a ? ", " : "") + reg(inst.args[a]);

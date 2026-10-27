@@ -65,10 +65,21 @@ extern "C" [[noreturn]] void on_trap(u32 code) {
     std::longjmp(trap_target, 1);
 }
 
-Outcome run_native(const Compiled& compiled) {
+// rax and rdx on return: a String's address and length, or a scalar in rax.
+struct Words {
+    u64 rax, rdx;
+};
+
+struct Native {
+    Outcome outcome;
+    Words words{};
+};
+
+Native run_native(const Compiled& compiled, u32 function) {
     const auto& object = compiled.object;
     const usize trampoline = (object.text.size() + 15) / 16 * 16;
-    const usize size = trampoline + 16;
+    const usize rodata = trampoline + 16;
+    const usize size = rodata + object.rodata.size();
     void* memory = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     CHECK(memory != MAP_FAILED);
     auto* base = static_cast<u8*>(memory);
@@ -80,24 +91,35 @@ Outcome run_native(const Compiled& compiled) {
     std::memcpy(base + trampoline + 2, &handler, 8);
     base[trampoline + 10] = 0xFF;
     base[trampoline + 11] = 0xE0;
+    if (!object.rodata.empty()) std::memcpy(base + rodata, object.rodata.data(), object.rodata.size());
     for (const auto& reloc : object.relocations) {
         const auto& symbol = object.symbols[reloc.symbol];
-        const auto target = reinterpret_cast<i64>(base) + static_cast<i64>(symbol.defined ? symbol.offset : trampoline);
+        const usize at = !symbol.defined ? trampoline
+                       : symbol.section == obj::Section::Rodata ? rodata + symbol.offset
+                                                                : symbol.offset;
+        const auto target = reinterpret_cast<i64>(base) + static_cast<i64>(at);
         const i64 value = target + reloc.addend - (reinterpret_cast<i64>(base) + static_cast<i64>(reloc.offset));
         CHECK(value >= INT32_MIN && value <= INT32_MAX);
         const auto field = static_cast<i32>(value);
         std::memcpy(base + reloc.offset, &field, 4);
     }
     CHECK(mprotect(memory, size, PROT_READ | PROT_EXEC) == 0);
-    using Entry = u64 (*)();
+    using Entry = Words (*)();
     Entry entry = nullptr;
-    const auto address = reinterpret_cast<uintptr_t>(base + object.symbols[compiled.program->main].offset);
+    const auto address = reinterpret_cast<uintptr_t>(base + object.symbols[function].offset);
     std::memcpy(&entry, &address, sizeof entry);
-    Outcome outcome;
-    if (setjmp(trap_target) == 0) outcome.value = entry();
-    else outcome = {true, 0, trap_code};
+    Native native;
+    if (setjmp(trap_target) == 0) {
+        native.words = entry();
+        native.outcome.value = native.words.rax;
+        // A String result points into the mapping; keep its bytes past munmap.
+        if (compiled.program->functions[function].result == mir::Type::Str) {
+            native.words.rax -= reinterpret_cast<u64>(base) + rodata;
+            CHECK(native.words.rax + native.words.rdx <= object.rodata.size());
+        }
+    } else native.outcome = {true, 0, trap_code};
     CHECK(munmap(memory, size) == 0);
-    return outcome;
+    return native;
 }
 #endif
 
@@ -106,7 +128,7 @@ void agrees(std::string_view source) {
     Compiled compiled(source);
     const auto expected = test::Interpreter(*compiled.program).run();
 #ifdef PHS_JIT
-    const auto actual = run_native(compiled);
+    const auto actual = run_native(compiled, compiled.program->main).outcome;
     const bool value = mir::bit_width(compiled.program->functions[compiled.program->main].result) != 0;
     if (actual.trap != expected.trap || (!expected.trapped && value && actual.value != expected.value)) {
         std::println(stderr, "{}\nexpected trap {} value {}, got trap {} value {}\n{}", source, expected.trap,
@@ -116,6 +138,58 @@ void agrees(std::string_view source) {
 #else
     (void)expected;
 #endif
+}
+
+// A String result must hold the same bytes natively as in the interpreter,
+// which tracks a String by its literal's index.
+void strings_agree(std::string_view source, std::string_view expected) {
+    Compiled compiled(source);
+    u32 function = 0;
+    while (compiled.program->functions[function].name != "f") ++function;
+    const auto reference = test::Interpreter(*compiled.program).run(function);
+    CHECK(!reference.trapped && compiled.program->strings[reference.value] == expected);
+#ifdef PHS_JIT
+    const auto native = run_native(compiled, function);
+    const auto bytes = std::string_view(reinterpret_cast<const char*>(compiled.object.rodata.data()),
+                                        compiled.object.rodata.size());
+    if (native.outcome.trapped || bytes.substr(native.words.rax, native.words.rdx) != expected) {
+        std::println(stderr, "{}\nexpected \"{}\"\n{}", source, expected, compiled.listing);
+        CHECK(false);
+    }
+#endif
+}
+
+void strings() {
+    // Literals, copies, branches and results.
+    strings_agree(R"(
+fun f(): String {
+    var text = "first"
+    let other: String = "second"
+    if 1 < 2 { text = other }
+    return text
+}
+fun main() {}
+)", "second");
+    // Two-word arguments take two registers, or go on the stack with the
+    // registers left for later scalars, and come back in rax:rdx.
+    strings_agree(R"(
+fun pick(n: Int, a: String, b: String): String = if n == 0 { a } else { b }
+fun late(a: Int, b: Int, c: Int, d: Int, e: Int, text: String, g: Int): String = if g == 6 { text } else { "wrong" }
+fun stacked(a: String, b: String, c: String, d: String, e: String): String = d
+fun f(): String {
+    let x = late(1, 2, 3, 4, 5, pick(1, "no", "\u{1F30D} yes"), 6)
+    return stacked("a", "b", "c", x, "e")
+}
+fun main() {}
+)", "\xF0\x9F\x8C\x8D yes");
+    // Identical literals share their bytes.
+    Compiled shared(R"(
+fun f(): String = pick("same", "same")
+fun pick(a: String, b: String): String = b
+fun main() {}
+)");
+    CHECK(shared.program->strings == std::vector<std::string>{"same"});
+    CHECK(shared.object.rodata.size() == 4);
 }
 
 void object_layout() {
@@ -275,6 +349,7 @@ void random_expressions() {
 int main() {
     object_layout();
     programs();
+    strings();
     random_expressions();
     std::println("x86_64 tests passed");
 }

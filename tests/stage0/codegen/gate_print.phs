@@ -13,10 +13,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Output does not reach code generation yet: print and String values are
-// reported until stage0 can lower them.
+// String values are lowered, but print is reported until the runtime can
+// write output.
 
 fun main() {
     let text: String = "hi"
     print(1)
+    print(text)
 }

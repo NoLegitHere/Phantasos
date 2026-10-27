@@ -26,7 +26,10 @@
 // signed types, zero-extended otherwise). Each instruction loads its operands
 // into rax and rcx, computes, and stores the result. Calls follow the System V
 // AMD64 convention: integer arguments in rdi, rsi, rdx, rcx, r8 and r9, the
-// rest on the stack, and the result in rax.
+// rest on the stack, and the result in rax. A String takes two slots and is
+// passed like a 16-byte struct: in two consecutive argument registers if both
+// are free, otherwise both words on the stack, and returned in rax:rdx. String
+// literals live in .rodata.
 //
 // A failed check calls the runtime's trap entry with a Trap code in edi; the
 // entry does not return.
@@ -42,7 +45,8 @@ inline constexpr u32 kPanicExitStatus = 101;
 // "_P" followed by the length-prefixed MIR name (abi.md A.7, without a package).
 [[nodiscard]] std::string symbol_name(const mir::Function& function);
 
-// Symbols 0..n-1 are the program's functions in order; the trap entry follows.
+// Symbols 0..n-1 are the program's functions in order; the trap entry follows,
+// then the program's string literals as local .rodata symbols.
 // When listing is non-null it receives a readable assembly listing.
 [[nodiscard]] obj::Object emit(const mir::Program& program, std::string* listing = nullptr);
 

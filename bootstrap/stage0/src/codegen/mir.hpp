@@ -26,14 +26,17 @@
 // code. Registers are typed but not SSA: a local keeps one register that every
 // assignment writes. Arithmetic is checked by default; a checked operation
 // traps on overflow, and division and remainder also trap on a zero divisor.
+// A String is two words, a pointer to its UTF-8 bytes and their length; stage0
+// strings are literals, passed around whole.
 
 namespace phs::mir {
 
-enum class Type : u8 { Unit, Never, Bool, I8, I16, I32, I64, U8, U16, U32, U64 };
+enum class Type : u8 { Unit, Never, Bool, I8, I16, I32, I64, U8, U16, U32, U64, Str };
 
 std::string_view type_name(Type type);
 bool is_signed(Type type);
-u32 bit_width(Type type);  // 0 for Unit and Never, 1 for Bool
+u32 bit_width(Type type);  // 0 for Unit and Never, 1 for Bool, 128 for Str
+u32 words(Type type);      // machine words: 0 for Unit and Never, 2 for Str, 1 otherwise
 
 struct Reg {
     u32 id = std::numeric_limits<u32>::max();
@@ -42,7 +45,7 @@ struct Reg {
 };
 
 enum class Op : u8 {
-    Const, Copy,
+    Const, Copy, Str,
     Neg, Not, BitNot,
     Add, Sub, Mul, Div, Rem, WrapAdd, WrapSub, WrapMul, And, Or, Xor,
     Eq, Ne, Lt, Le, Gt, Ge,
@@ -54,7 +57,7 @@ struct Inst {
     Op op;
     Reg dst;              // invalid for a call without a value
     Reg a, b;             // operands; comparisons use the operand type
-    u64 imm = 0;          // Const: the value, sign-extended for signed types
+    u64 imm = 0;          // Const: the value, sign-extended for signed types; Str: index into Program::strings
     u32 callee = 0;       // Call: function index
     std::vector<Reg> args;  // Call: arguments in parameter order
 };
@@ -80,6 +83,7 @@ struct Function {
 struct Program {
     std::vector<Function> functions;
     u32 main = 0;
+    std::vector<std::string> strings;  // literal bytes, each distinct value once
 };
 
 // Lowers a file that passed check_codegen_subset. Evaluation is strictly left

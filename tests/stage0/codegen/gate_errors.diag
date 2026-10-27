@@ -1,9 +1,6 @@
-gate_errors.phs:19:9: error[E0600]: stage0 code generation does not support values of type 'String' yet
-   19 |     let s = "hi"
-      |         ^
-gate_errors.phs:20:20: error[E0600]: stage0 code generation does not support string literals yet
+gate_errors.phs:20:15: error[E0600]: stage0 code generation does not support operators on strings yet
    20 |     return if s == "hi" { 1 } else { 0 }
-      |                    ^^^^
+      |               ^^^^^^^^^
 gate_errors.phs:25:5: error[E0600]: stage0 code generation does not support 'for' loops yet
    25 |     for x in 0..n { total += x }
       |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^

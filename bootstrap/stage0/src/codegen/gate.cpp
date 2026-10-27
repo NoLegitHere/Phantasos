@@ -81,8 +81,8 @@ bool supported_type(ScalarType type) {
     switch (type.kind) {
         case ScalarType::Int8: case ScalarType::Int16: case ScalarType::Int32: case ScalarType::Int64:
         case ScalarType::UInt8: case ScalarType::UInt16: case ScalarType::UInt32: case ScalarType::UInt64:
-        case ScalarType::Int: case ScalarType::UInt: case ScalarType::Bool: case ScalarType::Unit:
-        case ScalarType::Never:
+        case ScalarType::Int: case ScalarType::UInt: case ScalarType::Bool: case ScalarType::String:
+        case ScalarType::Unit: case ScalarType::Never:
             return true;
         default: return false;
     }
@@ -292,12 +292,18 @@ private:
         if (!control && actual.kind == ScalarType::Deferred && mentions_rejected(expr)) return;
         if (!control && !type(expr.span, actual)) return;
         switch (expr.kind) {
-            case ExprKind::Int: case ExprKind::Bool: case ExprKind::Unit: return;
+            case ExprKind::Int: case ExprKind::Bool: case ExprKind::String: case ExprKind::Unit: return;
             case ExprKind::Name: name(*cast<NameExpr>(&expr)); return;
             case ExprKind::Paren: work.push_back({cast<ParenExpr>(&expr)->inner, used}); return;
             case ExprKind::Unary: work.push_back({cast<UnaryExpr>(&expr)->operand, true}); return;
             case ExprKind::Binary: {
                 const auto& binary = *cast<BinaryExpr>(&expr);
+                // Strings are only passed around whole for now.
+                if (types_.expression(binary.lhs).kind == ScalarType::String ||
+                    types_.expression(binary.rhs).kind == ScalarType::String) {
+                    unsupported(expr.span, "operators on strings");
+                    return;
+                }
                 work.push_back({binary.rhs, true});
                 work.push_back({binary.lhs, true});
                 return;
@@ -333,8 +339,9 @@ private:
             return false;
         }
         switch (expr.kind) {
-            case ExprKind::Int: case ExprKind::Bool: case ExprKind::Unit: case ExprKind::Name: case ExprKind::Paren:
-            case ExprKind::Unary: case ExprKind::Binary: case ExprKind::Call: case ExprKind::Block: case ExprKind::If:
+            case ExprKind::Int: case ExprKind::Bool: case ExprKind::String: case ExprKind::Unit: case ExprKind::Name:
+            case ExprKind::Paren: case ExprKind::Unary: case ExprKind::Binary: case ExprKind::Call: case ExprKind::Block:
+            case ExprKind::If:
                 return true;
             default:
                 unsupported(expr.span, expr_name(expr.kind));

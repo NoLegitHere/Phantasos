@@ -48,9 +48,6 @@ constexpr std::string_view kUsage =
     "  version            print the version\n"
     "  help               print this message\n";
 
-constexpr std::string_view kNoFunctionValues =
-    "error: stage0 x86_64 code generation does not support function values yet";
-
 int run_frontend(std::string_view cmd, std::string_view path) {
     phs::FrontendSession session;
     const auto file = session.sources().load(path);
@@ -69,11 +66,7 @@ int run_frontend(std::string_view cmd, std::string_view path) {
         (void)session.check_codegen(*file);
     else if (const auto* program = session.lower(*file)) {
         if (cmd == "mir") std::print("{}", phs::mir::dump(*program));
-        else if (!phs::x86_64::supports(*program)) {
-            session.diagnostics().render(stderr);
-            std::println(stderr, "{}", kNoFunctionValues);
-            return 1;
-        } else {
+        else {
             std::string listing;
             (void)phs::x86_64::emit(*program, &listing);
             std::print("{}", listing);
@@ -94,10 +87,6 @@ int build(std::string_view path, std::filesystem::path out) {
     const auto* program = session.lower(*file);
     session.diagnostics().render(stderr);
     if (!program) return 1;
-    if (!phs::x86_64::supports(*program)) {
-        std::println(stderr, "{}", kNoFunctionValues);
-        return 1;
-    }
     const std::vector objects{phs::x86_64::emit(*program), phs::x86_64::runtime(*program)};
     const auto image = phs::elf::link(objects, phs::x86_64::kEntrySymbol);
     if (!image) {

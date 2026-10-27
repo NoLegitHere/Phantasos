@@ -28,11 +28,11 @@ using mir::Op;
 using mir::Term;
 using mir::Type;
 
-enum Reg : u8 { RAX, RCX, RDX, RBX, RSP, RBP, RSI, RDI, R8, R9 };
-constexpr std::string_view kRegNames[] = {"rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi", "r8", "r9"};
-constexpr std::string_view kDword[] = {"eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi", "r8d", "r9d"};
-constexpr std::string_view kWord[] = {"ax", "cx", "dx", "bx", "sp", "bp", "si", "di", "r8w", "r9w"};
-constexpr std::string_view kByte[] = {"al", "cl", "dl", "bl", "spl", "bpl", "sil", "dil", "r8b", "r9b"};
+enum Reg : u8 { RAX, RCX, RDX, RBX, RSP, RBP, RSI, RDI, R8, R9, R10, R11 };
+constexpr std::string_view kRegNames[] = {"rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi", "r8", "r9", "r10", "r11"};
+constexpr std::string_view kDword[] = {"eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi", "r8d", "r9d", "r10d", "r11d"};
+constexpr std::string_view kWord[] = {"ax", "cx", "dx", "bx", "sp", "bp", "si", "di", "r8w", "r9w", "r10w", "r11w"};
+constexpr std::string_view kByte[] = {"al", "cl", "dl", "bl", "spl", "bpl", "sil", "dil", "r8b", "r9b", "r10b", "r11b"};
 constexpr Reg kArgs[] = {RDI, RSI, RDX, RCX, R8, R9};
 
 // Where a value is passed: System V gives each word an integer register while
@@ -244,6 +244,13 @@ public:
         object_.relocations.push_back({here(), symbol, -4});
         put(0u);
         end(start, std::format("call {}", object_.symbols[symbol].name));
+    }
+    void call(Reg target) {
+        const auto start = begin();
+        rex(false, 0, target);
+        byte(0xFF);
+        byte(modrm(2, target));
+        end(start, std::format("call {}", name(target)));
     }
     void push(Reg r) {
         const auto start = begin();
@@ -470,7 +477,24 @@ public:
         for (const auto& fun : program_.functions) object_.symbols.push_back({symbol_name(fun), true});
         trap_ = static_cast<u32>(object_.symbols.size());
         object_.symbols.push_back({std::string(kTrapSymbol), false});
-        for (usize i = 0; i < program_.functions.size(); ++i) function(static_cast<u32>(i));
+        // A function used as a value is called through a thunk that takes
+        // the environment first and drops it.
+        std::vector<u32> targets;
+        for (const auto& fun : program_.functions)
+            for (const auto& block : fun.blocks)
+                for (const auto& inst : block.insts)
+                    if (inst.op == Op::FnRef) targets.push_back(inst.callee);
+        std::ranges::sort(targets);
+        targets.erase(std::unique(targets.begin(), targets.end()), targets.end());
+        std::vector<mir::Function> thunks;
+        for (const u32 target : targets) {
+            thunks_.emplace(target, static_cast<u32>(object_.symbols.size()));
+            object_.symbols.push_back({thunk_name(program_.functions[target]), true});
+            thunks.push_back(thunk(target));
+        }
+        for (usize i = 0; i < program_.functions.size(); ++i)
+            function(program_.functions[i], static_cast<u32>(i));
+        for (usize i = 0; i < thunks.size(); ++i) function(thunks[i], thunks_.at(targets[i]));
         as_.rodata();
     }
 
@@ -481,8 +505,33 @@ private:
     // bytes lie above it.
     i32 slot(mir::Reg r) const { return slots_[r.id]; }
 
-    void function(u32 index) {
-        const auto& fun = program_.functions[index];
+    // A thunk is MIR too: its parameters are the environment and then the
+    // target's, and it returns what the target returns.
+    mir::Function thunk(u32 target) const {
+        const auto& callee = program_.functions[target];
+        mir::Function out;
+        out.name = callee.name + "$thunk";
+        out.span = callee.span;
+        out.regs.push_back(Type::U64);
+        mir::Inst call{.op = Op::Call, .callee = target};
+        for (u32 p = 0; p < callee.params; ++p) {
+            out.regs.push_back(callee.regs[p]);
+            call.args.push_back({p + 1});
+        }
+        out.params = callee.params + 1;
+        out.result = callee.result;
+        if (mir::size_of(program_, callee.result)) {
+            call.dst = {static_cast<u32>(out.regs.size())};
+            out.regs.push_back(callee.result);
+        }
+        auto& block = out.blocks.emplace_back();
+        block.term = callee.result == Type::Never ? Term::Unreachable : Term::Ret;
+        block.value = call.dst;
+        block.insts.push_back(std::move(call));
+        return out;
+    }
+
+    void function(const mir::Function& fun, u32 index) {
         // Keep functions 16-byte aligned; int3 fills the gap. Literals add
         // symbols as the body is emitted, so the function's is not held by reference.
         while (object_.text.size() % 16) object_.text.push_back(0xCC);
@@ -636,6 +685,8 @@ private:
 
     void instruction(const mir::Inst& inst) {
         if (inst.op == Op::Call) return call(inst);
+        if (inst.op == Op::FnRef) return function_value(inst);
+        if (inst.op == Op::CallIndirect) return call_indirect(inst);
         if (inst.op == Op::Print) return print(inst);
         if (inst.op == Op::Make) return make(inst);
         if (inst.op == Op::Field) return field(inst);
@@ -766,39 +817,72 @@ private:
         as_.call(found->second);
     }
 
+    // The value of a function used as a value: its thunk and a null environment.
+    void function_value(const mir::Inst& inst) {
+        as_.lea(RAX, thunks_.at(inst.callee));
+        as_.store(slot(inst.dst), RAX);
+        as_.zero32(RAX);
+        as_.store(slot(inst.dst) + 8, RAX);
+    }
+
+    struct Argument {
+        Type type;
+        i32 at;  // the value's slot
+    };
+
     void call(const mir::Inst& inst) {
+        std::vector<Argument> args;
+        for (const auto arg : inst.args) args.push_back({fun_->regs[arg.id], slot(arg)});
+        call(program_.functions[inst.callee], args, inst.dst, [&] { as_.call(inst.callee); });
+    }
+
+    // A function value's code gets its environment as the first argument
+    // after ret* (abi.md A.6), and is called through r11, which no argument uses.
+    void call_indirect(const mir::Inst& inst) {
+        const auto& layout = program_.layouts[mir::layout_index(fun_->regs[inst.a.id])];
+        mir::Function signature;
+        signature.result = layout.result;
+        std::vector<Argument> args{{Type::U64, slot(inst.a) + 8}};
+        for (const auto arg : inst.args) args.push_back({fun_->regs[arg.id], slot(arg)});
+        call(signature, args, inst.dst, [&] {
+            as_.load(R11, slot(inst.a));
+            as_.call(R11);
+        });
+    }
+
+    template <typename Emit>
+    void call(const mir::Function& callee, const std::vector<Argument>& values, mir::Reg dst, Emit emit) {
         std::vector<Type> types;
-        for (const auto arg : inst.args) types.push_back(fun_->regs[arg.id]);
-        const auto& callee = program_.functions[inst.callee];
+        for (const auto& value : values) types.push_back(value.type);
         const bool sret = indirect(program_, callee.result);
         const auto args = places(program_, callee, types);
         // rsp stays 16-byte aligned at the call.
         const i32 pad = args.stack_words % 2 ? 8 : 0;
         if (pad) as_.adjust_rsp(-pad);
-        for (usize i = inst.args.size(); i-- > 0;) {
+        for (usize i = values.size(); i-- > 0;) {
             const auto& place = args.values[i];
             if (place.reg >= 0) continue;
             for (u32 w = place.words; w-- > 0;) {
-                if (place.address) as_.lea(RAX, RBP, slot(inst.args[i]));
-                else as_.load(RAX, slot(inst.args[i]) + 8 * static_cast<i32>(w));
+                if (place.address) as_.lea(RAX, RBP, values[i].at);
+                else as_.load(RAX, values[i].at + 8 * static_cast<i32>(w));
                 as_.push(RAX);
             }
         }
-        for (usize i = 0; i < inst.args.size(); ++i) {
+        for (usize i = 0; i < values.size(); ++i) {
             const auto& place = args.values[i];
             if (place.reg < 0) continue;
-            if (place.address) as_.lea(kArgs[place.reg], RBP, slot(inst.args[i]));
+            if (place.address) as_.lea(kArgs[place.reg], RBP, values[i].at);
             else
                 for (u32 w = 0; w < place.words; ++w)
-                    as_.load(kArgs[place.reg + w], slot(inst.args[i]) + 8 * static_cast<i32>(w));
+                    as_.load(kArgs[place.reg + w], values[i].at + 8 * static_cast<i32>(w));
         }
         // The callee writes a large result straight into its register's slot.
-        if (sret) as_.lea(RDI, RBP, slot(inst.dst));
-        as_.call(inst.callee);
+        if (sret) as_.lea(RDI, RBP, slot(dst));
+        emit();
         if (const auto cleanup = static_cast<i32>(8 * args.stack_words) + pad) as_.adjust_rsp(cleanup);
-        if (!inst.dst.valid() || sret) return;
-        as_.store(slot(inst.dst), RAX);
-        if (words(fun_->regs[inst.dst.id]) == 2) as_.store(slot(inst.dst) + 8, RDX);
+        if (!dst.valid() || sret) return;
+        as_.store(slot(dst), RAX);
+        if (words(fun_->regs[dst.id]) == 2) as_.store(slot(dst) + 8, RDX);
     }
 
     void terminator(const mir::Block& block, u32 index) {
@@ -847,6 +931,7 @@ private:
     i32 result_ = 0;  // the slot holding a large result's destination address
     std::vector<std::pair<u32, i32>> written_;  // inout parameters and the slots holding their addresses
     std::unordered_map<std::string_view, u32> runtime_;  // print entries by name
+    std::unordered_map<u32, u32> thunks_;  // function index to its thunk's symbol
     std::vector<Assembler::Label> blocks_;
     Assembler::Label overflow_ = 0, divide_ = 0;
     bool used_overflow_ = false, used_divide_ = false;
@@ -1055,16 +1140,11 @@ std::string symbol_name(const mir::Function& function) {
     return std::format("_P{}{}", function.name.size(), function.name);
 }
 
-bool supports(const mir::Program& program) {
-    for (const auto& fun : program.functions)
-        for (const auto& block : fun.blocks)
-            for (const auto& inst : block.insts)
-                if (inst.op == Op::FnRef || inst.op == Op::CallIndirect) return false;
-    return true;
+std::string thunk_name(const mir::Function& function) {
+    return std::format("_P$5thunk{}{}", function.name.size(), function.name);
 }
 
 obj::Object emit(const mir::Program& program, std::string* listing) {
-    PHS_ASSERT(supports(program));
     obj::Object object;
     Emitter emitter(program, object, listing);
     emitter.run();

@@ -1043,8 +1043,8 @@ Stage0 lowers checked programs to a typed MIR that makes this order
 explicit. `phantasos-stage0 mir <file>` prints it for a file that passes
 `gate` (3.25). A function value in MIR is two words, the code to call and an
 environment that the code receives as a hidden first argument; a top-level
-function's value has a null environment. The x86_64 backend does not compile
-function values yet: `asm` and `build` report that and exit with status 1.
+function's value has a null environment. The x86_64 backend calls it through a
+thunk (abi.md A.6).
 
 Stage0's first x86_64 backend checks every trapping operation inline. A
 failed check calls `__phantasos_trap` with the trap code in the first

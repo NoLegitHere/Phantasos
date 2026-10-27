@@ -1,0 +1,72 @@
+_P3add:  ; add
+    0000  55                     push rbp
+    0001  4889e5                 mov rbp, rsp
+    0004  4881ec20000000         sub rsp, 32
+    000b  4889bdf8ffffff         mov qword [rbp-8], rdi
+    0012  4889b5f0ffffff         mov qword [rbp-16], rsi
+  bb0:  ; .L0
+    0019  488b85f8ffffff         mov rax, qword [rbp-8]
+    0020  488b8df0ffffff         mov rcx, qword [rbp-16]
+    0027  4801c8                 add rax, rcx
+    002a  0f8010000000           jo .L1
+    0030  488985e8ffffff         mov qword [rbp-24], rax
+    0037  488b85e8ffffff         mov rax, qword [rbp-24]
+    003e  c9                     leave
+    003f  c3                     ret
+  .L1:  ; trap: overflow
+    0040  bf01000000             mov edi, 1
+    0045  e800000000             call __phantasos_trap
+    004a  0f0b                   ud2
+_P5apply:  ; apply
+    0050  55                     push rbp
+    0051  4889e5                 mov rbp, rsp
+    0054  4881ec30000000         sub rsp, 48
+    005b  4889bdf0ffffff         mov qword [rbp-16], rdi
+    0062  4889b5f8ffffff         mov qword [rbp-8], rsi
+    0069  488995e8ffffff         mov qword [rbp-24], rdx
+  bb0:  ; .L0
+    0070  48c7c002000000         mov rax, 2
+    0077  488985e0ffffff         mov qword [rbp-32], rax
+    007e  488bbdf8ffffff         mov rdi, qword [rbp-8]
+    0085  488bb5e8ffffff         mov rsi, qword [rbp-24]
+    008c  488b95e0ffffff         mov rdx, qword [rbp-32]
+    0093  4c8b9df0ffffff         mov r11, qword [rbp-16]
+    009a  41ffd3                 call r11
+    009d  488985d8ffffff         mov qword [rbp-40], rax
+    00a4  488b85d8ffffff         mov rax, qword [rbp-40]
+    00ab  c9                     leave
+    00ac  c3                     ret
+_P4main:  ; main
+    00b0  55                     push rbp
+    00b1  4889e5                 mov rbp, rsp
+    00b4  4881ec20000000         sub rsp, 32
+  bb0:  ; .L0
+    00bb  488d0500000000         lea rax, [rip+_P$5thunk3add]
+    00c2  488985f0ffffff         mov qword [rbp-16], rax
+    00c9  31c0                   xor eax, eax
+    00cb  488985f8ffffff         mov qword [rbp-8], rax
+    00d2  48c7c028000000         mov rax, 40
+    00d9  488985e8ffffff         mov qword [rbp-24], rax
+    00e0  488bbdf0ffffff         mov rdi, qword [rbp-16]
+    00e7  488bb5f8ffffff         mov rsi, qword [rbp-8]
+    00ee  488b95e8ffffff         mov rdx, qword [rbp-24]
+    00f5  e800000000             call _P5apply
+    00fa  488985e0ffffff         mov qword [rbp-32], rax
+    0101  488b85e0ffffff         mov rax, qword [rbp-32]
+    0108  c9                     leave
+    0109  c3                     ret
+_P$5thunk3add:  ; add$thunk
+    0110  55                     push rbp
+    0111  4889e5                 mov rbp, rsp
+    0114  4881ec20000000         sub rsp, 32
+    011b  4889bdf8ffffff         mov qword [rbp-8], rdi
+    0122  4889b5f0ffffff         mov qword [rbp-16], rsi
+    0129  488995e8ffffff         mov qword [rbp-24], rdx
+  bb0:  ; .L0
+    0130  488bbdf0ffffff         mov rdi, qword [rbp-16]
+    0137  488bb5e8ffffff         mov rsi, qword [rbp-24]
+    013e  e800000000             call _P3add
+    0143  488985e0ffffff         mov qword [rbp-32], rax
+    014a  488b85e0ffffff         mov rax, qword [rbp-32]
+    0151  c9                     leave
+    0152  c3                     ret

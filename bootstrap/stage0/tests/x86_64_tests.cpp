@@ -476,6 +476,75 @@ struct Generator {
     }
 };
 
+void function_values() {
+    // A function used as a value is called through its thunk, which takes
+    // the environment first; the value is the thunk's address and a null
+    // environment.
+    Compiled c("fun twice(x: Int): Int = x * 2\nfun main(): Int {\n    let f = twice\n    return f(21)\n}\n");
+    CHECK(c.object.symbols.size() == 4);
+    CHECK(c.object.symbols[3].name == "_P$5thunk5twice" && c.object.symbols[3].defined);
+    CHECK(c.object.symbols[3].offset % 16 == 0 && c.object.symbols[3].size > 0);
+    CHECK(c.listing.contains("lea rax, [rip+_P$5thunk5twice]") && c.listing.contains("call r11"));
+    CHECK(c.listing.contains("_P$5thunk5twice:  ; twice$thunk\n"));
+    agrees("fun twice(x: Int): Int = x * 2\nfun main(): Int {\n    let f = twice\n    return f(21)\n}\n");
+    // Passing, returning and storing function values; overloads; Unit and
+    // Never results; one thunk however often a function is named.
+    agrees(R"(
+fun add(a: Int, b: Int): Int = a + b
+fun add(a: Int): Int = a + 1
+fun twice(x: Int): Int = x * 2
+fun apply(f: fun(Int) -> Int, x: Int): Int = f(x)
+fun pick(first: Bool): fun(Int) -> Int {
+    return if first { twice } else { add }
+}
+struct Op(f: fun(Int, Int) -> Int, name: String)
+fun nothing() {}
+fun stop(): Never {
+    loop {}
+}
+fun main(): Int {
+    let op = Op(add, "add")
+    let pair = (pick(true), 3)
+    let n = nothing
+    n()
+    let s: fun() -> Never = stop
+    var g = twice
+    let a = g(if true {
+        g = add
+        1
+    } else { 0 })
+    return apply(add, 10) * 1000 + pick(false)(1) * 100 + op.f(2, 3) * 10 + pair.0(pair.1) + a + g(0)
+}
+)");
+    // Stack arguments, a result returned through ret*, and large arguments
+    // passed by address all shift by the environment's register.
+    agrees(R"(
+struct Big(a: Int, b: Int, c: Int)
+fun sum(a: Int, b: Int, c: Int, d: Int, e: Int, f: Int, g: Int, h: Int8): Int = a + b * 2 + c * 3 + d * 4 + e * 5 + f * 6 + g * 7 + Int(h) * 8
+fun make(x: Int, y: Int): Big = Big(a: x, b: y, c: x * y)
+fun total(b: Big, scale: Int, text: String, last: Int): Int = (b.a + b.b + b.c) * scale + last
+fun last(a: String, b: String, c: String, d: Int): Int = d
+fun main(): Int {
+    let s = sum
+    let m = make
+    let t = total
+    let l = last
+    let big = m(3, 4)
+    return s(1, 2, 3, 4, 5, 6, 7, Int8(8)) + t(big, 2, "x", big.c) + l("a", "b", "c", 9)
+}
+)");
+    // A trap inside a function called through its value.
+    agrees("fun dec(x: UInt8): UInt8 = x - 1\nfun main(): Int {\n    let f = dec\n    return Int(f(0))\n}\n");
+    strings_agree(R"(
+fun greet(loud: Bool): String = if loud { "HELLO" } else { "hello" }
+fun f(): String {
+    let g = greet
+    return g(true)
+}
+fun main() {}
+)", "HELLO");
+}
+
 void random_expressions() {
     Generator generator;
     for (int i = 0; i < 400; ++i) agrees(generator.program());
@@ -488,6 +557,7 @@ int main() {
     object_layout();
     programs();
     strings();
+    function_values();
     random_expressions();
     std::println("x86_64 tests passed");
 }

@@ -81,7 +81,7 @@ foundation. Complete.
   - [x] Field assignment.
   - [x] Methods, including `mut fun`.
   - [x] Tuples in the front end: types, literals, `.0` access and destructuring.
-  - [ ] Tuple code generation.
+  - [x] Tuple code generation.
   - [ ] Sample programs and run tests.
 - [ ] Generic base substitution and built-in traits. Instantiate
   generic base/interface graphs, derive `Copy`/`Sendable`/`Error`, and complete

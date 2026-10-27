@@ -153,7 +153,7 @@ std::string literal(std::string_view bytes) {
 std::string dump(const Program& program) {
     std::string out;
     for (const auto& layout : program.layouts) {
-        out += std::format("struct @{} {{", layout.name);
+        out += std::format("{} @{} {{", layout.tuple ? "tuple" : "struct", layout.name);
         for (usize i = 0; i < layout.fields.size(); ++i)
             out += std::format("{} {}: {} +{}", i ? "," : "", layout.names[i], type_name(program, layout.fields[i]),
                                layout.offsets[i]);

@@ -435,12 +435,52 @@ struct Generator {
         if (pick(1)) source += std::format("\n    t.s.adjust(by: {})\n    s.adjust(by: {})", pick(3), pick(3));
         return source + "\n    return s.sum() &+ mix(t.s)\n}\n";
     }
+
+    // A tuple of random elements, passed after a random number of words,
+    // returned, held in a struct and another tuple, updated one element at a
+    // time and destructured.
+    std::string tuple_program() {
+        const usize count = 2 + pick(4), pad = pick(6);
+        std::vector<const Kind*> kinds;
+        for (usize i = 0; i < count; ++i) kinds.push_back(&kKinds[pick(std::size(kKinds) - 1)]);
+        const auto make = [&](const auto& value) {
+            std::string text = "(";
+            for (usize i = 0; i < count; ++i) text += std::format("{}{}", i ? ", " : "", value(i));
+            return text + ')';
+        };
+        const std::string type = make([&](usize i) { return std::string(kinds[i]->name); });
+        std::string source = std::format("struct T(var t: {}, var n: Int)\nfun step(", type);
+        for (usize i = 0; i < pad; ++i) source += std::format("w{}: Int, ", i);
+        source += std::format("t: {}, last: Int): {} = ", type, type);
+        source += make([&](usize i) { return std::format("t.{} &+ {}", i, literal(*kinds[i])); });
+        source += std::format("\nfun mix(t: {}): Int {{\n    var h = 0\n", type);
+        for (usize i = 0; i < count; ++i) source += std::format("    h = h &* 31 &+ Int.truncating(t.{})\n", i);
+        source += std::format("    return h\n}}\nfun main(): Int {{\n    var t: {} = ", type);
+        source += make([&](usize i) { return literal(*kinds[i]); });
+        for (int round = 0; round < 2; ++round) {
+            source += "\n    t = step(";
+            for (usize i = 0; i < pad; ++i) source += std::format("{}, ", i);
+            source += "t, 7)";
+        }
+        source += "\n    var n = (T(t: t, n: 1), t)";
+        static constexpr std::string_view kPlaces[] = {"t", "n.0.t", "n.1"};
+        for (usize i = pick(4); i-- > 0;) {
+            const usize e = pick(count - 1);
+            const auto* op = pick(2) == 0 ? "+=" : pick(1) ? "&=" : "=";
+            source += std::format("\n    {}.{} {} {}", kPlaces[pick(2)], e, op, literal(*kinds[e]));
+        }
+        source += "\n    let " + make([&](usize i) { return std::format("a{}", i); }) + " = n.1";
+        source += "\n    return mix(t) &+ mix(n.0.t) &+ mix(n.1)";
+        for (usize i = 0; i < count; ++i) source += std::format(" &+ Int.truncating(a{})", i);
+        return source + "\n}\n";
+    }
 };
 
 void random_expressions() {
     Generator generator;
     for (int i = 0; i < 400; ++i) agrees(generator.program());
     for (int i = 0; i < 200; ++i) agrees(generator.struct_program());
+    for (int i = 0; i < 200; ++i) agrees(generator.tuple_program());
 }
 }  // namespace
 

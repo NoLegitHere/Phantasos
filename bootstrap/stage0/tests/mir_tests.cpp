@@ -363,6 +363,24 @@ fun main(): Int {
                 "fun main(): Int {\n    var i = In(n: 127)\n    i.inc()\n    return 0\n}\n"));
 }
 
+void tuples() {
+    Frontend f;
+    const auto text = f.dump("fun main(): Int {\n    let t = (true, 2, Int8(3))\n    return t.1\n}\n");
+    // Elements are laid out like struct fields, by decreasing alignment.
+    CHECK(text.starts_with("tuple @(Bool, Int, Int8) { 0: bool +8, 1: i64 +0, 2: i8 +9 } size 16 align 8\n\n"));
+    CHECK(text.contains("make %0, %1, %2\n") && text.contains("= field %4, 1\n"));
+    // A diverging element ends the block before the tuple is made.
+    Frontend g;
+    const auto stop = g.dump("fun stop(): Never {\n    loop {}\n}\n"
+                             "fun main(): Int {\n    let t: (Int, Int) = (1, stop())\n    return t.0\n}\n");
+    CHECK(stop.contains("    call @stop()\n    unreachable\n") && !stop.contains("make"));
+    // Destructuring, nested element assignment, and the same tuple type shared between functions.
+    CHECK(result("fun swap(t: (Int, Int)): (Int, Int) = (t.1, t.0)\n"
+                 "fun main(): Int {\n    var t = ((1, 2), Int8(3))\n    t.0.1 = 5\n    t.1 -= 1\n"
+                 "    let (a, b) = swap(t.0)\n    return a * 100 + b * 10 + Int(t.1)\n}\n") == 500 + 10 + 2);
+    CHECK(traps("fun main(): Int {\n    var t = (UInt8(0), 1)\n    t.0 -= 1\n    return 0\n}\n"));
+}
+
 void rejected_files() {
     FrontendSession session;
     const auto id = session.sources().add("mir.phs", "fun main(): Float64 = 1.0\n");
@@ -400,6 +418,7 @@ int main() {
     writes_during_evaluation();
     structs();
     methods();
+    tuples();
     rejected_files();
     long_trees();
     std::println("mir tests passed");

@@ -1283,8 +1283,8 @@ private:
 
     Relation ancestry(BindingId source, BindingId target) const {
         if (source == target) return Relation::Yes;
-        auto& cache = ancestry_cache_[source.value];
-        if (const auto it = cache.find(target.value); it != cache.end()) return it->second;
+        const u64 key = static_cast<u64>(source.value) << 32 | target.value;
+        if (const auto it = ancestry_cache_.find(key); it != ancestry_cache_.end()) return it->second;
         std::vector<BindingId> work{source};
         std::unordered_set<usize> visited;
         Relation result = Relation::No;
@@ -1296,7 +1296,7 @@ private:
             if (it == hierarchies_.end() || it->second.state != ExpansionState::Resolved) { result = Relation::Deferred; continue; }
             for (const auto base : it->second.bases) work.push_back(base);
         }
-        cache[target.value] = result;
+        ancestry_cache_.emplace(key, result);
         return result;
     }
 
@@ -1426,8 +1426,17 @@ private:
         return result;
     }
     std::shared_ptr<const MemberLookup> lookup_member(BindingId owner, Symbol name, bool types_only = false) {
-        const u64 key = (static_cast<u64>(name.id) << 1) | types_only;
-        auto& cache = inherited_members_[key];
+        // One flat map for every name; the view keys it by owner for this name.
+        struct View {
+            std::unordered_map<u64, std::shared_ptr<const MemberLookup>>& members;
+            u64 prefix;
+            u64 key(usize owner) const { PHS_ASSERT(owner < (usize{1} << 31)); return prefix | static_cast<u64>(owner) << 1; }
+            auto find(usize owner) const { return members.find(key(owner)); }
+            auto end() const { return members.end(); }
+            bool contains(usize owner) const { return members.contains(key(owner)); }
+            auto& operator[](usize owner) const { return members[key(owner)]; }
+            auto& at(usize owner) const { return members.at(key(owner)); }
+        } cache{inherited_members_, static_cast<u64>(name.id) << 32 | types_only};
         if (const auto it = cache.find(owner.value); it != cache.end()) return it->second;
         struct Frame { BindingId id; usize next = 0; };
         std::vector<Frame> stack{{owner}};
@@ -3871,8 +3880,8 @@ private:
     bool hierarchy_ready_ = false;
     std::unordered_set<const TypeExpr*> reported_bases_;
     std::unordered_set<usize> reported_cycles_;
-    mutable std::unordered_map<usize, std::unordered_map<usize, Relation>> ancestry_cache_;
-    std::unordered_map<u64, std::unordered_map<usize, std::shared_ptr<const MemberLookup>>> inherited_members_;
+    mutable std::unordered_map<u64, Relation> ancestry_cache_;  // source << 32 | target
+    std::unordered_map<u64, std::shared_ptr<const MemberLookup>> inherited_members_;  // name << 32 | owner << 1 | types_only
     std::vector<Walk> walk_;
     std::vector<Requirement> requirements_;
     struct ConstraintUse {

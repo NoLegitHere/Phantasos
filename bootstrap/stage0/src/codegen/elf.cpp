@@ -15,6 +15,7 @@
 
 #include "codegen/elf.hpp"
 
+#include <algorithm>
 #include <format>
 #include <initializer_list>
 #include <limits>
@@ -24,7 +25,10 @@ namespace phs::elf {
 namespace {
 
 constexpr u64 kHeaderSize = 64, kProgramHeaderSize = 56, kSectionHeaderSize = 64, kSymbolSize = 24;
-constexpr u64 kTextOffset = 128;  // after the ELF header and the program header, 16-byte aligned
+constexpr u64 kTextOffset = 176;  // after the ELF header and two program headers, 16-byte aligned
+constexpr u64 kPage = 0x1000;
+
+constexpr u64 align_up(u64 value, u64 to) { return (value + to - 1) / to * to; }
 
 class Writer {
 public:
@@ -49,39 +53,64 @@ struct Placed {
     u64 address;
 };
 
+// Lays each object's section bytes out one after another, each object
+// starting 16-byte aligned, and returns where each object's bytes begin.
+std::vector<u64> concatenate(std::span<const obj::Object> objects, std::vector<u8> obj::Object::*section,
+                             std::vector<u8>& out, u8 fill) {
+    std::vector<u64> bases;
+    for (const auto& object : objects) {
+        while (out.size() % 16) out.push_back(fill);
+        bases.push_back(out.size());
+        out.insert(out.end(), (object.*section).begin(), (object.*section).end());
+    }
+    return bases;
+}
+
 }  // namespace
 
 std::expected<std::vector<u8>, std::string> link(std::span<const obj::Object> objects, std::string_view entry) {
-    // Lay out .text: each object starts 16-byte aligned, padded with int3.
-    std::vector<u8> text;
-    std::vector<u64> bases;
-    for (const auto& object : objects) {
-        while (text.size() % 16) text.push_back(0xCC);
-        bases.push_back(text.size());
-        text.insert(text.end(), object.text.begin(), object.text.end());
-    }
+    // Code is padded with int3. Read-only data starts on its own page so that
+    // it can be mapped without execute permission.
+    std::vector<u8> text, rodata;
+    const auto text_bases = concatenate(objects, &obj::Object::text, text, 0xCC);
+    const auto rodata_bases = concatenate(objects, &obj::Object::rodata, rodata, 0);
+    const u64 text_end = kTextOffset + text.size();
     const u64 text_address = kBaseAddress + kTextOffset;
+    const u64 rodata_offset = align_up(text_end, kPage);
+    const u64 rodata_address = kBaseAddress + rodata_offset;
+    const bool has_rodata = !rodata.empty();
 
+    // Local symbols resolve only within their object; the rest share one namespace.
     std::vector<Placed> placed;
+    std::vector<std::vector<u64>> local_addresses(objects.size());
     std::unordered_map<std::string_view, u64> addresses;
     for (usize o = 0; o < objects.size(); ++o)
         for (const auto& symbol : objects[o].symbols) {
-            if (!symbol.defined) continue;
-            const u64 address = text_address + bases[o] + symbol.offset;
-            if (!addresses.emplace(symbol.name, address).second)
-                return std::unexpected(std::format("symbol '{}' is defined more than once", symbol.name));
-            placed.push_back({&symbol, address});
+            u64 address = 0;
+            if (symbol.defined) {
+                address = symbol.section == obj::Section::Text ? text_address + text_bases[o] + symbol.offset
+                                                               : rodata_address + rodata_bases[o] + symbol.offset;
+                if (!symbol.local && !addresses.emplace(symbol.name, address).second)
+                    return std::unexpected(std::format("symbol '{}' is defined more than once", symbol.name));
+                placed.push_back({&symbol, address});
+            }
+            local_addresses[o].push_back(address);
         }
+    std::ranges::stable_partition(placed, [](const Placed& p) { return p.symbol->local; });
 
     for (usize o = 0; o < objects.size(); ++o)
         for (const auto& reloc : objects[o].relocations) {
-            const auto& name = objects[o].symbols[reloc.symbol].name;
-            const auto found = addresses.find(name);
-            if (found == addresses.end()) return std::unexpected(std::format("undefined symbol '{}'", name));
-            const u64 field = bases[o] + reloc.offset;
-            const i64 value = static_cast<i64>(found->second) + reloc.addend - static_cast<i64>(text_address + field);
+            const auto& symbol = objects[o].symbols[reloc.symbol];
+            u64 target = local_addresses[o][reloc.symbol];
+            if (!symbol.defined) {
+                const auto found = addresses.find(symbol.name);
+                if (found == addresses.end()) return std::unexpected(std::format("undefined symbol '{}'", symbol.name));
+                target = found->second;
+            }
+            const u64 field = text_bases[o] + reloc.offset;
+            const i64 value = static_cast<i64>(target) + reloc.addend - static_cast<i64>(text_address + field);
             if (value < std::numeric_limits<i32>::min() || value > std::numeric_limits<i32>::max())
-                return std::unexpected(std::format("reference to '{}' is out of rel32 range", name));
+                return std::unexpected(std::format("reference to '{}' is out of rel32 range", symbol.name));
             for (int i = 0; i < 4; ++i) text[field + i] = static_cast<u8>(static_cast<u64>(value) >> (8 * i));
         }
 
@@ -96,15 +125,16 @@ std::expected<std::vector<u8>, std::string> link(std::span<const obj::Object> ob
         strtab += p.symbol->name;
         strtab += '\0';
     }
-    const std::string shstrtab = std::string("\0.text\0.symtab\0.strtab\0.shstrtab\0", 33);
-    constexpr u32 kTextName = 1, kSymtabName = 7, kStrtabName = 15, kShstrtabName = 23;
+    const std::string shstrtab = std::string("\0.text\0.rodata\0.symtab\0.strtab\0.shstrtab\0", 41);
+    constexpr u32 kTextName = 1, kRodataName = 7, kSymtabName = 15, kStrtabName = 23, kShstrtabName = 31;
+    const auto locals = static_cast<u32>(std::ranges::count_if(placed, [](const Placed& p) { return p.symbol->local; }));
 
-    const u64 load_size = kTextOffset + text.size();
-    const u64 symtab_offset = (load_size + 7) / 8 * 8;
+    const u64 load_end = has_rodata ? rodata_offset + rodata.size() : text_end;
+    const u64 symtab_offset = align_up(load_end, 8);
     const u64 symtab_size = kSymbolSize * (placed.size() + 1);
     const u64 strtab_offset = symtab_offset + symtab_size;
     const u64 shstrtab_offset = strtab_offset + strtab.size();
-    const u64 section_offset = (shstrtab_offset + shstrtab.size() + 7) / 8 * 8;
+    const u64 section_offset = align_up(shstrtab_offset + shstrtab.size(), 8);
 
     Writer w;
     // ELF header: 64-bit, little-endian, System V ABI, executable, x86_64.
@@ -119,34 +149,42 @@ std::expected<std::vector<u8>, std::string> link(std::span<const obj::Object> ob
     w.u32_(0);
     w.u16_(kHeaderSize);
     w.u16_(kProgramHeaderSize);
-    w.u16_(1);
+    w.u16_(has_rodata ? 2 : 1);
     w.u16_(kSectionHeaderSize);
+    w.u16_(6);
     w.u16_(5);
-    w.u16_(4);
-    // PT_LOAD covering the headers and .text, readable and executable.
-    w.u32_(1);
-    w.u32_(5);  // PF_R | PF_X
-    w.u64_(0);
-    w.u64_(kBaseAddress);
-    w.u64_(kBaseAddress);
-    w.u64_(load_size);
-    w.u64_(load_size);
-    w.u64_(0x1000);
-    w.align(16);
-    PHS_ASSERT(w.bytes.size() == kTextOffset);
+    const auto segment = [&](u32 flags, u64 offset, u64 size) {
+        w.u32_(1);  // PT_LOAD
+        w.u32_(flags);
+        w.u64_(offset);
+        w.u64_(kBaseAddress + offset);
+        w.u64_(kBaseAddress + offset);
+        w.u64_(size);
+        w.u64_(size);
+        w.u64_(kPage);
+    };
+    segment(5, 0, text_end);  // the headers and .text: PF_R | PF_X
+    if (has_rodata) segment(4, rodata_offset, rodata.size());  // .rodata: PF_R
+    w.bytes.resize(kTextOffset);
     w.bytes.insert(w.bytes.end(), text.begin(), text.end());
+    if (has_rodata) {
+        w.bytes.resize(rodata_offset);
+        w.bytes.insert(w.bytes.end(), rodata.begin(), rodata.end());
+    }
 
-    // .symtab: the null symbol, then every defined symbol as a global in .text.
+    // .symtab: the null symbol, the local symbols, then the global ones.
     w.align(8);
     PHS_ASSERT(w.bytes.size() == symtab_offset);
     for (int i = 0; i < 3; ++i) w.u64_(0);
     for (usize i = 0; i < placed.size(); ++i) {
+        const auto& symbol = *placed[i].symbol;
+        const bool code = symbol.section == obj::Section::Text;
         w.u32_(names[i]);
-        w.u8_(static_cast<u8>(1 << 4 | (placed[i].symbol->data ? 1 : 2)));  // STB_GLOBAL, STT_OBJECT or STT_FUNC
+        w.u8_(static_cast<u8>((symbol.local ? 0 : 1) << 4 | (code ? 2 : 1)));  // STB_LOCAL/GLOBAL, STT_FUNC/OBJECT
         w.u8_(0);
-        w.u16_(1);  // .text
+        w.u16_(code ? 1 : 2);  // .text or .rodata
         w.u64_(placed[i].address);
-        w.u64_(placed[i].symbol->size);
+        w.u64_(symbol.size);
     }
     for (const char c : strtab) w.u8_(static_cast<u8>(c));
     for (const char c : shstrtab) w.u8_(static_cast<u8>(c));
@@ -168,7 +206,8 @@ std::expected<std::vector<u8>, std::string> link(std::span<const obj::Object> ob
     };
     section(0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
     section(kTextName, 1, 6, text_address, kTextOffset, text.size(), 0, 0, 16, 0);  // SHF_ALLOC | SHF_EXECINSTR
-    section(kSymtabName, 2, 0, 0, symtab_offset, symtab_size, 3, 1, 8, kSymbolSize);
+    section(kRodataName, 1, 2, rodata_address, has_rodata ? rodata_offset : text_end, rodata.size(), 0, 0, 16, 0);  // SHF_ALLOC
+    section(kSymtabName, 2, 0, 0, symtab_offset, symtab_size, 4, 1 + locals, 8, kSymbolSize);
     section(kStrtabName, 3, 0, 0, strtab_offset, strtab.size(), 0, 0, 1, 0);
     section(kShstrtabName, 3, 0, 0, shstrtab_offset, shstrtab.size(), 0, 0, 1, 0);
     return std::move(w.bytes);

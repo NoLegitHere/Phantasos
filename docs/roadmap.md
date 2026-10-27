@@ -69,7 +69,7 @@ foundation. Complete.
   and `Bool` (spec 3.27), string literals in read-only data, and a runtime
   write, so stage0 programs can say hello.
   - [x] Prelude `print` and its call checking.
-  - [ ] Read-only data in objects and ELF executables.
+  - [x] Read-only data in objects and ELF executables.
   - [ ] MIR and x86_64 for two-word `String` values; gate accepts output.
   - [ ] Runtime write and integer formatting.
   - [ ] Run tests that compare standard output.

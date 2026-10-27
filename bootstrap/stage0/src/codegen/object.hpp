@@ -15,27 +15,34 @@
 
 #pragma once
 
+#include <format>
 #include <string>
+#include <string_view>
+#include <unordered_map>
 #include <vector>
 
 #include "support/common.hpp"
 
-// A minimal relocatable object: one code section, its symbols and its
-// relocations. Object and executable writers consume it; keeping relocations
-// symbolic lets the same code be linked statically or loaded in memory.
+// A minimal relocatable object: a code section, a read-only data section,
+// their symbols and the code's relocations. Object and executable writers
+// consume it; keeping relocations symbolic lets the same code be linked
+// statically or loaded in memory.
 
 namespace phs::obj {
+
+enum class Section : u8 { Text, Rodata };
 
 struct Symbol {
     std::string name;
     bool defined = false;  // false: resolved by the linker (runtime entry points)
-    u64 offset = 0;        // within .text when defined
+    u64 offset = 0;        // within its section when defined
     u64 size = 0;
-    bool data = false;  // read-only bytes in .text rather than code
+    Section section = Section::Text;
+    bool local = false;  // visible only to this object's relocations
 };
 
-// A 32-bit PC-relative reference: the linker writes S + A - P at offset,
-// where P is the address of the field (ELF R_X86_64_PLT32 and PC32).
+// A 32-bit PC-relative reference from .text: the linker writes S + A - P at
+// offset, where P is the address of the field (ELF R_X86_64_PLT32 and PC32).
 struct Relocation {
     u64 offset = 0;
     u32 symbol = 0;
@@ -44,8 +51,23 @@ struct Relocation {
 
 struct Object {
     std::vector<u8> text;
+    std::vector<u8> rodata;
     std::vector<Symbol> symbols;
     std::vector<Relocation> relocations;
+
+    // Places bytes in .rodata and returns a local symbol for them. Identical
+    // bytes share one symbol.
+    u32 literal(std::string_view bytes) {
+        const auto [found, added] = literals_.try_emplace(std::string(bytes), static_cast<u32>(symbols.size()));
+        if (!added) return found->second;
+        symbols.push_back({std::format(".Lstr{}", literals_.size() - 1), true, rodata.size(), bytes.size(),
+                           Section::Rodata, true});
+        rodata.insert(rodata.end(), bytes.begin(), bytes.end());
+        return found->second;
+    }
+
+private:
+    std::unordered_map<std::string, u32> literals_;
 };
 
 }  // namespace phs::obj

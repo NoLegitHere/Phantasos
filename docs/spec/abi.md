@@ -102,5 +102,7 @@ type     = 'i1'|'i2'|'i4'|'i8'|'u1'|'u2'|'u4'|'u8'|'f4'|'f8'|'b'|'c'|'s'
 - Stage0 emits a minimal Linux entry instead: `_start` calls `main` and
   passes its result (0 for a `Unit` main) to the `exit_group` system call,
   and `__phantasos_trap` writes a panic message with `write` and exits with
-  status 101. The executable is `ET_EXEC` at `0x400000` with one read-only,
-  executable `PT_LOAD` segment.
+  status 101. The executable is `ET_EXEC` at `0x400000` with a read-only,
+  executable `PT_LOAD` segment for code and a separate, page-aligned
+  read-only, non-executable one for `.rodata` (string bytes such as the panic
+  messages). Identical byte strings within an object share one copy.

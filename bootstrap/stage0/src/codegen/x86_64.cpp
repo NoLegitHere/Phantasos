@@ -53,6 +53,13 @@ std::string_view cond_name(Cond cc) {
 
 std::string disp(i32 offset) { return offset < 0 ? std::format("[rbp-{}]", -offset) : std::format("[rbp+{}]", offset); }
 
+// Renders data bytes as an assembler db directive.
+std::string quoted(std::string_view data) {
+    std::string text = "db \"";
+    for (const char c : data) text += c == '\n' ? std::string("\\n") : std::string(1, c);
+    return text + '"';
+}
+
 // Encodes one function at a time into a shared .text buffer. Jumps use rel32
 // fields patched once their labels are placed.
 class Assembler {
@@ -253,13 +260,6 @@ public:
         end(start, std::format("lea {}, [rip+{}]", name(dst), object_.symbols[symbol].name));
     }
     void syscall() { raw({0x0F, 0x05}, "syscall"); }
-    void bytes(std::string_view data) {
-        const auto start = begin();
-        for (const char c : data) byte(static_cast<u8>(c));
-        std::string text = "db \"";
-        for (const char c : data) text += c == '\n' ? std::string("\\n") : std::string(1, c);
-        end(start, text + '"');
-    }
 
 private:
     static constexpr u64 kUnplaced = std::numeric_limits<u64>::max();
@@ -558,10 +558,10 @@ public:
         const u32 start = symbol(std::string(kEntrySymbol), true);
         const u32 trap = symbol(std::string(kTrapSymbol), true);
         const u32 main_symbol = symbol(symbol_name(main), false);
-        const u32 overflow = symbol("__phantasos_overflow_message", true, true);
-        const u32 divide = symbol("__phantasos_divide_message", true, true);
         static constexpr std::string_view kOverflow = "panic: arithmetic overflow\n";
         static constexpr std::string_view kDivide = "panic: division by zero\n";
+        const u32 overflow = object_.literal(kOverflow);
+        const u32 divide = object_.literal(kDivide);
 
         // The kernel enters with rsp 16-byte aligned, so the call leaves main
         // with the alignment System V expects.
@@ -590,15 +590,19 @@ public:
         as_.patch();
         end(trap);
 
-        message(overflow, kOverflow);
-        message(divide, kDivide);
+        as_.note(".rodata");
+        for (const u32 index : {overflow, divide}) {
+            const auto& literal = object_.symbols[index];
+            const auto bytes = std::string_view(reinterpret_cast<const char*>(object_.rodata.data()), object_.rodata.size());
+            as_.note(std::format("    {:04x}  {}:  {}", literal.offset, literal.name, quoted(bytes.substr(literal.offset, literal.size))));
+        }
     }
 
     std::string listing() const { return as_.render(); }
 
 private:
-    u32 symbol(std::string name, bool defined, bool data = false) {
-        object_.symbols.push_back({std::move(name), defined, 0, 0, data});
+    u32 symbol(std::string name, bool defined) {
+        object_.symbols.push_back({std::move(name), defined});
         return static_cast<u32>(object_.symbols.size() - 1);
     }
     void begin(u32 index, std::string_view comment) {
@@ -612,12 +616,6 @@ private:
         as_.mov32_imm(RAX, kSysExitGroup);
         as_.syscall();
         as_.ud2();
-    }
-    void message(u32 index, std::string_view text) {
-        object_.symbols[index].offset = as_.here();
-        as_.note(std::format("{}:", object_.symbols[index].name));
-        as_.bytes(text);
-        end(index);
     }
 
     const mir::Program& program_;

@@ -452,6 +452,9 @@ fun dbl(x: Bool) = x
         // A call candidate that another argument rejects schedules no results.
         {"fun a() = use(b, 1)\nfun b(x: Bool) = a()\nfun b(x: Int) = 1\nfun use(g: fun(Bool) -> Int, n: Bool): Int = 1\n"
          "fun use(g: fun(Int) -> Int, n: Int): Int = 1\nlet first = a()\nlet bad: Bool = b(true)", DiagCode::ScalarTypeMismatch},
+        // So do the known parameters of a single function whose result is still unknown.
+        {"fun f(x: Bool) = f(x)\nlet bad: fun(Int) -> Int = f", DiagCode::ScalarTypeMismatch},
+        {"fun f(x: Bool) = f(x)\nfun take(g: fun(Int) -> Int) {}\nlet bad = take(f)", DiagCode::NoMatchingCall},
         // Overloads that differ only in labels have the same function type.
         {"fun f(x: Int): Int = x\nfun f(y: Int): Int = y + 1\nlet bad: fun(Int) -> Int = f", DiagCode::AmbiguousCall},
     }) { Frontend bad; bad.check(test.first, {test.second}); }

@@ -2413,9 +2413,12 @@ private:
         }
         return types_.intern(std::move(*descriptor));
     }
+    // The candidates of a function value whose type is not settled yet: an
+    // overload set, or a single function whose result is still unknown.
     const std::vector<BindingId>* overloads(usize index) const {
         const auto it = function_names_.find(unparen(nodes_[index].expr));
-        return it == function_names_.end() || it->second.size() < 2 ? nullptr : &it->second;
+        if (it == function_names_.end()) return nullptr;
+        return it->second.size() > 1 || !known(nodes_[index].value.type) ? &it->second : nullptr;
     }
     // An overloaded function name used as a value takes the overload whose
     // type is exactly the expected function type (3.15).
@@ -2437,7 +2440,10 @@ private:
         }
         if (found.size() != 1) {
             // Function values drop labels, so overloads that differ only in labels look alike.
-            if (found.empty())
+            if (found.empty() && names->size() == 1)
+                diag_.error(DiagCode::ScalarTypeMismatch, span, "function '{}' does not have type '{}'", names_.str(name->name.sym),
+                            types_.name(expected.scalar(), resolution_, names_));
+            else if (found.empty())
                 diag_.error(DiagCode::ScalarTypeMismatch, span, "no overload of '{}' has type '{}'", names_.str(name->name.sym),
                             types_.name(expected.scalar(), resolution_, names_));
             else

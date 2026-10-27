@@ -27,4 +27,5 @@ fun main() {
     print(text: "a")
     print(print(1))
     print(if true { small } else { small })
+    print(none)
 }

@@ -258,7 +258,8 @@ let j = print(match flag { true -> false
     for (std::string_view bad : {"print()", "print(1, 2)", "print(text: \"a\")", "print(Int8(1))", "print(1.5)",
                                  "print(UInt64(1))", "print([1])", "print(print(1))", "print(maybe)",
                                  "print(if true { Int8(1) } else { Int8(2) })", "print(if true { 1 })",
-                                 "print(if true { 1 } else { \"a\" })", "print(if true { 1.5 } else { 2.5 })"}) {
+                                 "print(if true { 1 } else { \"a\" })", "print(if true { 1.5 } else { 2.5 })",
+                                 "print(none)", "print((none))", "print(if true { none } else { 1 })"}) {
         Frontend rejected;
         rejected.check(std::format("let maybe: Int? = none\nlet bad = {}", bad), {DiagCode::NoMatchingCall});
         CHECK(rejected.call("bad").state == CallState::Error && rejected.call("bad").kind == CallKind::Builtin);

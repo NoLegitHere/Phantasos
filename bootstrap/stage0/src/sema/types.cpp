@@ -2830,6 +2830,12 @@ private:
             record.state = CallState::Error;
             return Value{Type::Error};
         }
+        // `none` stays deferred without an optional context, which print never
+        // gives, so reject it here, in the argument or any branch tail.
+        std::vector<Tail> found;
+        tails(arg, found);
+        for (const auto& tail : found)
+            if (tail.kind == Tail::Value && tail.expr->kind == ExprKind::None) return reject(", found 'none'");
         Type parameter = source.type;
         if (unavailable(source)) {
             // Branching arguments are checked through their tails, so probe each

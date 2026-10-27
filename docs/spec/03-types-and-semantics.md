@@ -356,7 +356,7 @@ rules and retains expression/binding types. `E0400` reports mismatches,
 does not alter the syntax tree, and dependent expressions avoid cascading
 diagnostics. Parsing alone performs none of these checks.
 
-The type API explicitly returns `Deferred` for unsupported calls, named-function values,
+The type API explicitly returns `Deferred` for unsupported calls, unselected overloaded function values,
 generic types and aliases, inherited/dependent members (3.19), optional
 bindings, casts, effect operators and block/branch results. It traverses their
 children to check supported scalar subexpressions. Forward variable references
@@ -373,9 +373,7 @@ found no errors, not that the program is valid or executable.
 ## 3.15 Direct scalar function calls [Core]
 
 Stage0 retains scalar parameter and return types for function declarations,
-including extern functions. Function values themselves are not scalar: their
-value bindings remain deferred, and return types are queried through signatures.
-An omitted return annotation means `Unit` for a block body or declaration
+including extern functions. An omitted return annotation means `Unit` for a block body or declaration
 without a body. Expression bodies infer their scalar result, including forward
 calls and references. Recursive inference cycles without an established type
 remain deferred; an explicit return annotation can break such a cycle.
@@ -551,9 +549,21 @@ Independently provable constructor shape/type/range errors are still diagnosed.
 
 Known non-optional function-typed values check positional argument count and
 types and retain the declared result type; such signatures have no argument
-labels or defaults. Named-function value inference and contextual overload
-selection for function values remain deferred. Direct named calls still select
-from argument facts before traversing only the chosen return dependency.
+labels or defaults. Direct named calls still select from argument facts before
+traversing only the chosen return dependency.
+
+A top-level function's name used other than as a direct callee is a function
+value. Its type is `fun(P1, ..., Pn) -> R`, from the declared parameter types
+and the declared or inferred result, with the function's `throws` clause;
+labels and defaults are dropped, so calls through the value are positional.
+When the name is overloaded, the expected type picks the overload whose
+function type is exactly that type, as in `let f: fun(Int8) -> Int8 = neg` or
+an argument for a function-typed parameter. `E0400` reports an expected
+function type that no overload has, and a single function whose type differs
+from the expected one. Without an expected type, an overloaded name stays
+deferred. Generic functions, methods and functions with an `inout` or `own`
+parameter do not have plain function values yet; their names stay deferred
+too.
 
 Call records distinguish direct functions, numeric intrinsics, nominal primary
 constructors and typed indirect functions. The latter two finish without adding

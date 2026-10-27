@@ -204,6 +204,7 @@ public:
                 }
                 sig.generic = !fun->sig.generics.empty();
                 signatures_.emplace(i, std::move(sig));
+                if (fun->sig.throws) function_errors_.emplace(i, fun->sig.throws_type ? annotation(fun->sig.throws_type) : error_type());
             }
         }
         for (const Item* item : file.items) push(item);
@@ -297,6 +298,7 @@ public:
         for (auto& [id, sig] : signatures_) sig.result = nodes_[function_nodes_.at(id)].value.type;
         result.signatures_ = std::move(signatures_);
         result.calls_ = std::move(calls_);
+        result.functions_ = std::move(functions_);
         result.conversions_ = std::move(conversions_);
         result.members_ = std::move(members_);
         result.hierarchies_ = std::move(hierarchies_);
@@ -1071,11 +1073,7 @@ private:
                 bool complete = known(descriptor.result);
                 for (auto* param : syntax->args) { descriptor.parameters.push_back(cached(param, env)); complete &= known(cached(param, env)); }
                 if (syntax->throws) {
-                    if (syntax->throws_type) descriptor.error = cached(syntax->throws_type, env);
-                    else for (usize i = 0; i < resolution_.bindings().size(); ++i) {
-                        const auto& b = resolution_.bindings()[i];
-                        if (b.kind == BindingKind::BuiltinType && names_.str(b.name.sym) == "Error") descriptor.error = nominal(BindingId{i});
-                    }
+                    descriptor.error = syntax->throws_type ? cached(syntax->throws_type, env) : error_type();
                     complete &= known(descriptor.error);
                 }
                 if (complete) value = types_.intern(std::move(descriptor));
@@ -2263,7 +2261,12 @@ private:
                 const auto* ref = resolution_.reference(cast<NameExpr>(&expr)->name.span);
                 if (ref && ref->state == ResolutionState::Resolved) {
                     const auto candidates = resolution_.candidates(ref->target);
-                    if (candidates.size() == 1) nodes_[index].deps.push_back(candidates.front().value);
+                    // A function name outside a direct call is a function value (3.15).
+                    if (!direct_callees_.contains(&expr) && !candidates.empty() &&
+                        std::ranges::all_of(candidates, [&](BindingId id) { return function_value_candidate(id); })) {
+                        function_names_.emplace(&expr, std::vector<BindingId>(candidates.begin(), candidates.end()));
+                        for (BindingId id : candidates) nodes_[index].deps.push_back(function_nodes_.at(id.value));
+                    } else if (candidates.size() == 1) nodes_[index].deps.push_back(candidates.front().value);
                 }
                 break;
             }
@@ -2315,6 +2318,7 @@ private:
             case ExprKind::TupleField: child(index, cast<TupleFieldExpr>(&expr)->base, returns); break;
             case ExprKind::Call: {
                 const auto& call = *cast<CallExpr>(&expr);
+                direct_callees_.insert(unparen(call.callee));
                 child(index, call.callee, returns);
                 for (const auto& arg : call.args) child(index, arg.value, returns);
                 break;
@@ -2347,6 +2351,80 @@ private:
         return expr->kind == ExprKind::None && known(expected) && !expected.optional_depth &&
                expected.kind != Type::TypeParameter && expected.kind != Type::Projection;
     }
+    Type error_type() {
+        for (usize i = 0; i < resolution_.bindings().size(); ++i) {
+            const auto& b = resolution_.bindings()[i];
+            if (b.kind == BindingKind::BuiltinType && names_.str(b.name.sym) == "Error") return nominal(BindingId{i});
+        }
+        return {};
+    }
+    // Top-level, non-generic functions whose parameters take no convention
+    // have a plain function type, so their names can be used as values.
+    bool function_value_candidate(BindingId id) const {
+        const auto& b = resolution_.binding(id);
+        if (b.kind != BindingKind::Function || resolution_.scopes()[b.scope.value].kind != ScopeKind::File) return false;
+        if (signatures_.at(id.value).generic) return false;
+        return std::ranges::all_of(cast<FunItem>(b.item)->sig.params, [](const Param& param) {
+            return param.conv == Convention::Default || param.conv == Convention::Borrow;
+        });
+    }
+    // The function type of a function value, or nothing while part of its
+    // signature is still unknown or in error.
+    std::optional<TypeDescriptor> function_descriptor(BindingId id) const {
+        const auto* fun = cast<FunItem>(resolution_.binding(id).item);
+        TypeDescriptor descriptor{.kind = Type::Function, .parameters = signatures_.at(id.value).parameters,
+                                  .result = nodes_[function_nodes_.at(id.value)].value.type, .throws = fun->sig.throws};
+        if (fun->sig.throws) descriptor.error = function_errors_.at(id.value);
+        const bool complete = known(descriptor.result) && std::ranges::all_of(descriptor.parameters, known) &&
+                              (!fun->sig.throws || known(descriptor.error));
+        if (!complete) return std::nullopt;
+        return descriptor;
+    }
+    Type function_value(BindingId id) {
+        auto descriptor = function_descriptor(id);
+        if (!descriptor) {
+            // A signature in error has already been reported.
+            const auto* fun = cast<FunItem>(resolution_.binding(id).item);
+            const bool error = nodes_[function_nodes_.at(id.value)].value.type == Type::Error ||
+                               std::ranges::contains(signatures_.at(id.value).parameters, Type{Type::Error}) ||
+                               (fun->sig.throws && function_errors_.at(id.value) == Type::Error);
+            return error ? Type{Type::Error} : Type{};
+        }
+        return types_.intern(std::move(*descriptor));
+    }
+    const std::vector<BindingId>* overloads(usize index) const {
+        const auto it = function_names_.find(unparen(nodes_[index].expr));
+        return it == function_names_.end() || it->second.size() < 2 ? nullptr : &it->second;
+    }
+    // An overloaded function name used as a value takes the overload whose
+    // type is exactly the expected function type (3.15).
+    std::optional<Value> select_function(usize index, Type expected, Span span) {
+        const auto* names = overloads(index);
+        if (!names || expected.kind != Type::Function || !known(expected)) return std::nullopt;
+        std::optional<BindingId> found;
+        bool pending = false;
+        for (BindingId id : *names) {
+            const auto type = function_value(id);
+            if (type == expected.scalar()) found = id;
+            else pending |= type == Type::Deferred;
+        }
+        if (!found) {
+            if (pending) return Value{};
+            const auto* name = cast<NameExpr>(unparen(nodes_[index].expr));
+            diag_.error(DiagCode::ScalarTypeMismatch, span, "no overload of '{}' has type '{}'", names_.str(name->name.sym),
+                        types_.name(expected.scalar(), resolution_, names_));
+            return Value{Type::Error};
+        }
+        functions_[unparen(nodes_[index].expr)] = *found;
+        for (usize i = index;;) {
+            nodes_[i].value = {expected.scalar()};
+            const auto* paren = as<ParenExpr>(nodes_[i].expr);
+            if (!paren) break;
+            i = expressions_.at(paren->inner);
+        }
+        return Value{expected};
+    }
+
     Value compatible(usize index, Type expected, Span span) {
         Value actual = nodes_[index].value;
         if (none_mismatch(index, expected)) {
@@ -2364,6 +2442,7 @@ private:
             if (actual.literal != Literal::None) materialize(index, default_type(actual));
             return {Type::Error};
         }
+        if (const auto selected = select_function(index, expected, span)) return *selected;
         if (!known(expected) || unavailable(actual)) return actual;
         if (actual.literal == Literal::Array && expected.kind == Type::Array) {
             const auto array = materialize(index, expected.scalar());
@@ -2759,6 +2838,18 @@ private:
                 if (elements.size() != tuple->elems.size()) { result.matches = false; continue; }
                 result.lifts += target.optional_depth;
                 for (usize i = 0; i < elements.size(); ++i) work.push_back({expressions_.at(tuple->elems[i]), elements[i]});
+                continue;
+            }
+            if (const auto* names = overloads(index); names && target.kind == Type::Function && known(target)) {
+                bool found = false, pending = false;
+                for (BindingId id : *names) {
+                    const auto descriptor = function_descriptor(id);
+                    found |= descriptor && *descriptor == *types_.descriptor(target);
+                    pending |= !descriptor;
+                }
+                if (found) result.lifts += target.optional_depth;
+                else if (pending) result.deferred = true;
+                else result.matches = false;
                 continue;
             }
             if (!known(target) || unavailable(actual)) { result.deferred = true; continue; }
@@ -3465,6 +3556,12 @@ private:
                         if (field.annotation) node.value = {annotation(field.annotation, context)};
                         else node.value.type = substitute_type(node.value.type, context);
                     }
+                } else if (const auto names = function_names_.find(expr); names != function_names_.end()) {
+                    // An overload set waits for an expected function type to pick one.
+                    if (names->second.size() == 1) {
+                        node.value = {function_value(names->second.front())};
+                        if (known(node.value.type)) functions_[expr] = names->second.front();
+                    }
                 } else if (expr->kind == ExprKind::Name && !node.deps.empty()) node.value = nodes_[node.deps.front()].value;
                 break;
             }
@@ -3638,6 +3735,10 @@ private:
     std::unordered_map<const ast::CallExpr*, CheckedCall> calls_;
     std::unordered_map<const ast::CallExpr*, CheckedConversion> conversions_;
     std::unordered_map<const Expr*, CheckedMember> members_;
+    std::unordered_set<const Expr*> direct_callees_;
+    std::unordered_map<const Expr*, std::vector<BindingId>> function_names_;  // candidates of names used as function values
+    std::unordered_map<const Expr*, BindingId> functions_;
+    std::unordered_map<usize, Type> function_errors_;  // the error type of each throwing function
     std::unordered_map<const Expr*, usize> reference_contexts_;
     std::unordered_map<const CallExpr*, usize> call_contexts_;
     std::unordered_map<const Expr*, ExpandedType> entities_;

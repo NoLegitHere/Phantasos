@@ -1,0 +1,21 @@
+function_values_errors.phs:22:37: error[E0400]: expected 'fun(Int) -> Bool', found 'fun(Int) -> Int'
+   22 | let wrongResult: fun(Int) -> Bool = inc
+      |                                     ^^^
+function_values_errors.phs:23:40: error[E0400]: expected 'fun(Int, Int) -> Int', found 'fun(Int) -> Int'
+   23 | let wrongArity: fun(Int, Int) -> Int = inc
+      |                                        ^^^
+function_values_errors.phs:24:37: error[E0400]: no overload of 'neg' has type 'fun(Bool) -> Bool'
+   24 | let noOverload: fun(Bool) -> Bool = neg
+      |                                     ^^^
+function_values_errors.phs:25:22: error[E0400]: expected 'Int', found 'fun(Int) -> Int'
+   25 | let notAValue: Int = inc
+      |                      ^^^
+function_values_errors.phs:27:12: error[E0411]: arguments do not match function type 'fun(Int) -> Int'
+   27 | let call = badArgument(true)
+      |            ^^^^^^^^^^^^^^^^^
+function_values_errors.phs:28:15: error[E0411]: arguments do not match any callable signature
+   28 | let noMatch = apply(neg, 1)
+      |               ^^^^^^^^^^^^^
+function_values_errors.phs:20:5: note: candidate 'apply(f: fun(UInt) -> UInt, x: UInt)'
+   20 | fun apply(f: fun(UInt) -> UInt, x: UInt): UInt = f(x)
+      |     ^^^^^

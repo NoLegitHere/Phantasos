@@ -914,29 +914,32 @@ pattern always runs its guard, and arms after an unguarded one are unreachable.
   once. Assignment anywhere in a loop's condition or body counts as possibly
   repeated on the next iteration.
 - **Fields and receivers (`E0502`).** These follow 3.3. Assigning to a field,
-  or calling a `mut fun`, needs a mutable place:
+  calling a `mut fun` or passing an `inout` argument needs a mutable place:
   - The field itself must be `var`. A `let` field, or a primary-constructor
     parameter without `var`, can't be assigned outside an initializer. A static
     field follows the same rule and ignores its receiver.
   - For a struct or enum, the receiver must be a `var` local or global, an
     `inout` parameter, `self` inside a `mut fun`, or a `var` field of such a
     place. A `let` binding, any other parameter, a pattern binding or a
-    temporary value such as a call result can't be modified. The rule applies
-    to every field along a path like `a.b.c`. Array elements (`a[i]`) and
-    unwrapped optionals (`p!`) keep the access of their container, so
-    assigning to an element of a `let` array is also an error.
+    temporary value, such as a call result or an array literal, can't be
+    modified. The rule applies to every field along a path like `a.b.c`.
+  - Array elements (`a[i]`) and unwrapped optionals (`p!`) keep the access of
+    their container, so assigning to an element of a `let` array, or to `p!`
+    through a borrow, is also an error.
   - A class or actor instance can be modified through any reference except a
     borrow: a default or `borrow` parameter, or `self` outside a `mut fun`.
     A borrow stays read-only through every field along the path, `let` or
-    `var`.
+    `var`, whatever the type of each step.
   - Inside a method, a bare field name or method call, including an inherited
     field or an explicitly specialized generic method, uses `self`, and so does
-    `super`. `self` is read-only unless the method is a `mut fun`. Assigning to `self` itself
-    follows the same rule. In an `init` or `deinit`, fields of `self` can
-    always be assigned, since construction rules are separate.
+    `super`. `self` is read-only unless the method is a `mut fun`. Assigning to
+    `self` itself follows the same rule. In an `init` or `deinit`, fields of
+    `self` can always be assigned, since construction rules are separate.
+  - An argument for an `inout` parameter must be a mutable place of any type,
+    since the callee can replace the whole value.
 
-  Receivers whose type is not yet known, such as type parameters, are only
-  checked for borrows.
+  Receivers whose storage is not known, such as type parameters and
+  interface `self`, are only checked for borrows.
 
 `init` ordering, moves, borrows and destruction remain pending, as do
 stored-field initialization and global initialization order.

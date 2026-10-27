@@ -353,6 +353,53 @@ fun allowed(cells: inout [Cell], p: own Cell?) {
 }
 )", {DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment,
      DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment});
+    Frontend roots;
+    roots.check(R"(
+struct Slot(var a: Int) {
+    mut fun bump() { a += 1 }
+}
+interface Has {
+    var value: Int
+    fun reset() { value = 0 }
+}
+fun change<T: Has>(x: T) { x.value = 1 }
+class Holder(let value: Int?, var spare: Int?) {}
+fun unwrap(h: Holder) {
+    h.value! = 2
+    h.spare! = 3
+}
+fun literals() {
+    [Slot(1)][0].a = 2
+    [Slot(1)][0].bump()
+}
+)", {DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment,
+     DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment});
+    Frontend arguments;
+    arguments.check(R"(
+struct Slot(var a: Int, let b: Int)
+fun bump(x: inout Int) { x += 1 }
+fun swap(s: inout Slot) {}
+fun pass(n: Int, slot: Slot) {
+    bump(x: n)
+    bump(x: slot.a)
+    let s = Slot(1, 2)
+    swap(s: s)
+    bump(x: s.a)
+    var t = Slot(1, 2)
+    bump(x: t.b)
+    bump(x: 3)
+    swap(s: Slot(1, 2))
+}
+fun fine(x: inout Int) {
+    var t = Slot(1, 2)
+    bump(x: t.a)
+    swap(s: t)
+    bump(x: x)
+    var n = 0
+    bump(x: n)
+}
+)", {DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment,
+     DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment});
 }
 
 void branch_results() {

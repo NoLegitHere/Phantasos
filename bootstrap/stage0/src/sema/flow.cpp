@@ -297,12 +297,13 @@ private:
         const Place fixed{Access::Immutable, subject, field.declared, std::string(field.note)};
         if (field.is_static) return field.var ? Place{Access::Mutable} : fixed;
         if (base.access == Access::Unknown) return {};
-        // A `let` field can't give back write access that a borrow took away.
-        if (!field.var) return base.access == Access::ReadOnly ? base : fixed;
+        // Nothing reached through a borrow becomes writable, whatever its type.
+        if (base.access == Access::ReadOnly) return base;
+        if (!field.var) return fixed;
         // Value types are immutable all the way down; a class object can be
         // changed through any reference that is not a borrow.
         if (storage == Storage::Value) return base;
-        if (storage == Storage::Reference) return base.access == Access::ReadOnly ? base : Place{Access::Mutable};
+        if (storage == Storage::Reference) return {Access::Mutable};
         return {};
     }
 
@@ -368,9 +369,9 @@ private:
             chain.push_back(expr);
             expr = unparen(base);
         }
-        Place result;
+        // Any root other than a name or `self` is a value computed on the spot.
+        Place result{Access::Temporary, "a temporary value"};
         if (expr->kind == ExprKind::SelfValue || expr->kind == ExprKind::Super) result = self_;
-        else if (expr->kind == ExprKind::Call) result = {Access::Temporary, "a temporary value"};
         else if (const auto* name = as<NameExpr>(expr)) result = name_place(*name);
         for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
             const auto* member = as<MemberExpr>(*it);
@@ -399,15 +400,16 @@ private:
     void write_place(const Expr& target) {
         const Expr* inner = unparen(&target);
         const auto* member = as<MemberExpr>(inner);
-        const bool element = inner->kind == ExprKind::Index;
-        if (!member && !element && inner->kind != ExprKind::SelfValue) return;
+        const bool element = inner->kind == ExprKind::Index, unwrapped = inner->kind == ExprKind::Unwrap;
+        if (!member && !element && !unwrapped && inner->kind != ExprKind::SelfValue) return;
         const Place found = place(inner);
         if (found.access == Access::Unknown || found.access == Access::Mutable) return;
-        if (element) {
+        if (element || unwrapped) {
+            const auto what = element ? "an element" : "an unwrapped optional";
             if (found.access == Access::Temporary)
-                restricted(target.span, "cannot assign to an element of a temporary value", found);
+                restricted(target.span, std::format("cannot assign to {} of a temporary value", what), found);
             else
-                restricted(target.span, std::format("cannot assign to an element because {} is {}", found.subject,
+                restricted(target.span, std::format("cannot assign to {} because {} is {}", what, found.subject,
                                                     describe(found.access)), found);
             return;
         }
@@ -427,13 +429,38 @@ private:
                                                 describe(found.access)), found);
     }
 
+    // An `inout` argument must be a mutable place, whatever its type, since
+    // the callee can replace the whole value.
+    void inout_arguments(const CallExpr& call, const CheckedCall& checked, const FunItem& fun) {
+        for (usize i = 0; i < checked.parameters.size() && i < call.args.size(); ++i) {
+            const usize index = checked.parameters[i];
+            if (index >= fun.sig.params.size() || fun.sig.params[index].conv != Convention::Inout) continue;
+            const Place found = place(call.args[i].value);
+            if (found.access == Access::Unknown || found.access == Access::Mutable) continue;
+            const auto name = names_.str(fun.sig.params[index].name.sym);
+            if (found.access == Access::Temporary)
+                restricted(call.args[i].value->span,
+                           std::format("cannot pass a temporary value to 'inout' parameter '{}'", name), found);
+            else
+                restricted(call.args[i].value->span,
+                           std::format("the argument for 'inout' parameter '{}' must be mutable, but {} is {}", name,
+                                       found.subject, describe(found.access)), found);
+        }
+    }
+
     // A `mut fun` needs a mutable receiver: a mutable place for value types,
     // and anything but a borrow for class instances.
     void mutating_call(const CallExpr& call) {
         const auto* checked = types_.call(&call);
-        if (!checked || checked->state != CallState::Resolved || checked->kind != CallKind::Method) return;
+        if (!checked || checked->state != CallState::Resolved ||
+            (checked->kind != CallKind::Method && checked->kind != CallKind::Function))
+            return;
         const auto* fun = as<FunItem>(resolution_.binding(checked->target).item);
-        if (!fun || !has_modifier(fun->mods, Modifier::Mut) || has_modifier(fun->mods, Modifier::Static)) return;
+        if (!fun) return;
+        inout_arguments(call, *checked, *fun);
+        if (checked->kind != CallKind::Method || !has_modifier(fun->mods, Modifier::Mut) ||
+            has_modifier(fun->mods, Modifier::Static))
+            return;
         Place found;
         Storage kind = self_storage_;
         if (checked->receiver) {

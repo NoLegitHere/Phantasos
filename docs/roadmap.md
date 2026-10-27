@@ -53,8 +53,8 @@ foundation. Complete.
   substitution, associated-type and stored-property witnesses, and generic
   conformers to known non-generic interfaces.
 - [x] Initial flow checks: all-path returns, definite initialization of locals,
-  `let`/parameter immutability, and contextual branch results, including `T?`
-  for an `if` without `else`.
+  `let`/parameter immutability, field and `mut fun` receiver mutability, and
+  contextual branch results, including `T?` for an `if` without `else`.
 - [x] **Native scalar vertical slice (M1).** Compile a scalar Core subset
   (functions, locals, loops, calls, checked integer arithmetic) through a typed
   IR and naive x86_64 code to a static Linux x86_64 executable that returns its
@@ -73,6 +73,16 @@ foundation. Complete.
   - [x] MIR and x86_64 for two-word `String` values; gate accepts them.
   - [x] Runtime write and integer formatting; gate accepts `print`.
   - [x] Run tests that compare standard output, with sample programs.
+- [ ] **Next: structs and tuples (M3).** Non-generic structs and unlabeled
+  tuples as aggregate values on Linux x86_64: layout (ABI A.2), System V passing
+  (A.6), field assignment and methods.
+  - [x] Field and `mut fun` receiver mutability checks.
+  - [ ] Struct values: construction, field reads, locals, arguments and results.
+  - [ ] Field assignment.
+  - [ ] Methods, including `mut fun`.
+  - [ ] Tuples in the front end: types, literals, `.0` access and destructuring.
+  - [ ] Tuple code generation.
+  - [ ] Sample programs and run tests.
 - [ ] Generic base substitution and built-in traits. Instantiate
   generic base/interface graphs, derive `Copy`/`Sendable`/`Error`, and complete
   generic method contracts, associated defaults and receiver-dependent contexts.

@@ -40,7 +40,7 @@ Windows x64 and Linux x86_64:
 - [x] Initial explicit generic applications and alias/signature/member substitution
 - [x] Initial argument-based generic inference and concrete interface/where constraints
 - [x] Initial generic body checking, bound-based lookup, associated types/Self and dependent witnesses
-- [x] Flow checks: all-path returns, definite initialization, immutable bindings and branch results
+- [x] Flow checks: all-path returns, definite initialization, immutable bindings and fields, `mut fun` receivers and branch results
 - [ ] Generic base substitution, built-in traits, remaining dependent contracts and ownership analysis
 - [x] Native scalar slice: MIR, naive x86_64 code, and static Linux ELF executables with a stage0 runtime (`build`)
 - [x] Output: string literals and a prelude `print` for `String`, `Int`, `UInt` and `Bool`
@@ -86,7 +86,8 @@ substitute for concrete calls and supported witnesses. General inference/bound s
 function-value inference, associated defaults, remaining numeric policies,
 remaining dependent/property contracts, optional/ownership-wrapper member access and ownership analysis remain
 pending, so passing `check` does not yet establish program validity. After typing succeeds, `check`
-also reports missing returns, reads of uninitialized locals and assignments to immutable bindings,
+also reports missing returns, reads of uninitialized locals, assignments to immutable bindings and fields,
+`mut fun` calls on immutable receivers,
 and checks used `if`/`match`/block results against their expected type. An `if` without `else`
 produces `none` where an optional is expected. Imports explicitly report that
 package loading is unavailable.

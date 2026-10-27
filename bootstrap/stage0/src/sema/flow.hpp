@@ -23,8 +23,9 @@ namespace phs {
 // function with a non-Unit result returns or diverges (E0500), locals declared
 // without an initializer are definitely initialized before use (E0501), and
 // assignments only target `var` locals/globals, `inout` parameters or a `let`
-// local that is still definitely unassigned (E0502). Fields, receivers and
-// ownership remain later work. Run after scalar typing succeeds; the AST,
+// local that is still definitely unassigned (E0502). Field assignments and
+// `mut fun` calls need a mutable place (also E0502, spec 3.24). Ownership
+// remains later work. Run after scalar typing succeeds; the AST,
 // Resolution and ScalarTypes are unchanged.
 void check_flow(const ast::File& file, const Resolution& resolution, const ScalarTypes& types,
                 const Interner& names, DiagEngine& diag);

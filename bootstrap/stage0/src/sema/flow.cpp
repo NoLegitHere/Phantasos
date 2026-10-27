@@ -15,7 +15,9 @@
 
 #include "sema/flow.hpp"
 
+#include <format>
 #include <initializer_list>
+#include <string>
 #include <unordered_map>
 #include <utility>
 #include <variant>
@@ -179,6 +181,7 @@ public:
         struct Work { const Item* item; const TypeDeclItem* owner; };
         std::vector<Work> work;
         for (const Item* item : file.items) work.push_back({item, nullptr});
+        fields(work);
         while (!work.empty()) {
             const auto [item, owner] = work.back();
             work.pop_back();
@@ -191,7 +194,11 @@ public:
                 for (const Item* nested : ext->items) work.push_back({nested, owner});
             } else if (const auto* fun = as<FunItem>(item)) {
                 defaults(fun->sig.params);
-                if (fun->body) callable(fun->sig.params, fun->body, fun);
+                if (fun->body) {
+                    receiver(owner, fun);
+                    callable(fun->sig.params, fun->body, fun);
+                    receiver(nullptr, nullptr);
+                }
             } else if (const auto* var = as<VarItem>(item)) {
                 // Field initializers see the owner's primary-constructor parameters.
                 if (var->init) callable(owner ? owner->ctor_params : List<Param>{}, var->init, nullptr);
@@ -212,6 +219,205 @@ private:
     static constexpr usize kUntracked = static_cast<usize>(-1);
 
     State dead() const { return {Bits(tracked_, true), Bits(tracked_, false), false}; }
+
+    // How a place may be modified (3.3). Unknown places, including `self`
+    // during construction, are not checked.
+    enum class Access : u8 { Unknown, Mutable, Immutable, ReadOnly, Temporary };
+    enum class Storage : u8 { Unknown, Value, Reference };
+    struct Place {
+        Access access = Access::Unknown;
+        std::string subject;  // what restricts the place, e.g. 'p' or field 'y'
+        Span declared;
+        std::string note;
+    };
+    struct Field {
+        bool var = false;
+        bool is_static = false;
+        Span declared;
+        std::string_view note;  // why a non-'var' field is immutable
+    };
+
+    // Registers every field before any body is checked, since members can be declared in any order.
+    template <typename Work>
+    void fields(const std::vector<Work>& roots) {
+        std::vector<const Item*> work;
+        for (const auto& root : roots) work.push_back(root.item);
+        while (!work.empty()) {
+            const Item* item = work.back();
+            work.pop_back();
+            if (const auto* type = as_type_decl(item)) {
+                for (const auto& param : type->ctor_params)
+                    if (type->kind == ItemKind::Struct || param.binding != Binding::None)
+                        fields_.emplace(param.name.span.lo,
+                                        Field{param.binding == Binding::Var, false, param.name.span,
+                                              param.binding == Binding::Let ? "declared with 'let' here"
+                                                                            : "declared without 'var' here"});
+                for (const Item* member : type->members) {
+                    if (const auto* var = as<VarItem>(member))
+                        fields_.emplace(var->name.span.lo, Field{var->binding == Binding::Var,
+                                                                 has_modifier(var->mods, Modifier::Static),
+                                                                 var->name.span, "declared with 'let' here"});
+                    work.push_back(member);
+                }
+            } else if (const auto* ext = as<ExternItem>(item)) {
+                for (const Item* nested : ext->items) work.push_back(nested);
+            }
+        }
+    }
+
+    static Storage storage(ItemKind kind) {
+        if (kind == ItemKind::Struct || kind == ItemKind::Enum) return Storage::Value;
+        if (kind == ItemKind::Class || kind == ItemKind::Actor) return Storage::Reference;
+        return Storage::Unknown;
+    }
+    Storage storage(ScalarType type) const {
+        if (type.optional_depth) return Storage::Unknown;
+        if (type.kind == ScalarType::Shared) return Storage::Reference;
+        const auto* descriptor = type.kind == ScalarType::Nominal ? types_.descriptor(type) : nullptr;
+        if (!descriptor || !descriptor->declaration.valid()) return Storage::Unknown;
+        const Item* item = resolution_.binding(descriptor->declaration).item;
+        return item ? storage(item->kind) : Storage::Unknown;
+    }
+
+    // `self` in an instance method is mutable only inside a `mut fun`.
+    void receiver(const TypeDeclItem* owner, const FunItem* fun) {
+        self_ = {};
+        self_storage_ = Storage::Unknown;
+        if (!owner || !fun || has_modifier(fun->mods, Modifier::Static)) return;
+        self_storage_ = storage(owner->kind);
+        if (has_modifier(fun->mods, Modifier::Mut)) self_ = {Access::Mutable, "'self'", {}, {}};
+        else self_ = {Access::ReadOnly, "'self'", fun->name.span, "'self' is read-only in a method without 'mut'"};
+    }
+
+    Place field_place(const ResolvedBinding& binding, const Place& base, Storage storage) const {
+        const auto it = fields_.find(binding.name.span.lo);
+        if (it == fields_.end()) return {};
+        const Field& field = it->second;
+        const auto subject = "field '" + std::string(names_.str(binding.name.sym)) + "'";
+        const Place fixed{Access::Immutable, subject, field.declared, std::string(field.note)};
+        if (field.is_static) return field.var ? Place{Access::Mutable} : fixed;
+        if (base.access == Access::Unknown) return {};
+        if (!field.var) return fixed;
+        // Value types are immutable all the way down; a class object can be
+        // changed through any reference that is not a borrow.
+        if (storage == Storage::Value) return base;
+        if (storage == Storage::Reference) return base.access == Access::ReadOnly ? base : Place{Access::Mutable};
+        return {};
+    }
+
+    Place name_place(const NameExpr& name) const {
+        const auto id = target(name);
+        if (!id.valid()) return {};
+        const auto& binding = resolution_.binding(id);
+        const auto subject = "'" + std::string(names_.str(name.name.sym)) + "'";
+        switch (binding.kind) {
+            case BindingKind::Local: {
+                const auto* found = local(id);
+                if (!found) return {Access::Immutable, subject, binding.name.span, "bound here"};
+                if (found->decl->binding == Binding::Var) return {Access::Mutable};
+                return {Access::Immutable, subject, found->decl->name.span, "declared with 'let' here"};
+            }
+            case BindingKind::Pattern:
+                return {Access::Immutable, subject, binding.name.span, "pattern bindings are immutable"};
+            case BindingKind::Parameter: {
+                const auto it = params_.find(binding.name.span.lo);
+                if (it == params_.end() || it->second->binding != Binding::None) return {};
+                if (it->second->conv == Convention::Inout) return {Access::Mutable};
+                return {it->second->conv == Convention::Own ? Access::Immutable : Access::ReadOnly, subject,
+                        binding.name.span, "parameters are read-only unless declared 'inout'"};
+            }
+            case BindingKind::Variable: {
+                const auto* var = as<VarItem>(binding.item);
+                if (!var) return {};
+                if (var->binding == Binding::Var) return {Access::Mutable};
+                return {Access::Immutable, subject, binding.name.span, "declared with 'let' here"};
+            }
+            case BindingKind::Field: return field_place(binding, self_, self_storage_);
+            default: return {};
+        }
+    }
+
+    // Member chains are walked iteratively from their root.
+    Place place(const Expr* expr) const {
+        std::vector<const MemberExpr*> chain;
+        expr = unparen(expr);
+        while (const auto* member = as<MemberExpr>(expr)) {
+            chain.push_back(member);
+            expr = unparen(member->base);
+        }
+        Place result;
+        if (expr->kind == ExprKind::SelfValue) result = self_;
+        else if (expr->kind == ExprKind::Call) result = {Access::Temporary, "a temporary value"};
+        else if (const auto* name = as<NameExpr>(expr)) result = name_place(*name);
+        for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
+            const auto* record = types_.member(*it);
+            if (!record || record->state != ResolutionState::Resolved || record->candidates.size() != 1 ||
+                resolution_.binding(record->candidates.front()).kind != BindingKind::Field)
+                return {};
+            // A type receiver names a static field, which ignores the base.
+            if (record->type_receiver) result = {};
+            result = field_place(resolution_.binding(record->candidates.front()), result,
+                                 storage(types_.expression((*it)->base)));
+        }
+        return result;
+    }
+
+    static std::string_view describe(Access access) {
+        return access == Access::ReadOnly ? "read-only" : access == Access::Temporary ? "temporary" : "immutable";
+    }
+    void restricted(Span span, std::string message, const Place& place) {
+        auto& d = diag_.error(DiagCode::ImmutableAssignment, span, "{}", message);
+        if (!place.note.empty()) d.notes.push_back({place.declared, place.note});
+    }
+
+    // An assignment to a field or to `self`; plain names go through write().
+    void write_place(const Expr& target) {
+        const Expr* inner = unparen(&target);
+        const auto* member = as<MemberExpr>(inner);
+        if (!member && inner->kind != ExprKind::SelfValue) return;
+        const Place found = place(inner);
+        if (found.access == Access::Unknown || found.access == Access::Mutable) return;
+        if (!member) {
+            restricted(target.span, std::format("cannot assign to {} 'self'", describe(found.access)), found);
+            return;
+        }
+        const auto field = names_.str(member->name.sym);
+        // place() resolved the member, so its record exists.
+        const auto& binding = resolution_.binding(types_.member(member)->candidates.front());
+        if (found.access == Access::Immutable && found.declared.lo == binding.name.span.lo)
+            restricted(target.span, std::format("cannot assign to immutable field '{}'", field), found);
+        else if (found.access == Access::Temporary)
+            restricted(target.span, std::format("cannot assign to field '{}' of a temporary value", field), found);
+        else
+            restricted(target.span, std::format("cannot assign to field '{}' because {} is {}", field, found.subject,
+                                                describe(found.access)), found);
+    }
+
+    // A `mut fun` needs a mutable receiver: a mutable place for value types,
+    // and anything but a borrow for class instances.
+    void mutating_call(const CallExpr& call) {
+        const auto* checked = types_.call(&call);
+        if (!checked || checked->state != CallState::Resolved || checked->kind != CallKind::Method) return;
+        const auto* fun = as<FunItem>(resolution_.binding(checked->target).item);
+        if (!fun || !has_modifier(fun->mods, Modifier::Mut) || has_modifier(fun->mods, Modifier::Static)) return;
+        Place found;
+        Storage kind = self_storage_;
+        if (checked->receiver) {
+            found = place(checked->receiver);
+            kind = storage(types_.expression(checked->receiver));
+        } else if (unparen(call.callee)->kind == ExprKind::Name) {
+            found = self_;
+        }
+        const bool rejected = found.access == Access::ReadOnly ||
+                              (kind == Storage::Value && (found.access == Access::Immutable || found.access == Access::Temporary));
+        if (!rejected) return;
+        const auto name = names_.str(fun->name.sym);
+        if (found.access == Access::Temporary)
+            restricted(call.callee->span, std::format("cannot call 'mut fun {}' on a temporary value", name), found);
+        else
+            restricted(call.callee->span, std::format("cannot call 'mut fun {}' because {} is {}", name, found.subject,
+                                                      describe(found.access)), found);
+    }
 
     // Defaults and initializers are separate roots with their own locals. Defaults keep the parameter
     // list so that writes to earlier parameters are still checked.
@@ -318,6 +524,18 @@ private:
                 if (var && var->binding != Binding::Var) immutable(name, binding.name.span, "declared with 'let' here");
                 return;
             }
+            case BindingKind::Field: {
+                // An implicit `self` field.
+                const Place found = field_place(binding, self_, self_storage_);
+                if (found.access == Access::Unknown || found.access == Access::Mutable) return;
+                const auto field = names_.str(name.name.sym);
+                if (found.declared.lo != binding.name.span.lo)
+                    restricted(name.span, std::format("cannot assign to field '{}' because 'self' is {}", field,
+                                                      describe(found.access)), found);
+                else
+                    restricted(name.span, std::format("cannot assign to immutable field '{}'", field), found);
+                return;
+            }
             default: return;
         }
     }
@@ -376,6 +594,7 @@ private:
             }
             if (const auto* name = as<NameExpr>(expr)) read(*name, state);
             else if (const auto* call = as<CallExpr>(expr)) {
+                mutating_call(*call);
                 // Any call inside `try?` may throw after its operands have run;
                 // a panic aborts instead (3.7).
                 if (!caught_.empty() && !panics(*call)) merge(caught_.back(), state);
@@ -505,6 +724,7 @@ private:
                 else if (assign.op != AssignOp::Assign) read(*name, state);
                 eval(assign.value, state);
                 if (name) write(*name, state);
+                else write_place(*assign.target);
                 break;
             }
         }
@@ -517,6 +737,9 @@ private:
     std::unordered_map<const Item*, BindingId> items_;
     std::unordered_map<u32, const Param*> params_;
     std::unordered_map<u32, Local> locals_;
+    std::unordered_map<u32, Field> fields_;
+    Place self_;
+    Storage self_storage_ = Storage::Unknown;
     std::vector<State> breaks_;
     std::vector<State> caught_;  // error exits of enclosing `try?` expressions
     usize tracked_ = 0;

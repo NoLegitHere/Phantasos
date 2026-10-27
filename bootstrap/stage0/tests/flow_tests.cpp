@@ -192,6 +192,111 @@ fun bound(values: [Int]) {
      DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment});
 }
 
+void field_mutability() {
+    Frontend f;
+    f.check(R"(
+struct Inner(var n: Int) {
+    mut fun bump() { n += 1 }
+}
+struct Outer(var inner: Inner, let fixed: Inner) {
+    var count: Int = 0
+    static var total: Int = 0
+    init(n: Int) {
+        inner = Inner(n)
+        fixed = Inner(n)
+    }
+    mut fun step() {
+        inner.bump()
+        self.inner.n = 2
+        count += 1
+        bump2()
+        total += 1
+        self = Outer(n: 1)
+    }
+    mut fun bump2() { inner.n -= 1 }
+    fun read(): Int = inner.n + count
+}
+class Box(var value: Int) {
+    let size: Int = 1
+    mut fun grow() { value += 1 }
+    fun peek(): Int = value
+}
+fun own_box(b: own Box) { b.value = 1; b.grow() }
+fun take(o: inout Outer) { o.inner.n = 3; o.step(); o.inner.bump() }
+fun main() {
+    var o = Outer(n: 1)
+    o.inner.n = 4
+    o.count += 2
+    o.step()
+    o.inner.bump()
+    take(o: o)
+    let b = Box(1)
+    b.value = 2
+    b.grow()
+    Box(3).grow()
+    Box(3).value = 4
+    Outer.total = 5
+    var s = shared Box(1)
+    s.grow()
+}
+)");
+    Frontend g;
+    g.check(R"(
+struct Inner(var n: Int) {
+    mut fun bump() { n += 1 }
+}
+struct Outer(var inner: Inner, let fixed: Inner) {
+    static let limit: Int = 3
+    fun look() {
+        inner.n = 1
+        inner.bump()
+        bump2()
+        self.inner.bump()
+        self = Outer(Inner(1), Inner(2))
+    }
+    mut fun bump2() {
+        fixed.n = 2
+        fixed.bump()
+    }
+}
+class Box(var value: Int) {
+    let size: Int = 1
+    mut fun grow() { value += 1 }
+    fun peek(): Int {
+        value = 2
+        grow()
+        return value
+    }
+}
+fun borrowed(b: Box, o: Outer) {
+    b.value = 1
+    b.grow()
+    o.inner.n = 1
+    o.inner.bump()
+}
+fun make(): Inner = Inner(1)
+fun main() {
+    let o = Outer(Inner(1), Inner(2))
+    o.inner.n = 4
+    o.inner.bump()
+    make().n = 1
+    make().bump()
+    let b = Box(1)
+    b.size = 2
+    Outer.limit = 4
+    var p = o
+    p.fixed.n = 1
+    p.fixed.bump()
+}
+)", {DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment,
+     DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment,
+     DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment,
+     DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment,
+     DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment,
+     DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment,
+     DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment, DiagCode::ImmutableAssignment});
+}
+
 void branch_results() {
     Frontend f;
     f.check(R"(
@@ -366,6 +471,7 @@ int main() {
     missing_returns();
     initialization();
     immutability();
+    field_mutability();
     branch_results();
     gated_by_type_errors();
     caught_errors_guards_and_conditions();

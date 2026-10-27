@@ -74,6 +74,13 @@ class Resolver;
 // destroyed. Deferred references require receiver types or package loading.
 class Resolution {
 public:
+    // Move-only: scopes_ and sets_ hold spans into this object's own storage.
+    Resolution() = default;
+    Resolution(Resolution&&) = default;
+    Resolution& operator=(Resolution&&) = default;
+    Resolution(const Resolution&) = delete;
+    Resolution& operator=(const Resolution&) = delete;
+
     std::span<const ResolvedBinding> bindings() const { return bindings_; }
     std::span<const LexicalScope> scopes() const { return scopes_; }
     std::span<const NameReference> references() const { return references_; }

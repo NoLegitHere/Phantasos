@@ -50,7 +50,8 @@ def run(cmd: list[str], timeout: float) -> tuple[float, int, int | None]:
     proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     if not hasattr(os, "wait4"):  # Windows: no per-process peak memory
         try:
-            return time.perf_counter() - start, 0, proc.wait(timeout)
+            rc = proc.wait(timeout)
+            return time.perf_counter() - start, 0, rc
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait()

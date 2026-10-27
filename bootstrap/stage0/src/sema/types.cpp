@@ -313,10 +313,17 @@ public:
             if (nodes_[index].value.literal != Literal::None) materialize(index, default_type(nodes_[index].value));
         }
         retain_bodies();
+        // Free the working tables before building the result, which is when
+        // memory peaks on large files.
+        release(annotations_, speculative_annotations_, environments_, environment_ids_, node_declarations_, dependencies_,
+                declarations_, parameter_indices_, direct_callees_, function_names_, reference_contexts_, call_contexts_,
+                entities_, large_scope_names_, ancestry_cache_, inherited_members_, walk_, requirements_);
         ScalarTypes result;
         for (const auto& [expr, index] : expressions_) result.expressions_.emplace(expr, nodes_[index].value.type);
+        release(expressions_);
         for (usize i = 0; i < resolution_.bindings().size(); ++i) result.bindings_.push_back(nodes_[i].value.type);
         for (auto& [id, sig] : signatures_) sig.result = nodes_[function_nodes_.at(id)].value.type;
+        release(nodes_);
         result.signatures_ = std::move(signatures_);
         result.calls_ = std::move(calls_);
         result.functions_ = std::move(functions_);
@@ -331,6 +338,9 @@ public:
     }
 
 private:
+    template <typename... Tables>
+    static void release(Tables&... tables) { ((tables = Tables{}), ...); }
+
     static constexpr usize kDependentDepth = 64;
     std::string scalar_type_name(Type type) const { return types_.name(type, resolution_, names_, 1024); }
 

@@ -15,9 +15,13 @@
 
 #pragma once
 
+#include <span>
 #include <string>
+#include <unordered_map>
+#include <vector>
 
 #include "sema/resolve.hpp"
+#include "support/node_map.hpp"
 
 namespace phs {
 
@@ -75,7 +79,7 @@ public:
     std::string name(ScalarType type, const Resolution& resolution, const Interner& names, usize limit = kNameLimit) const;
 private:
     std::vector<TypeDescriptor> descriptors_;
-    std::unordered_map<TypeDescriptor, usize, TypeDescriptorHash> ids_;
+    std::unordered_multimap<usize, usize> ids_;  // descriptor hash -> index in descriptors_
 };
 
 enum class ExpansionState : u8 { Resolved, Deferred, Error };
@@ -249,13 +253,13 @@ public:
 
 private:
     friend class ScalarChecker;
-    std::unordered_map<const ast::Expr*, ScalarType> expressions_;
+    NodeMap<const ast::Expr*, ScalarType> expressions_;
     std::vector<ScalarType> bindings_;
     std::unordered_map<usize, ScalarSignature> signatures_;
-    std::unordered_map<const ast::CallExpr*, CheckedCall> calls_;
+    NodeMap<const ast::CallExpr*, CheckedCall> calls_;
     std::unordered_map<const ast::CallExpr*, CheckedConversion> conversions_;
     std::unordered_map<const ast::Expr*, BindingId> functions_;
-    std::unordered_map<const ast::Expr*, CheckedMember> members_;
+    NodeMap<const ast::Expr*, CheckedMember> members_;
     std::unordered_map<usize, CheckedHierarchy> hierarchies_;
     AliasExpansion aliases_;
     TypeTable types_;

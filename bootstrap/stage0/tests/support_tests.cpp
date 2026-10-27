@@ -25,6 +25,7 @@
 
 #include "support/arena.hpp"
 #include "support/interner.hpp"
+#include "support/node_map.hpp"
 #include "support/scoped_value.hpp"
 #include "support/source.hpp"
 
@@ -173,6 +174,32 @@ void interner_and_scoped_state() {
     CHECK(state == 1);
 }
 
+void node_map_storage() {
+    struct Key { u32 id; };
+    std::array<Key, 5> keys{{{1}, {2}, {3}, {7}, {40}}};
+    NodeMap<const Key*, int> map;
+    map.reserve_ids(8);
+    CHECK(map.empty() && map.find(&keys[0]) == map.end() && !map.contains(&keys[4]));
+    int& first = map[&keys[0]];
+    first = 10;
+    for (usize i = 1; i < keys.size(); ++i) CHECK(map.try_emplace(&keys[i], static_cast<int>(i) * 10).second);
+    CHECK(!map.try_emplace(&keys[0], 99).second && map.at(&keys[0]) == 10);
+    CHECK(&first == &map.at(&keys[0]));  // references survive later insertions
+    CHECK(map.size() == 5 && map.at(&keys[4]) == 40);
+
+    // Erasing moves the last entry into the hole; lookups still find it.
+    CHECK(map.erase(&keys[1]) == 1 && map.erase(&keys[1]) == 0);
+    CHECK(!map.contains(&keys[1]) && map.at(&keys[4]) == 40 && map.size() == 4);
+    std::vector<u32> order;
+    for (const auto& [key, value] : map) order.push_back(key->id);
+    CHECK((order == std::vector<u32>{1, 40, 3, 7}));
+    map[&keys[1]] = 5;
+    CHECK(map.at(&keys[1]) == 5 && map.size() == 5);
+
+    NodeMap<const Key*, bool> set;  // set-style use
+    CHECK(set.insert(&keys[3]).second && !set.insert(&keys[3]).second && set.contains(&keys[3]));
+}
+
 }  // namespace
 
 int main() {
@@ -180,4 +207,5 @@ int main() {
     source_positions_and_lifetimes();
     arena_storage();
     interner_and_scoped_state();
+    node_map_storage();
 }

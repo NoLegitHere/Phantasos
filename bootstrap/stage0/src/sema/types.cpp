@@ -16,9 +16,11 @@
 #include "sema/types.hpp"
 #include "support/scoped_value.hpp"
 
+#include <algorithm>
 #include <limits>
 #include <memory>
 #include <optional>
+#include <unordered_map>
 #include <unordered_set>
 #include <variant>
 
@@ -83,21 +85,32 @@ Type default_type(Value v) {
     return v.type;
 }
 
-struct Node {
-    const Expr* expr = nullptr; // null for a binding
-    const FunItem* function = nullptr; // return-type inference node, not a value binding
+// What a non-expression node declares: a binding's annotation and
+// initializer, or a function's expression body.
+struct Declaration {
     const TypeExpr* annotation = nullptr;
     const Expr* init = nullptr;
-    std::vector<usize> deps;
-    Value value;
-    u8 state = 0; // unvisited, active, finished
-    bool call_prepared = false;
-    bool reference_prepared = false;
     // Destructuring: a hidden node holds the whole value, and each named
     // binding reads one element of its source.
     const VarStmt* destructuring = nullptr;
-    usize source = std::numeric_limits<usize>::max();
-    usize element = 0;
+    u32 source = std::numeric_limits<u32>::max();
+    u32 element = 0;
+};
+// One edge of the inference graph; a node's edges form a list in insertion order.
+struct Dependency {
+    u32 node;
+    u32 next = 0;  // the next edge of the same node, or 0
+};
+// Kept small: there is one per expression and binding.
+struct Node {
+    const Expr* expr = nullptr; // null for a binding
+    const FunItem* function = nullptr; // return-type inference node, not a value binding
+    Value value;
+    u32 declaration = 0; // index into ScalarChecker::node_declarations_, or 0
+    u32 first_dep = 0, last_dep = 0; // edges in ScalarChecker::dependencies_, or 0
+    u8 state = 0; // unvisited, active, finished
+    bool call_prepared = false;
+    bool reference_prepared = false;
 };
 const Expr* unparen(const Expr* expr) {
     while (const auto* paren = as<ParenExpr>(expr)) expr = paren->inner;
@@ -162,6 +175,7 @@ public:
         : resolution_(resolution), names_(names), diag_(diag) {}
 
     ScalarTypes run(const File& file) {
+        annotations_.plain.reserve(file.type_ids + 1);
         aliases_ = expand_aliases(resolution_, names_, diag_);
         if (diag_.has_errors(file.file)) {
             ScalarTypes result;
@@ -174,9 +188,11 @@ public:
             const auto& b = resolution_.bindings()[i];
             if (b.kind == BindingKind::GenericParameter) generic_bindings_[b.name.span.lo] = BindingId{i};
             if (b.members.valid()) member_owners_.emplace(b.members.value, BindingId{i});
-            if (resolution_.scopes()[b.scope.value].kind == ScopeKind::Members &&
-                b.kind != BindingKind::Type && b.kind != BindingKind::TypeAlias)
-                member_values_[b.scope.value][b.name.sym.id].push_back(BindingId{i});
+        }
+        for (usize i = 0; i < resolution_.scopes().size(); ++i) {
+            const auto& bindings = resolution_.scopes()[i].bindings;
+            if (bindings.size() < kIndexedScope) continue;
+            for (const auto id : bindings) large_scope_names_[scope_name_key(ScopeId{i}, resolution_.binding(id).name.sym)].push_back(id);
         }
         normalize_aliases();
         build_hierarchies();
@@ -186,7 +202,14 @@ public:
         collect_formal_bounds();
         collect_bound_uses();
         clear_deferred_annotations();
+        // One node per binding, function and expression (plus one per
+        // destructuring); reserving them avoids doubling a large table.
+        const auto functions = std::ranges::count(resolution_.bindings(), BindingKind::Function, &ResolvedBinding::kind);
+        nodes_.reserve(resolution_.bindings().size() + static_cast<usize>(functions) + file.expr_ids);
         nodes_.resize(resolution_.bindings().size());
+        expressions_.reserve_ids(file.expr_ids);
+        members_.reserve_ids(file.expr_ids);
+        reference_contexts_.reserve_ids(file.expr_ids);
         for (usize i = 0; i < resolution_.bindings().size(); ++i) {
             const auto& b = resolution_.bindings()[i];
             if (b.kind != BindingKind::BuiltinType && b.kind != BindingKind::BuiltinValue)
@@ -194,8 +217,9 @@ public:
             if (b.kind == BindingKind::Function) {
                 const auto* fun = cast<FunItem>(b.item);
                 function_nodes_.emplace(i, nodes_.size());
-                nodes_.push_back({.function = fun, .init = fun->expr_body && !fun->sig.ret ? fun->body : nullptr,
+                nodes_.push_back({.function = fun,
                                   .value = {fun->sig.ret ? annotation(fun->sig.ret) : fun->expr_body ? Type{Type::Deferred} : Type{Type::Unit}}});
+                if (fun->expr_body && !fun->sig.ret) declaration(nodes_.size() - 1).init = fun->body;
                 ScalarSignature sig;
                 parameter_indices_.try_emplace(fun);
                 for (usize p = 0; p < fun->sig.params.size(); ++p) {
@@ -214,11 +238,11 @@ public:
             std::visit([&](auto node) { collect(*node, next.returns, next.discarded); }, next.node);
         }
         for (usize i = 0; i < nodes_.size(); ++i) {
-            if (!nodes_[i].expr) dependency(i, nodes_[i].init);
+            if (!nodes_[i].expr) dependency(i, declared(i).init);
         }
         // Explicit DFS over the dependency graph handles long expression trees
         // and forward references without using the native call stack.
-        struct Frame { usize node, next; };
+        struct Frame { usize node; u32 visited = 0; };  // the last edge followed, or 0
         std::vector<Frame> stack;
         for (usize root = 0; root < nodes_.size(); ++root) {
             if (nodes_[root].state != 0) continue;
@@ -227,8 +251,10 @@ public:
             while (!stack.empty()) {
                 auto& frame = stack.back();
                 auto& node = nodes_[frame.node];
-                if (frame.next < node.deps.size()) {
-                    const auto dep = node.deps[frame.next++];
+                // Edges added while the node is active are followed too.
+                if (const u32 edge = frame.visited ? dependencies_[frame.visited].next : node.first_dep) {
+                    frame.visited = edge;
+                    const usize dep = dependencies_[edge].node;
                     // An active dependency is a cycle. Its provisional value
                     // stays Deferred; initialization cycles need a later pass.
                     if (nodes_[dep].state == 0) {
@@ -240,7 +266,7 @@ public:
                         (node.expr->kind == ExprKind::Member || node.expr->kind == ExprKind::Name)) {
                         node.reference_prepared = true;
                         if (const auto field = prepare_reference(node.expr)) {
-                            node.deps.push_back(field->value);
+                            depend(frame.node, field->value);
                             continue;
                         }
                     }
@@ -254,12 +280,12 @@ public:
                         if (record.state == CallState::Deferred && !pending_dependencies_.empty()) {
                             // Resume after consulted defaults or constraint methods
                             // have available facts. Active cycles remain deferred.
-                            node.deps.insert(node.deps.end(), pending_dependencies_.begin(), pending_dependencies_.end());
+                            for (const auto dep : pending_dependencies_) depend(frame.node, dep);
                             node.call_prepared = false;
                             continue;
                         }
                         if (record.state == CallState::Resolved && (record.kind == CallKind::Function || record.kind == CallKind::Method)) {
-                            node.deps.push_back(function_nodes_.at(record.target.value));
+                            depend(frame.node, function_nodes_.at(record.target.value));
                             continue;
                         }
                     } else evaluate(frame.node);
@@ -296,10 +322,17 @@ public:
             if (nodes_[index].value.literal != Literal::None) materialize(index, default_type(nodes_[index].value));
         }
         retain_bodies();
+        // Free the working tables before building the result, which is when
+        // memory peaks on large files.
+        release(annotations_, speculative_annotations_, environments_, environment_ids_, node_declarations_, dependencies_,
+                declarations_, parameter_indices_, direct_callees_, function_names_, reference_contexts_, call_contexts_,
+                entities_, large_scope_names_, ancestry_cache_, inherited_members_, walk_, requirements_);
         ScalarTypes result;
         for (const auto& [expr, index] : expressions_) result.expressions_.emplace(expr, nodes_[index].value.type);
+        release(expressions_);
         for (usize i = 0; i < resolution_.bindings().size(); ++i) result.bindings_.push_back(nodes_[i].value.type);
         for (auto& [id, sig] : signatures_) sig.result = nodes_[function_nodes_.at(id)].value.type;
+        release(nodes_);
         result.signatures_ = std::move(signatures_);
         result.calls_ = std::move(calls_);
         result.functions_ = std::move(functions_);
@@ -314,6 +347,9 @@ public:
     }
 
 private:
+    template <typename... Tables>
+    static void release(Tables&... tables) { ((tables = Tables{}), ...); }
+
     static constexpr usize kDependentDepth = 64;
     std::string scalar_type_name(Type type) const { return types_.name(type, resolution_, names_, 1024); }
 
@@ -482,14 +518,15 @@ private:
         for (auto arg : args) if (!known(arg)) return {};
         if (resolution_.scopes()[resolution_.binding(id).scope.value].kind == ScopeKind::File) parent = 0;
         if (args.empty() && !known(self)) return {ExpansionState::Resolved, parent};
-        const TypeDescriptor key{.kind = Type::Nominal, .element = self, .declaration = id, .arguments = args};
-        auto& cache = environment_ids_[parent];
-        if (const auto it = cache.find(key); it != cache.end()) return {ExpansionState::Resolved, it->second};
+        // Hash the identity once; the environments themselves hold the keys.
+        const usize hash = TypeDescriptorHash{}({.kind = Type::Nominal, .element = self, .declaration = id, .arguments = args}) * 31 + parent;
+        for (auto [it, last] = environment_ids_.equal_range(hash); it != last; ++it) {
+            const auto& env = environments_[it->second];
+            if (env.declaration == id && env.parent == parent && env.self == self && env.arguments == args) return {ExpansionState::Resolved, it->second};
+        }
         const auto context = environments_.size();
-        cache.emplace(key, context);
+        environment_ids_.emplace(hash, context);
         environments_.push_back({id, std::move(args), parent, self});
-        substituted_annotations_.emplace_back();
-        speculative_annotations_.emplace_back();
         return {ExpansionState::Resolved, context};
     }
     Type context_self(usize context, BindingId owner = {}) {
@@ -903,16 +940,15 @@ private:
 
     Type annotation(const TypeExpr* type, usize context = 0) {
         if (!type) return Type::Deferred;
-        const auto cache = [&](usize env) -> auto& {
+        const auto cache = [&](usize env) {
             // A probed substitution must not suppress later validation through
             // a real cache hit if another call selects this same signature.
-            if (probing_constraints_) return speculative_annotations_[env];
-            return env ? substituted_annotations_[env] : annotations_;
+            return (probing_constraints_ ? speculative_annotations_ : annotations_).in(env);
         };
         const auto cached = [&](const TypeExpr* syntax, usize env) -> Type {
             if (!syntax) return Type::Unit;
-            const auto it = cache(env).find(syntax);
-            return it == cache(env).end() ? Type{} : it->second;
+            const auto* found = cache(env).find(syntax);
+            return found ? *found : Type{};
         };
         struct Frame {
             const TypeExpr* syntax;
@@ -1144,10 +1180,8 @@ private:
     }
 
     void clear_deferred_annotations() {
-        const auto deferred = [](const auto& entry) { return entry.second == Type::Deferred; };
-        std::erase_if(annotations_, deferred);
-        for (auto& cache : substituted_annotations_) std::erase_if(cache, deferred);
-        for (auto& cache : speculative_annotations_) std::erase_if(cache, deferred);
+        annotations_.erase_deferred();
+        speculative_annotations_.erase_deferred();
     }
 
     void complete_hierarchy_types() {
@@ -1156,7 +1190,7 @@ private:
             for (const auto& [id, fact] : aliases_.aliases_) { (void)id; counts.first += fact.state != ExpansionState::Deferred; }
             for (const auto& b : resolution_.bindings()) if (b.kind == BindingKind::Type)
                 for (const auto& base : cast_type_decl(b.item)->supers)
-                    if (const auto it = annotations_.find(base.type); it != annotations_.end()) counts.second += it->second != Type::Deferred;
+                    if (const auto* found = annotations_.in(0).find(base.type)) counts.second += *found != Type::Deferred;
             return counts;
         };
         for (;;) {
@@ -1268,8 +1302,8 @@ private:
 
     Relation ancestry(BindingId source, BindingId target) const {
         if (source == target) return Relation::Yes;
-        auto& cache = ancestry_cache_[source.value];
-        if (const auto it = cache.find(target.value); it != cache.end()) return it->second;
+        const u64 key = static_cast<u64>(source.value) << 32 | target.value;
+        if (const auto it = ancestry_cache_.find(key); it != ancestry_cache_.end()) return it->second;
         std::vector<BindingId> work{source};
         std::unordered_set<usize> visited;
         Relation result = Relation::No;
@@ -1281,7 +1315,7 @@ private:
             if (it == hierarchies_.end() || it->second.state != ExpansionState::Resolved) { result = Relation::Deferred; continue; }
             for (const auto base : it->second.bases) work.push_back(base);
         }
-        cache[target.value] = result;
+        ancestry_cache_.emplace(key, result);
         return result;
     }
 
@@ -1350,11 +1384,31 @@ private:
         std::vector<BindingId> declarations;
         std::vector<BindingId> ids;
     };
+    static u64 scope_name_key(ScopeId scope, Symbol name) { return u64(scope.value) << 32 | name.id; }
+    // The bindings named `name` in `scope`, in the scope's order. Most scopes
+    // are small enough to scan; large ones are indexed by name up front.
+    std::vector<BindingId> scope_bindings(ScopeId scope, Symbol name) const {
+        const auto& bindings = resolution_.scopes()[scope.value].bindings;
+        if (bindings.size() >= kIndexedScope) {
+            const auto it = large_scope_names_.find(scope_name_key(scope, name));
+            return it == large_scope_names_.end() ? std::vector<BindingId>{} : it->second;
+        }
+        std::vector<BindingId> result;
+        for (const auto id : bindings)
+            if (resolution_.binding(id).name.sym == name) result.push_back(id);
+        return result;
+    }
     std::vector<BindingId> direct_members(BindingId owner, Symbol name, bool types_only) const {
         const auto scope = resolution_.binding(owner).members;
         if (!scope.valid()) return {};
-        if (!types_only) if (const auto table = member_values_.find(scope.value); table != member_values_.end())
-            if (const auto it = table->second.find(name.id); it != table->second.end()) return it->second;
+        if (!types_only) {
+            auto values = scope_bindings(scope, name);
+            std::erase_if(values, [&](BindingId id) {
+                const auto kind = resolution_.binding(id).kind;
+                return kind == BindingKind::Type || kind == BindingKind::TypeAlias;
+            });
+            if (!values.empty()) return values;
+        }
         const auto& types = aliases_.member_types_.at(scope.value);
         if (const auto it = types.find(name.id); it != types.end()) return {it->second};
         return {};
@@ -1391,8 +1445,17 @@ private:
         return result;
     }
     std::shared_ptr<const MemberLookup> lookup_member(BindingId owner, Symbol name, bool types_only = false) {
-        const u64 key = (static_cast<u64>(name.id) << 1) | types_only;
-        auto& cache = inherited_members_[key];
+        // One flat map for every name; the view keys it by owner for this name.
+        struct View {
+            std::unordered_map<u64, std::shared_ptr<const MemberLookup>>& members;
+            u64 prefix;
+            u64 key(usize owner) const { PHS_ASSERT(owner < (usize{1} << 31)); return prefix | static_cast<u64>(owner) << 1; }
+            auto find(usize owner) const { return members.find(key(owner)); }
+            auto end() const { return members.end(); }
+            bool contains(usize owner) const { return members.contains(key(owner)); }
+            auto& operator[](usize owner) const { return members[key(owner)]; }
+            auto& at(usize owner) const { return members.at(key(owner)); }
+        } cache{inherited_members_, static_cast<u64>(name.id) << 32 | types_only};
         if (const auto it = cache.find(owner.value); it != cache.end()) return it->second;
         struct Frame { BindingId id; usize next = 0; };
         std::vector<Frame> stack{{owner}};
@@ -1615,11 +1678,11 @@ private:
         const auto from_context = owner_context(member_owner(candidate), receiver);
         const auto to_context = owner_context(member_owner(requirement), receiver);
         for (const auto field : {candidate, requirement})
-            if (!nodes_[field.value].annotation && !known(nodes_[field.value].value.type) && nodes_[field.value].state == 0)
+            if (!declared(field.value).annotation && !known(nodes_[field.value].value.type) && nodes_[field.value].state == 0)
                 pending_dependencies_.push_back(field.value);
-        const auto from = nodes_[candidate.value].annotation ? annotation(nodes_[candidate.value].annotation, from_context)
+        const auto from = declared(candidate.value).annotation ? annotation(declared(candidate.value).annotation, from_context)
             : substitute_type(nodes_[candidate.value].value.type, from_context);
-        const auto to = nodes_[requirement.value].annotation ? annotation(nodes_[requirement.value].annotation, to_context)
+        const auto to = declared(requirement.value).annotation ? annotation(declared(requirement.value).annotation, to_context)
             : substitute_type(nodes_[requirement.value].value.type, to_context);
         if (!known(from) || !known(to)) return Relation::Deferred;
         if (from != to) return Relation::No;
@@ -1955,9 +2018,8 @@ private:
             } else {
                 MemberLookup result;
                 std::vector<BindingId> types;
-                for (const auto id : resolution_.scopes()[scope.value].bindings) {
+                for (const auto id : scope_bindings(scope, name)) {
                     const auto& b = resolution_.binding(id);
-                    if (b.name.sym != name) continue;
                     if (b.kind == BindingKind::Type || b.kind == BindingKind::TypeAlias || b.kind == BindingKind::GenericParameter || b.kind == BindingKind::BuiltinType) types.push_back(id);
                     else if (!types_only) result.ids.push_back(id);
                 }
@@ -2134,10 +2196,27 @@ private:
         if (inserted) nodes_.push_back({.expr = expr});
         return it->second;
     }
+    void depend(usize parent, usize child) {
+        auto& node = nodes_[parent];
+        const auto edge = static_cast<u32>(dependencies_.size());
+        dependencies_.push_back({static_cast<u32>(child)});
+        if (node.last_dep) dependencies_[node.last_dep].next = edge;
+        else node.first_dep = edge;
+        node.last_dep = edge;
+    }
+    const Declaration& declared(usize index) const { return node_declarations_[nodes_[index].declaration]; }
+    Declaration& declaration(usize index) {
+        auto& node = nodes_[index];
+        if (!node.declaration) {
+            node.declaration = static_cast<u32>(node_declarations_.size());
+            node_declarations_.emplace_back();
+        }
+        return node_declarations_[node.declaration];
+    }
     void dependency(usize parent, const Expr* expr) {
         if (!expr) return;
         const auto child = expression(expr);
-        nodes_[parent].deps.push_back(child);
+        depend(parent, child);
     }
     void child(usize parent, const Expr* expr, Type returns, bool discarded = false) {
         if (!expr) return;
@@ -2150,21 +2229,22 @@ private:
     void declare(Name name, const TypeExpr* type, const Expr* init) {
         const auto [first, last] = declarations_.equal_range(name.span.lo);
         for (auto it = first; it != last; ++it) {
-            auto& node = nodes_[it->second];
-            node.annotation = type;
-            node.init = init;
+            auto& declared = declaration(it->second);
+            declared.annotation = type;
+            declared.init = init;
         }
     }
     void destructure(const VarStmt& var) {
         const usize whole = nodes_.size();
-        nodes_.push_back({.annotation = var.type, .init = var.init, .destructuring = &var});
+        nodes_.emplace_back();
+        declaration(whole) = {.annotation = var.type, .init = var.init, .destructuring = &var};
         for (usize i = 0; i < var.names.size(); ++i) {
             const auto [first, last] = declarations_.equal_range(var.names[i].span.lo);
             for (auto it = first; it != last; ++it) {
-                auto& node = nodes_[it->second];
-                node.source = whole;
-                node.element = i;
-                node.deps.push_back(whole);
+                auto& declared = declaration(it->second);
+                declared.source = static_cast<u32>(whole);
+                declared.element = static_cast<u32>(i);
+                depend(it->second, whole);
             }
         }
     }
@@ -2272,8 +2352,8 @@ private:
                         // An overload set has no edges: the expected type that rules
                         // overloads out comes later, and rejected overloads must not
                         // create inference cycles.
-                        if (candidates.size() == 1) nodes_[index].deps.push_back(function_nodes_.at(candidates.front().value));
-                    } else if (candidates.size() == 1) nodes_[index].deps.push_back(candidates.front().value);
+                        if (candidates.size() == 1) depend(index, function_nodes_.at(candidates.front().value));
+                    } else if (candidates.size() == 1) depend(index, candidates.front().value);
                 }
                 break;
             }
@@ -2691,8 +2771,8 @@ private:
         }
         for (auto it = visited.rbegin(); it != visited.rend(); ++it) {
             auto& node = nodes_[*it];
-            for (const auto dep : node.deps)
-                if (nodes_[dep].value.type == Type::Error) node.value = {Type::Error};
+            for (u32 edge = node.first_dep; edge; edge = dependencies_[edge].next)
+                if (nodes_[dependencies_[edge].node].value.type == Type::Error) node.value = {Type::Error};
         }
         return nodes_[root].value;
     }
@@ -3454,23 +3534,24 @@ private:
             } else node.value = {Type::Unit};
             return;
         }
-        if (!expr && node.source != std::numeric_limits<usize>::max()) {
-            const auto whole = nodes_[node.source].value.type;
+        const auto declaration = declared(index);  // a copy: evaluation may add declarations
+        if (!expr && declaration.source != std::numeric_limits<u32>::max()) {
+            const auto whole = nodes_[declaration.source].value.type;
             if (whole == Type::Error) node.value = {Type::Error};
-            else if (whole.kind == Type::Tuple && !whole.optional_depth) node.value = {types_.descriptor(whole)->parameters.at(node.element)};
+            else if (whole.kind == Type::Tuple && !whole.optional_depth) node.value = {types_.descriptor(whole)->parameters.at(declaration.element)};
             return;
         }
         if (!expr) {
-            const Type declared = annotation(node.annotation);
-            Value initial = node.init ? value(node.init) : Value{};
-            if (node.annotation) {
-                if (node.init && known(declared)) initial = require(node.init, declared, node.init->span);
+            const Type declared = annotation(declaration.annotation);
+            Value initial = declaration.init ? value(declaration.init) : Value{};
+            if (declaration.annotation) {
+                if (declaration.init && known(declared)) initial = require(declaration.init, declared, declaration.init->span);
                 node.value = {initial.type == Type::Error ? Type::Error : declared};
-            } else if (node.init) {
-                if (initial.literal != Literal::None) initial = materialize(expressions_.at(node.init), default_type(initial));
+            } else if (declaration.init) {
+                if (initial.literal != Literal::None) initial = materialize(expressions_.at(declaration.init), default_type(initial));
                 node.value = initial;
             }
-            if (const auto* var = node.destructuring; var && known(node.value.type)) {
+            if (const auto* var = declaration.destructuring; var && known(node.value.type)) {
                 const auto type = node.value.type;
                 const auto* tuple = type.kind == Type::Tuple && !type.optional_depth ? types_.descriptor(type) : nullptr;
                 if (!tuple || tuple->parameters.size() != var->names.size()) {
@@ -3599,10 +3680,10 @@ private:
                         node.value = nodes_[record.candidates.front().value].value;
                     if (record.state == ResolutionState::Resolved && record.candidates.size() == 1 && reference_contexts_.contains(expr) &&
                         value_binding(record.candidates.front())) {
-                        const auto& field = nodes_[record.candidates.front().value];
+                        const auto* field = declared(record.candidates.front().value).annotation;
                         const auto context = reference_contexts_.at(expr);
                         // Inferred field types are symbolic in their owner, so instantiate them through the receiver too.
-                        if (field.annotation) node.value = {annotation(field.annotation, context)};
+                        if (field) node.value = {annotation(field, context)};
                         else node.value.type = substitute_type(node.value.type, context);
                     }
                 } else if (const auto names = function_names_.find(expr); names != function_names_.end()) {
@@ -3611,7 +3692,7 @@ private:
                         node.value = {function_value(names->second.front())};
                         if (known(node.value.type)) functions_[expr] = names->second.front();
                     }
-                } else if (expr->kind == ExprKind::Name && !node.deps.empty()) node.value = nodes_[node.deps.front()].value;
+                } else if (expr->kind == ExprKind::Name && node.first_dep) node.value = nodes_[dependencies_[node.first_dep].node].value;
                 break;
             }
             case ExprKind::GenericInst: {
@@ -3721,8 +3802,9 @@ private:
             const auto& binding = resolution_.bindings()[n];
             if (binding.kind == BindingKind::Local || binding.kind == BindingKind::Field) {
                 if (!known(nodes_[n].value.type)) pending.push_back(binding.name.span);
-                if (nodes_[n].init && (unavailable(value(nodes_[n].init)) ||
-                    (nodes_[n].annotation && probe(expressions_.at(nodes_[n].init), annotation(nodes_[n].annotation)).deferred))) pending.push_back(nodes_[n].init->span);
+                const auto declaration = declared(n);
+                if (declaration.init && (unavailable(value(declaration.init)) ||
+                    (declaration.annotation && probe(expressions_.at(declaration.init), annotation(declaration.annotation)).deferred))) pending.push_back(declaration.init->span);
             }
         }
         for (usize id = 0; id < resolution_.bindings().size(); ++id) {
@@ -3753,7 +3835,39 @@ private:
     DiagEngine& diag_;
     AliasExpansion aliases_;
     TypeTable types_;
-    std::unordered_map<const TypeExpr*, Type> annotations_;
+    // Annotation types per generic environment. Outside any environment (0)
+    // nearly every annotation is cached, so that table is dense by TypeExpr
+    // id; the others are keyed by environment and id.
+    struct AnnotationCache {
+        std::vector<std::optional<Type>> plain;
+        std::unordered_map<u64, Type> substituted;
+        struct View {
+            AnnotationCache& cache;
+            usize env;
+            u64 key(const TypeExpr* syntax) const { return static_cast<u64>(env) << 32 | syntax->id; }
+            // The cached type, or null.
+            Type* find(const TypeExpr* syntax) const {
+                if (!env) return syntax->id < cache.plain.size() && cache.plain[syntax->id] ? &*cache.plain[syntax->id] : nullptr;
+                const auto it = cache.substituted.find(key(syntax));
+                return it == cache.substituted.end() ? nullptr : &it->second;
+            }
+            bool contains(const TypeExpr* syntax) const { return find(syntax); }
+            Type& operator[](const TypeExpr* syntax) const {
+                if (env) return cache.substituted[key(syntax)];
+                if (syntax->id >= cache.plain.size()) cache.plain.resize(syntax->id + 1);
+                auto& slot = cache.plain[syntax->id];
+                if (!slot) slot = Type{};
+                return *slot;
+            }
+        };
+        View in(usize env) { return {*this, env}; }
+        void erase_deferred() {
+            for (auto& slot : plain) if (slot == Type::Deferred) slot.reset();
+            std::erase_if(substituted, [](const auto& entry) { return entry.second == Type::Deferred; });
+        }
+    };
+    AnnotationCache annotations_;
+    AnnotationCache speculative_annotations_;  // while probing constraints
     std::unordered_map<usize, std::vector<Type>> formal_bounds_;
     std::unordered_map<usize, std::vector<Type>> projection_bounds_;
     std::unordered_set<usize> uncertain_bounds_;
@@ -3768,41 +3882,42 @@ private:
     std::unordered_map<usize, CheckedBody> bodies_;
     std::unordered_map<u32, BindingId> generic_bindings_;
     std::vector<Environment> environments_{{}};
-    std::unordered_map<usize, std::unordered_map<TypeDescriptor, usize, TypeDescriptorHash>> environment_ids_;
-    std::vector<std::unordered_map<const TypeExpr*, Type>> substituted_annotations_{1};
-    std::vector<std::unordered_map<const TypeExpr*, Type>> speculative_annotations_{1};
+    std::unordered_multimap<usize, usize> environment_ids_;  // identity hash -> environment
     bool probing_constraints_ = false;
     std::unordered_set<u32> reported_applications_;
     std::vector<Node> nodes_;
-    std::unordered_map<const Expr*, usize> expressions_;
+    std::vector<Declaration> node_declarations_{1};  // entry 0: no declaration
+    std::vector<Dependency> dependencies_{1};  // edge 0: none
+    NodeMap<const Expr*, usize> expressions_;
     // A promoted constructor field and its parameter have separate binding
     // IDs at the same name span. Both inherit the declaration's annotation.
     std::unordered_multimap<u32, usize> declarations_;
     std::unordered_map<usize, usize> function_nodes_;
     std::unordered_map<usize, ScalarSignature> signatures_;
     std::unordered_map<const FunItem*, std::unordered_map<u32, usize>> parameter_indices_;
-    std::unordered_map<const ast::CallExpr*, CheckedCall> calls_;
+    NodeMap<const ast::CallExpr*, CheckedCall> calls_;
     std::unordered_map<const ast::CallExpr*, CheckedConversion> conversions_;
-    std::unordered_map<const Expr*, CheckedMember> members_;
-    std::unordered_set<const Expr*> direct_callees_;
+    NodeMap<const Expr*, CheckedMember> members_;
+    NodeMap<const Expr*, bool> direct_callees_;  // a set
     std::unordered_map<const Expr*, std::vector<BindingId>> function_names_;  // candidates of names used as function values
     std::unordered_map<const Expr*, BindingId> functions_;
     std::unordered_map<usize, Type> function_errors_;  // the error type of each throwing function
     struct PendingSelection { usize index; Type expected; Span span; };
     std::vector<PendingSelection> pending_selections_;  // overload selections waiting on inferred results
     bool inferred_ = false;  // every inference node is finished
-    std::unordered_map<const Expr*, usize> reference_contexts_;
-    std::unordered_map<const CallExpr*, usize> call_contexts_;
+    NodeMap<const Expr*, usize> reference_contexts_;
+    NodeMap<const CallExpr*, usize> call_contexts_;
     std::unordered_map<const Expr*, ExpandedType> entities_;
     std::unordered_map<usize, BindingId> member_owners_;
-    std::unordered_map<usize, std::unordered_map<u32, std::vector<BindingId>>> member_values_;
+    static constexpr usize kIndexedScope = 32;  // scopes with at least this many bindings are indexed by name
+    std::unordered_map<u64, std::vector<BindingId>> large_scope_names_;  // scope_name_key -> bindings
     std::unordered_map<usize, CheckedHierarchy> hierarchies_;
     std::vector<BindingId> hierarchy_order_;
     bool hierarchy_ready_ = false;
     std::unordered_set<const TypeExpr*> reported_bases_;
     std::unordered_set<usize> reported_cycles_;
-    mutable std::unordered_map<usize, std::unordered_map<usize, Relation>> ancestry_cache_;
-    std::unordered_map<u64, std::unordered_map<usize, std::shared_ptr<const MemberLookup>>> inherited_members_;
+    mutable std::unordered_map<u64, Relation> ancestry_cache_;  // source << 32 | target
+    std::unordered_map<u64, std::shared_ptr<const MemberLookup>> inherited_members_;  // name << 32 | owner << 1 | types_only
     std::vector<Walk> walk_;
     std::vector<Requirement> requirements_;
     struct ConstraintUse {

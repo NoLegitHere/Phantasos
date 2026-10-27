@@ -44,7 +44,8 @@ Windows x64 and Linux x86_64:
 - [ ] Generic base substitution, built-in traits, remaining dependent contracts and ownership analysis
 - [x] Native scalar slice: MIR, naive x86_64 code, and static Linux ELF executables with a stage0 runtime (`build`)
 - [x] Output: string literals and a prelude `print` for `String`, `Int`, `UInt` and `Bool`
-- [ ] Windows PE/COFF output, a general linker and runtime, and code generation beyond scalars
+- [x] Structs and tuples: struct values, field assignment, methods including `mut fun`, and tuples
+- [ ] Windows PE/COFF output, a general linker and runtime, and code generation for the rest of the language
 - [ ] Workspace-aware build driver
 
 The language is specified in [`docs/spec`](docs/spec), with a standalone
@@ -113,6 +114,26 @@ output (spec 3.27).
 ```phantasos
 fun main() {
     print("Hello, world!")
+}
+```
+
+Structs, methods and tuples compile too
+([`run/vectors.phs`](tests/stage0/run/vectors.phs),
+[`run/bank_account.phs`](tests/stage0/run/bank_account.phs),
+[`run/divmod.phs`](tests/stage0/run/divmod.phs)):
+
+```phantasos
+struct Vec(x: Int, y: Int) {
+    fun plus(other: Vec): Vec = Vec(x: x + other.x, y: y + other.y)
+}
+
+fun divmod(a: Int, b: Int): (Int, Int) = (a / b, a % b)
+
+fun main(): Int {
+    let v = Vec(x: 3, y: 4).plus(Vec(x: 1, y: 1))
+    let (q, r) = divmod(v.x * v.y, 7)
+    print(q)
+    return r
 }
 ```
 
@@ -235,6 +256,8 @@ build/stage0/phantasos-stage0 build tests/stage0/run/fib.phs -o fib   # build a 
 ./fib; echo $?                                                         # prints 42
 build/stage0/phantasos-stage0 build tests/stage0/run/hello.phs -o hello
 ./hello                                                                # prints Hello, world!
+build/stage0/phantasos-stage0 build tests/stage0/run/vectors.phs -o vectors
+./vectors                                                              # structs and methods
 ```
 
 ## License

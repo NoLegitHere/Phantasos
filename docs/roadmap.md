@@ -73,7 +73,7 @@ foundation. Complete.
   - [x] MIR and x86_64 for two-word `String` values; gate accepts them.
   - [x] Runtime write and integer formatting; gate accepts `print`.
   - [x] Run tests that compare standard output, with sample programs.
-- [ ] **Next: structs and tuples (M3).** Non-generic structs and unlabeled
+- [x] **Structs and tuples (M3).** Non-generic structs and unlabeled
   tuples as aggregate values on Linux x86_64: layout (ABI A.2), System V passing
   (A.6), field assignment and methods.
   - [x] Field and `mut fun` receiver mutability checks.
@@ -82,7 +82,7 @@ foundation. Complete.
   - [x] Methods, including `mut fun`.
   - [x] Tuples in the front end: types, literals, `.0` access and destructuring.
   - [x] Tuple code generation.
-  - [ ] Sample programs and run tests.
+  - [x] Sample programs and run tests.
 - [ ] Generic base substitution and built-in traits. Instantiate
   generic base/interface graphs, derive `Copy`/`Sendable`/`Error`, and complete
   generic method contracts, associated defaults and receiver-dependent contexts.

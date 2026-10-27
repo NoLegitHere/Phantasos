@@ -498,14 +498,15 @@ private:
         for (auto arg : args) if (!known(arg)) return {};
         if (resolution_.scopes()[resolution_.binding(id).scope.value].kind == ScopeKind::File) parent = 0;
         if (args.empty() && !known(self)) return {ExpansionState::Resolved, parent};
-        const TypeDescriptor key{.kind = Type::Nominal, .element = self, .declaration = id, .arguments = args};
-        auto& cache = environment_ids_[parent];
-        if (const auto it = cache.find(key); it != cache.end()) return {ExpansionState::Resolved, it->second};
+        // Hash the identity once; the environments themselves hold the keys.
+        const usize hash = TypeDescriptorHash{}({.kind = Type::Nominal, .element = self, .declaration = id, .arguments = args}) * 31 + parent;
+        for (auto [it, last] = environment_ids_.equal_range(hash); it != last; ++it) {
+            const auto& env = environments_[it->second];
+            if (env.declaration == id && env.parent == parent && env.self == self && env.arguments == args) return {ExpansionState::Resolved, it->second};
+        }
         const auto context = environments_.size();
-        cache.emplace(key, context);
+        environment_ids_.emplace(hash, context);
         environments_.push_back({id, std::move(args), parent, self});
-        substituted_annotations_.emplace_back();
-        speculative_annotations_.emplace_back();
         return {ExpansionState::Resolved, context};
     }
     Type context_self(usize context, BindingId owner = {}) {
@@ -919,11 +920,10 @@ private:
 
     Type annotation(const TypeExpr* type, usize context = 0) {
         if (!type) return Type::Deferred;
-        const auto cache = [&](usize env) -> auto& {
+        const auto cache = [&](usize env) {
             // A probed substitution must not suppress later validation through
             // a real cache hit if another call selects this same signature.
-            if (probing_constraints_) return speculative_annotations_[env];
-            return env ? substituted_annotations_[env] : annotations_;
+            return (probing_constraints_ ? speculative_annotations_ : annotations_).in(env);
         };
         const auto cached = [&](const TypeExpr* syntax, usize env) -> Type {
             if (!syntax) return Type::Unit;
@@ -1161,9 +1161,8 @@ private:
 
     void clear_deferred_annotations() {
         const auto deferred = [](const auto& entry) { return entry.second == Type::Deferred; };
-        std::erase_if(annotations_, deferred);
-        for (auto& cache : substituted_annotations_) std::erase_if(cache, deferred);
-        for (auto& cache : speculative_annotations_) std::erase_if(cache, deferred);
+        std::erase_if(annotations_.types, deferred);
+        std::erase_if(speculative_annotations_.types, deferred);
     }
 
     void complete_hierarchy_types() {
@@ -1172,7 +1171,7 @@ private:
             for (const auto& [id, fact] : aliases_.aliases_) { (void)id; counts.first += fact.state != ExpansionState::Deferred; }
             for (const auto& b : resolution_.bindings()) if (b.kind == BindingKind::Type)
                 for (const auto& base : cast_type_decl(b.item)->supers)
-                    if (const auto it = annotations_.find(base.type); it != annotations_.end()) counts.second += it->second != Type::Deferred;
+                    if (const auto it = annotations_.in(0).find(base.type); it != annotations_.types.end()) counts.second += it->second != Type::Deferred;
             return counts;
         };
         for (;;) {
@@ -3808,7 +3807,22 @@ private:
     DiagEngine& diag_;
     AliasExpansion aliases_;
     TypeTable types_;
-    std::unordered_map<const TypeExpr*, Type> annotations_;
+    // Annotation types per generic environment (0: none), keyed by environment and TypeExpr id.
+    struct AnnotationCache {
+        std::unordered_map<u64, Type> types;
+        struct View {
+            std::unordered_map<u64, Type>& types;
+            usize env;
+            u64 key(const TypeExpr* syntax) const { return static_cast<u64>(env) << 32 | syntax->id; }
+            std::unordered_map<u64, Type>::iterator find(const TypeExpr* syntax) const { return types.find(key(syntax)); }
+            std::unordered_map<u64, Type>::iterator end() const { return types.end(); }
+            bool contains(const TypeExpr* syntax) const { return types.contains(key(syntax)); }
+            Type& operator[](const TypeExpr* syntax) const { return types[key(syntax)]; }
+        };
+        View in(usize env) { return {types, env}; }
+    };
+    AnnotationCache annotations_;
+    AnnotationCache speculative_annotations_;  // while probing constraints
     std::unordered_map<usize, std::vector<Type>> formal_bounds_;
     std::unordered_map<usize, std::vector<Type>> projection_bounds_;
     std::unordered_set<usize> uncertain_bounds_;
@@ -3823,9 +3837,7 @@ private:
     std::unordered_map<usize, CheckedBody> bodies_;
     std::unordered_map<u32, BindingId> generic_bindings_;
     std::vector<Environment> environments_{{}};
-    std::unordered_map<usize, std::unordered_map<TypeDescriptor, usize, TypeDescriptorHash>> environment_ids_;
-    std::vector<std::unordered_map<const TypeExpr*, Type>> substituted_annotations_{1};
-    std::vector<std::unordered_map<const TypeExpr*, Type>> speculative_annotations_{1};
+    std::unordered_multimap<usize, usize> environment_ids_;  // identity hash -> environment
     bool probing_constraints_ = false;
     std::unordered_set<u32> reported_applications_;
     std::vector<Node> nodes_;

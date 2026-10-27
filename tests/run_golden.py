@@ -24,8 +24,9 @@ Layout (relative to tests/stage0):
     mir/*.phs          -> `mir`,   stdout compared with *.mir
     asm/*.phs          -> `asm`,   stdout compared with *.lst
     run/*.phs          -> `build`, then runs the executable: its exit status is
-                          compared with *.exit and its stderr with *.stderr
-                          (empty when that file is missing). Linux x86_64 only.
+                          compared with *.exit, its stdout with *.stdout and its
+                          stderr with *.stderr (empty when the file is missing).
+                          Linux x86_64 only.
 
 For lexer/parser/mir/asm tests, stderr is compared with *.diag when that file
 exists; otherwise the test must succeed with empty stderr.
@@ -156,15 +157,15 @@ def run_program_case(exe: Path, src: Path, update: bool) -> list[str]:
     stderr = norm(proc.stderr.decode("utf-8", "replace"))
     if proc.returncode < 0:
         return [f"program killed by signal {-proc.returncode}"]
-    exit_file, stderr_file = src.with_suffix(".exit"), src.with_suffix(".stderr")
+    exit_file = src.with_suffix(".exit")
+    streams = ((src.with_suffix(".stdout"), stdout), (src.with_suffix(".stderr"), stderr))
     if update:
-        if stdout:
-            return ["unexpected stdout; expected files not updated"]
         exit_file.write_text(f"{proc.returncode}\n", encoding="utf-8", newline="\n")
-        if stderr:
-            stderr_file.write_text(stderr, encoding="utf-8", newline="\n")
-        else:
-            stderr_file.unlink(missing_ok=True)
+        for file, text in streams:
+            if text:
+                file.write_text(text, encoding="utf-8", newline="\n")
+            else:
+                file.unlink(missing_ok=True)
         return []
 
     failures: list[str] = []
@@ -173,11 +174,10 @@ def run_program_case(exe: Path, src: Path, update: bool) -> list[str]:
     expected_status = exit_file.read_text(encoding="utf-8").strip()
     if expected_status != str(proc.returncode):
         failures.append(f"expected exit status {expected_status}, got {proc.returncode}")
-    expected_stderr = norm(stderr_file.read_text(encoding="utf-8")) if stderr_file.exists() else ""
-    if expected_stderr != stderr:
-        failures.append(f"stderr differs:\n{diff(expected_stderr, stderr)}")
-    if stdout:
-        failures.append(f"unexpected stdout:\n{stdout}")
+    for file, actual in streams:
+        expected = norm(file.read_text(encoding="utf-8")) if file.exists() else ""
+        if expected != actual:
+            failures.append(f"{file.suffix[1:]} differs:\n{diff(expected, actual)}")
     return failures
 
 

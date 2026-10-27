@@ -221,8 +221,8 @@
 - `tests/stage0/asm/` runs `asm` and compares stdout with `*.lst` under the
   same rules.
 - `tests/stage0/run/` builds each program with `build`, runs it, and compares
-  its exit status with `*.exit` and its stderr with `*.stderr` (empty when
-  the file is missing). The build must succeed silently. These cases run only
+  its exit status with `*.exit`, its stdout with `*.stdout` and its stderr
+  with `*.stderr` (each empty when the file is missing). The build must succeed silently. These cases run only
   on Linux x86_64 and are reported as skipped elsewhere.
 - Regenerate them with `python tests/run_golden.py --stage0 <exe> --update`
   and review the diff before committing.

@@ -157,16 +157,28 @@ class GoldenRunnerTests(unittest.TestCase):
         failures = self.run_program(101)
         self.assertTrue(any("stderr differs" in failure for failure in failures))
         failures = self.run_program(101, b"panic: arithmetic overflow\n", stdout=b"extra")
-        self.assertTrue(any("unexpected stdout" in failure for failure in failures))
+        self.assertTrue(any("stdout differs" in failure for failure in failures))
+
+    def test_run_compares_stdout(self) -> None:
+        self.source.with_suffix(".exit").write_text("0\n", encoding="utf-8")
+        self.source.with_suffix(".stdout").write_text("hello\n", encoding="utf-8")
+        self.assertEqual(self.run_program(0, stdout=b"hello\n"), [])
+        failures = self.run_program(0, stdout=b"goodbye\n")
+        self.assertTrue(failures and failures[0].startswith("stdout differs"))
+        self.assertTrue(any("stdout differs" in failure for failure in self.run_program(0)))
 
     def test_run_update_writes_sidecars(self) -> None:
         exit_file, stderr_file = self.source.with_suffix(".exit"), self.source.with_suffix(".stderr")
         self.assertEqual(self.run_program(101, b"panic: division by zero\n", update=True), [])
         self.assertEqual(exit_file.read_text(encoding="utf-8"), "101\n")
         self.assertEqual(stderr_file.read_text(encoding="utf-8"), "panic: division by zero\n")
+        stdout_file = self.source.with_suffix(".stdout")
+        self.assertEqual(self.run_program(101, b"panic: overflow\n", stdout=b"1\n", update=True), [])
+        self.assertEqual(stdout_file.read_text(encoding="utf-8"), "1\n")
         self.assertEqual(self.run_program(42, update=True), [])
         self.assertEqual(exit_file.read_text(encoding="utf-8"), "42\n")
         self.assertFalse(stderr_file.exists())
+        self.assertFalse(stdout_file.exists())
 
     def test_run_build_failure_and_signal(self) -> None:
         self.source.with_suffix(".exit").write_text("0\n", encoding="utf-8")

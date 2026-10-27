@@ -43,6 +43,7 @@ Windows x64 and Linux x86_64:
 - [x] Flow checks: all-path returns, definite initialization, immutable bindings and branch results
 - [ ] Generic base substitution, built-in traits, remaining dependent contracts and ownership analysis
 - [x] Native scalar slice: MIR, naive x86_64 code, and static Linux ELF executables with a stage0 runtime (`build`)
+- [x] Output: string literals and a prelude `print` for `String`, `Int`, `UInt` and `Bool`
 - [ ] Windows PE/COFF output, a general linker and runtime, and code generation beyond scalars
 - [ ] Workspace-aware build driver
 
@@ -103,7 +104,15 @@ an assembly listing, with checks that trap on overflow and division by zero.
 `build <file.phs> [-o <out>]` links that code with a small stage0 runtime into
 a static Linux x86_64 executable that needs no C library. The program's exit
 status is the value `main` returns, and an overflow or division by zero
-prints a panic message and exits with status 101 (spec 3.26).
+prints a panic message and exits with status 101 (spec 3.26). The prelude
+`print` writes a `String`, `Int`, `UInt` or `Bool` and a newline to standard
+output (spec 3.27).
+
+```phantasos
+fun main() {
+    print("Hello, world!")
+}
+```
 
 ## Repository layout
 
@@ -222,6 +231,8 @@ build/stage0/phantasos-stage0 mir   tests/stage0/mir/fib.phs          # print it
 build/stage0/phantasos-stage0 asm   tests/stage0/asm/fib.phs          # print its x86_64 code
 build/stage0/phantasos-stage0 build tests/stage0/run/fib.phs -o fib   # build a Linux executable
 ./fib; echo $?                                                         # prints 42
+build/stage0/phantasos-stage0 build tests/stage0/run/hello.phs -o hello
+./hello                                                                # prints Hello, world!
 ```
 
 ## License

@@ -17,8 +17,11 @@
 
 #include <algorithm>
 #include <array>
+#include <format>
 #include <initializer_list>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "frontend/session.hpp"
 #include "syntax/ast_dump.hpp"
@@ -221,6 +224,55 @@ let constraint = constrained(1)
     scalar_binding.check("let value = true\nlet bad = value()", {DiagCode::NotCallable});
 }
 
+void prelude_print() {
+    Frontend prints;
+    prints.check(R"(
+let text: String = "hi"
+let flag = true
+let n: UInt = 7
+let a = print(text)
+let b = print("literal")
+let c = print(1)
+let d = print(value: n)
+let e = print(flag && false)
+let f = print(-5 * 2)
+let g = print(if flag { 1 } else { 2 })
+let h = print(if flag { n } else { 2 })
+let i = print(if flag { "yes" } else { text })
+let j = print(match flag { true -> false
+    _ -> flag })
+)");
+    const std::pair<std::string_view, Type> expected[] = {
+        {"a", Type::String}, {"b", Type::String}, {"c", Type::Int}, {"d", Type::UInt}, {"e", Type::Bool}, {"f", Type::Int},
+        {"g", Type::Int}, {"h", Type::UInt}, {"i", Type::String}, {"j", Type::Bool}};
+    for (const auto& [name, parameter] : expected) {
+        const auto& call = prints.call(name);
+        CHECK(call.state == CallState::Resolved && call.kind == CallKind::Builtin);
+        CHECK(call.parameters == std::vector<usize>{0} && call.parameter_types == std::vector<Type>{parameter});
+        CHECK(prints.type(name) == Type::Unit);
+        // As for ordinary call arguments, a branch is typed through its tails, not itself.
+        CHECK(name >= "g" || prints.result.scalar_types->expression(prints.expr(name)->args[0].value) == parameter);
+    }
+    CHECK(prints.call("a").target == prints.binding("print", BindingKind::BuiltinValue));
+
+    for (std::string_view bad : {"print()", "print(1, 2)", "print(text: \"a\")", "print(Int8(1))", "print(1.5)",
+                                 "print(UInt64(1))", "print([1])", "print(print(1))", "print(maybe)",
+                                 "print(if true { Int8(1) } else { Int8(2) })", "print(if true { 1 })",
+                                 "print(if true { 1 } else { \"a\" })", "print(if true { 1.5 } else { 2.5 })",
+                                 "print(none)", "print((none))", "print(if true { none } else { 1 })"}) {
+        Frontend rejected;
+        rejected.check(std::format("let maybe: Int? = none\nlet bad = {}", bad), {DiagCode::NoMatchingCall});
+        CHECK(rejected.call("bad").state == CallState::Error && rejected.call("bad").kind == CallKind::Builtin);
+    }
+
+    // A declaration named print shadows the prelude function.
+    Frontend shadowed;
+    shadowed.check("fun print(x: Int): Int = x\nlet value = print(3)");
+    CHECK(shadowed.call("value").kind == CallKind::Function && shadowed.type("value") == Type::Int);
+    Frontend local;
+    local.check("let print = 3\nlet bad = print(1)", {DiagCode::NotCallable});
+}
+
 void recursion_and_stable_results() {
     Frontend f;
     f.check(R"(
@@ -294,6 +346,7 @@ int main() {
     shape_and_type_errors();
     overloads_and_literal_ranges();
     deferred_and_noncallable();
+    prelude_print();
     recursion_and_stable_results();
     eliminated_overloads_do_not_create_return_cycles();
     long_forward_call_chain();

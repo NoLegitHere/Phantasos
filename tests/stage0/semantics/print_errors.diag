@@ -1,0 +1,27 @@
+print_errors.phs:22:5: error[E0411]: print takes one String, Int, UInt or Bool argument, found 'Int8'
+   22 |     print(small)
+      |     ^^^^^^^^^^^^
+print_errors.phs:23:5: error[E0411]: print takes one String, Int, UInt or Bool argument, found 'Float64'
+   23 |     print(1.5)
+      |     ^^^^^^^^^^
+print_errors.phs:24:5: error[E0411]: print takes one String, Int, UInt or Bool argument, found 'Int?'
+   24 |     print(maybe)
+      |     ^^^^^^^^^^^^
+print_errors.phs:25:5: error[E0411]: print takes one String, Int, UInt or Bool argument
+   25 |     print()
+      |     ^^^^^^^
+print_errors.phs:26:5: error[E0411]: print takes one String, Int, UInt or Bool argument
+   26 |     print(1, 2)
+      |     ^^^^^^^^^^^
+print_errors.phs:27:5: error[E0411]: print takes one String, Int, UInt or Bool argument
+   27 |     print(text: "a")
+      |     ^^^^^^^^^^^^^^^^
+print_errors.phs:28:5: error[E0411]: print takes one String, Int, UInt or Bool argument, found 'Unit'
+   28 |     print(print(1))
+      |     ^^^^^^^^^^^^^^^
+print_errors.phs:29:5: error[E0411]: print takes one String, Int, UInt or Bool argument
+   29 |     print(if true { small } else { small })
+      |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+print_errors.phs:30:5: error[E0411]: print takes one String, Int, UInt or Bool argument, found 'none'
+   30 |     print(none)
+      |     ^^^^^^^^^^^

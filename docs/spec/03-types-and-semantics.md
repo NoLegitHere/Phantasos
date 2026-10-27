@@ -282,9 +282,10 @@ cycles are checked by the type pass (3.17); initialization cycles remain pending
 
 The bootstrap prelude supplies type names `Int8/16/32/64`, `UInt8/16/32/64`,
 `Int`, `UInt`, `Float32/64`, `Bool`, `Char`, `String`, `Unit`, `Never`, `Error`,
-`Copy` and `Sendable`, plus the value name `panic`. These are name bindings,
-not implemented runtime definitions or checked signatures. User declarations
-may shadow them. Other library names must be declared explicitly.
+`Copy` and `Sendable`, plus the value names `panic` and `print`. Except for
+`print`, whose calls are checked as in 3.27, these are name bindings, not
+implemented runtime definitions or checked signatures. User declarations may
+shadow them. Other library names must be declared explicitly.
 
 The current API resolves one file. Package discovery, shared module scopes
 and imported declarations belong to P2. `check` reports `E0304` for imports;
@@ -935,7 +936,7 @@ the subset, so that nothing half-checked reaches code generation:
   results are allowed where their type is known (3.24).
 
 Everything else reports `E0600`. That includes shifts, `for`, `defer`,
-`throw`, `match`, `unsafe` blocks, strings, floating-point values, arrays,
+`throw`, `match`, `unsafe` blocks, strings, `print` (3.27), floating-point values, arrays,
 optionals, types and members, globals, and function values. A local whose
 type is still deferred also reports `E0600` and needs an annotation. One
 `E0600` is reported per construct, and uses of a rejected local are not
@@ -981,3 +982,28 @@ overflow` or `panic: division by zero` to standard error and exits with
 status 101. Stage0 does not print a backtrace yet, and it does not detect
 stack overflow, so recursion that runs out of stack ends the process with a
 signal.
+
+## 3.27 Output with `print` [Core]
+
+`print` is a prelude function, so a program needs no import to use it. It
+writes one value and a newline to standard output, and its result is `Unit`:
+
+```phantasos
+fun print(value: String)
+fun print(value: Int)
+fun print(value: UInt)
+fun print(value: Bool)     // writes true or false
+```
+
+The argument is positional or labeled `value:`. An integer literal selects the
+`Int` overload. Other integer types convert explicitly, for example
+`print(Int(small))`, as they would for any other call (3.15). Any other argument count, label or type is `E0411`.
+Integers print in decimal with a leading `-` when negative. A declaration
+named `print` shadows the prelude function, as with other prelude names (3.13).
+
+When a write to standard output fails, the program panics (3.7). Once `std`
+exists (P2), the prelude `print` forwards to `std.io` with the same signature
+and output.
+
+Stage0 does not generate code for `print` or `String` values yet; `gate`
+reports them as `E0600` (3.25).

@@ -63,7 +63,8 @@ public:
                                      "UInt64", "Int", "UInt", "Float32", "Float64", "Bool", "Char",
                                      "String", "Unit", "Never", "Error", "Copy", "Sendable"})
             declare(prelude, {names_.intern(name), {}}, BindingKind::BuiltinType, NameSpace::Type);
-        declare(prelude, {names_.intern("panic"), {}}, BindingKind::BuiltinValue, NameSpace::Value);
+        for (std::string_view name : {"panic", "print"})
+            declare(prelude, {names_.intern(name), {}}, BindingKind::BuiltinValue, NameSpace::Value);
         const ScopeId root = scope(prelude, ScopeKind::File);
         for (const Import& import : file.imports) {
             const Name name = import.alias.sym.empty() ? import.path.parts.back() : import.alias;

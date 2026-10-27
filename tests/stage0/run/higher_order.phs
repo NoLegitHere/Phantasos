@@ -1,0 +1,64 @@
+// Copyright 2026 The Phantasos Authors
+// SPDX-License-Identifier: Apache-2.0
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// Functions passed to other functions: a fold over a range, a function
+// applied repeatedly, and a search with a predicate.
+
+fun square(x: Int): Int = x * x
+fun cube(x: Int): Int = x * x * x
+fun plus(a: Int, b: Int): Int = a + b
+fun times(a: Int, b: Int): Int = a * b
+fun isEven(n: Int): Bool = n % 2 == 0
+fun overTwenty(n: Int): Bool = n > 20
+
+// Combines f(i) for i in from..<to, starting from initial.
+fun fold(from: Int, to: Int, initial: Int, f: fun(Int) -> Int, combine: fun(Int, Int) -> Int): Int {
+    var total = initial
+    var i = from
+    while i < to {
+        total = combine(total, f(i))
+        i += 1
+    }
+    return total
+}
+
+fun repeat(times: Int, f: fun(Int) -> Int, start: Int): Int {
+    var value = start
+    var n = 0
+    while n < times {
+        value = f(value)
+        n += 1
+    }
+    return value
+}
+
+// The first square in from..<to that matches, or -1.
+fun firstSquare(from: Int, to: Int, matches: fun(Int) -> Bool): Int {
+    var i = from
+    while i < to {
+        if matches(square(i)) { return square(i) }
+        i += 1
+    }
+    return -1
+}
+
+fun main(): Int {
+    print(fold(1, 5, 0, square, plus))    // 1 + 4 + 9 + 16
+    print(fold(1, 4, 1, cube, times))     // 1 * 8 * 27
+    print(repeat(3, square, 2))           // ((2^2)^2)^2
+    print(firstSquare(3, 10, isEven))
+    print(firstSquare(1, 10, overTwenty))
+    return firstSquare(1, 4, overTwenty) + 2
+}

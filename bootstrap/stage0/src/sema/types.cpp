@@ -268,6 +268,10 @@ public:
                 }
             }
         }
+        inferred_ = true;
+        std::unordered_set<usize> retried;
+        for (const auto& selection : pending_selections_)
+            if (retried.insert(selection.index).second) (void)select_function(selection.index, selection.expected, selection.span);
         for (const auto& requirement : requirements_) {
             const Type expected = requirement.target ? value(requirement.target).type : requirement.expected;
             if (requirement.target && requirement.assignment != AssignOp::Assign) {
@@ -2426,7 +2430,11 @@ private:
             else pending |= type == Type::Deferred && may_have_type(id, *types_.descriptor(expected));
         }
         const auto* name = cast<NameExpr>(unparen(nodes_[index].expr));
-        if (pending) return Value{};
+        if (pending) {
+            // Retried once every result has been inferred; only a cycle keeps it pending then.
+            if (!inferred_) pending_selections_.push_back({index, expected, span});
+            return Value{};
+        }
         if (found.size() != 1) {
             // Function values drop labels, so overloads that differ only in labels look alike.
             if (found.empty())
@@ -2875,8 +2883,9 @@ private:
                         if (nodes_[node].state == 0) pending_dependencies_.push_back(node);
                     }
                 }
-                if (found) result.lifts += target.optional_depth;
-                else if (pending) result.deferred = true;
+                // Another overload that may still match keeps the call deferred.
+                if (pending) result.deferred = true;
+                else if (found) result.lifts += target.optional_depth;
                 else result.matches = false;
                 continue;
             }
@@ -3767,6 +3776,9 @@ private:
     std::unordered_map<const Expr*, std::vector<BindingId>> function_names_;  // candidates of names used as function values
     std::unordered_map<const Expr*, BindingId> functions_;
     std::unordered_map<usize, Type> function_errors_;  // the error type of each throwing function
+    struct PendingSelection { usize index; Type expected; Span span; };
+    std::vector<PendingSelection> pending_selections_;  // overload selections waiting on inferred results
+    bool inferred_ = false;  // every inference node is finished
     std::unordered_map<const Expr*, usize> reference_contexts_;
     std::unordered_map<const CallExpr*, usize> call_contexts_;
     std::unordered_map<const Expr*, ExpandedType> entities_;

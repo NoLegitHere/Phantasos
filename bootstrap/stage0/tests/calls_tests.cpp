@@ -445,6 +445,10 @@ fun dbl(x: Bool) = x
         // an earlier use of the function value cannot leave its result deferred.
         {"fun a() = use(b)\nfun b(x: Bool) = a()\nfun b(x: Int) = 1\nfun use(f: fun(Int) -> Int): Int = f(1)\n"
          "let first = a()\nlet bad: Bool = b(true)", DiagCode::ScalarTypeMismatch},
+        // Selections wait until every possibly matching overload's result is inferred.
+        {"fun f(x: Int) = x\nfun f(x: Bool) = x\nlet bad: fun(Int) -> Bool = f", DiagCode::ScalarTypeMismatch},
+        {"fun f(x: Int): Int = x\nfun f(y: Int) = y + 1\nfun take(g: fun(Int) -> Int): Int = g(1)\nlet result = take(f)",
+         DiagCode::AmbiguousCall},
         // Overloads that differ only in labels have the same function type.
         {"fun f(x: Int): Int = x\nfun f(y: Int): Int = y + 1\nlet bad: fun(Int) -> Int = f", DiagCode::AmbiguousCall},
     }) { Frontend bad; bad.check(test.first, {test.second}); }

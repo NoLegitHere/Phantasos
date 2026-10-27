@@ -89,7 +89,7 @@ foundation. Complete.
   - [x] Function values of named functions in the front end.
   - [x] Function values and indirect calls in MIR.
   - [x] x86_64 indirect calls and function value passing.
-  - [ ] Function value samples and run tests.
+  - [x] Function value samples and run tests.
   - [ ] Closure syntax.
   - [ ] Closure checking: parameter inference and captures.
   - [ ] Closure code generation with a stage0 heap.

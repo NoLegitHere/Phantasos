@@ -45,6 +45,8 @@ Windows x64 and Linux x86_64:
 - [x] Native scalar slice: MIR, naive x86_64 code, and static Linux ELF executables with a stage0 runtime (`build`)
 - [x] Output: string literals and a prelude `print` for `String`, `Int`, `UInt` and `Bool`
 - [x] Structs and tuples: struct values, field assignment, methods including `mut fun`, and tuples
+- [x] Function values: named functions passed, returned, stored and called indirectly
+- [ ] Closures: brace closures that capture by value
 - [ ] Windows PE/COFF output, a general linker and runtime, and code generation for the rest of the language
 - [ ] Workspace-aware build driver
 
@@ -96,7 +98,8 @@ package loading is unavailable.
 `gate <file.phs>` runs `check`, then reports every construct that stage0's
 first native backend cannot compile yet. That backend covers Bool, integer and
 String values, plain struct values with field reads, field assignment and
-methods, tuples, functions, locals, loops, calls, integer arithmetic and
+methods, tuples, functions, function values, locals, loops, calls, integer
+arithmetic and
 `print`, and needs a `fun main()` that returns `Int` or nothing. See
 [spec 3.25](docs/spec/03-types-and-semantics.md) for the full subset.
 `mir <file.phs>` prints the typed MIR for a file that passes `gate`. The MIR
@@ -135,6 +138,29 @@ fun main(): Int {
     print(q)
     return r
 }
+```
+
+Named functions are values too: they can be passed, returned, stored in
+fields and called through a variable
+([`run/higher_order.phs`](tests/stage0/run/higher_order.phs),
+[`run/calculator.phs`](tests/stage0/run/calculator.phs),
+[`run/sorting.phs`](tests/stage0/run/sorting.phs)):
+
+```phantasos
+fun square(x: Int): Int = x * x
+fun plus(a: Int, b: Int): Int = a + b
+
+fun fold(from: Int, to: Int, initial: Int, f: fun(Int) -> Int, combine: fun(Int, Int) -> Int): Int {
+    var total = initial
+    var i = from
+    while i < to {
+        total = combine(total, f(i))
+        i += 1
+    }
+    return total
+}
+
+fun main(): Int = fold(1, 5, 0, square, plus)  // 1 + 4 + 9 + 16 = 30
 ```
 
 ## Repository layout
@@ -258,6 +284,8 @@ build/stage0/phantasos-stage0 build tests/stage0/run/hello.phs -o hello
 ./hello                                                                # prints Hello, world!
 build/stage0/phantasos-stage0 build tests/stage0/run/vectors.phs -o vectors
 ./vectors                                                              # structs and methods
+build/stage0/phantasos-stage0 build tests/stage0/run/higher_order.phs -o higher_order
+./higher_order                                                         # function values
 ```
 
 ## License

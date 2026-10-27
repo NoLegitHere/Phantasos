@@ -34,7 +34,7 @@ fun matching(x: Int): Int = match x {
 }
 
 fun values(): Int {
-    let f = values
+    let same: Bool = values == values
     return 0
 }
 

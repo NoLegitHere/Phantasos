@@ -123,6 +123,8 @@ std::string_view op_name(Op op) {
         case Op::Make: return "make";
         case Op::Field: return "field";
         case Op::With: return "with";
+        case Op::FnRef: return "fnref";
+        case Op::CallIndirect: return "call";
     }
     unreachable();
 }
@@ -153,11 +155,19 @@ std::string literal(std::string_view bytes) {
 std::string dump(const Program& program) {
     std::string out;
     for (const auto& layout : program.layouts) {
-        out += std::format("{} @{} {{", layout.tuple ? "tuple" : "struct", layout.name);
+        constexpr std::string_view kinds[] = {"struct", "tuple", "function"};
+        out += std::format("{} @{} {{", kinds[layout.kind], layout.name);
         for (usize i = 0; i < layout.fields.size(); ++i)
             out += std::format("{} {}: {} +{}", i ? "," : "", layout.names[i], type_name(program, layout.fields[i]),
                                layout.offsets[i]);
-        out += std::format(" }} size {} align {}\n\n", layout.size, layout.align);
+        out += std::format(" }} size {} align {}", layout.size, layout.align);
+        if (layout.kind == Layout::Function) {
+            out += " signature (";
+            for (usize i = 0; i < layout.params.size(); ++i)
+                out += (i ? ", " : "") + type_name(program, layout.params[i]);
+            out += ") -> " + type_name(program, layout.result);
+        }
+        out += "\n\n";
     }
     const auto reg = [](Reg r) { return std::format("%{}", r.id); };
     const auto name_of = [&](Type type) { return type_name(program, type); };
@@ -181,6 +191,12 @@ std::string dump(const Program& program) {
                     case Op::Str: out += ' ' + literal(program.strings[inst.imm]); break;
                     case Op::Call:
                         out += std::format(" @{}(", program.functions[inst.callee].name);
+                        for (usize a = 0; a < inst.args.size(); ++a) out += (a ? ", " : "") + reg(inst.args[a]);
+                        out += ')';
+                        break;
+                    case Op::FnRef: out += std::format(" @{}", program.functions[inst.callee].name); break;
+                    case Op::CallIndirect:
+                        out += ' ' + reg(inst.a) + '(';
                         for (usize a = 0; a < inst.args.size(); ++a) out += (a ? ", " : "") + reg(inst.args[a]);
                         out += ')';
                         break;

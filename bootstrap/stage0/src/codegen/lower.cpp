@@ -188,6 +188,7 @@ private:
 
     Type lower_type(ScalarType type) {
         if (type.kind == ScalarType::Tuple) return tuple(type);
+        if (type.kind == ScalarType::Function) return function_type(type);
         if (type.kind != ScalarType::Nominal) return scalar_type(type);
         PHS_ASSERT(type.optional_depth == 0);
         return structure(types_.descriptor(type)->declaration);
@@ -199,7 +200,7 @@ private:
         if (const auto it = tuples_.find(type.detail); it != tuples_.end()) return aggregate(it->second);
         Layout layout;
         layout.name = types_.type_name(type, resolution_, names_);
-        layout.tuple = true;
+        layout.kind = Layout::Tuple;
         const auto elements = types_.descriptor(type)->parameters;
         for (usize i = 0; i < elements.size(); ++i) {
             layout.fields.push_back(lower_type(elements[i]));
@@ -209,6 +210,26 @@ private:
         const auto index = static_cast<u32>(program_.layouts.size());
         program_.layouts.push_back(std::move(layout));
         tuples_.emplace(type.detail, index);
+        return aggregate(index);
+    }
+
+    // A function type's layout, built once per type: the code and environment
+    // words, and the signature of calls through it.
+    Type function_type(ScalarType type) {
+        PHS_ASSERT(type.optional_depth == 0);
+        if (const auto it = function_types_.find(type.detail); it != function_types_.end()) return aggregate(it->second);
+        const auto* descriptor = types_.descriptor(type);
+        Layout layout;
+        layout.name = types_.type_name(type, resolution_, names_);
+        layout.kind = Layout::Function;
+        layout.fields = {Type::U64, Type::U64};
+        layout.names = {"code", "env"};
+        for (const ScalarType param : descriptor->parameters) layout.params.push_back(lower_type(param));
+        layout.result = lower_type(descriptor->result);
+        place_fields(program_, layout);
+        const auto index = static_cast<u32>(program_.layouts.size());
+        program_.layouts.push_back(std::move(layout));
+        function_types_.emplace(type.detail, index);
         return aggregate(index);
     }
 
@@ -254,6 +275,10 @@ private:
         return fields_.at(binding.name.span.lo);
     }
     static bool mutating(const FunItem& fun) { return has_modifier(fun.mods, Modifier::Mut); }
+    bool indirect(const CallExpr& call) const {
+        const CheckedCall* checked = types_.call(&call);
+        return checked && checked->kind == CallKind::IndirectFunction;
+    }
     bool mutating_call(const CallExpr& call) const {
         const CheckedCall* checked = types_.call(&call);
         return checked && checked->kind == CallKind::Method &&
@@ -518,6 +543,7 @@ private:
                 for (const auto& arg : call->args) work.push_back(arg.value);
                 if (const CheckedCall* checked = types_.call(call); checked && checked->receiver)
                     work.push_back(checked->receiver);
+                if (indirect(*call)) work.push_back(call->callee);
             } else if (const auto* member = as<MemberExpr>(expr)) {
                 work.push_back(member->base);
             } else if (const auto* element = as<TupleFieldExpr>(expr)) {
@@ -609,6 +635,14 @@ private:
                 case ExprKind::Name: {
                     tasks.pop_back();
                     const auto& name = *cast<NameExpr>(expr);
+                    if (const BindingId function = types_.function(expr); function.valid()) {
+                        // A top-level function named as a value.
+                        const auto& item = *cast<FunItem>(resolution_.binding(function).item);
+                        const Reg dst = reg(lower_type(scalar(expr)));
+                        emit({.op = Op::FnRef, .dst = dst, .callee = functions_.at(&item)});
+                        values.push_back(dst);
+                        break;
+                    }
                     if (const auto index = implicit_field(name)) {
                         // A bare field name inside a method reads the receiver's field.
                         const Reg dst = reg(lower_type(scalar(expr)));
@@ -734,13 +768,15 @@ private:
                 }
                 case ExprKind::Call: {
                     const auto& call = *cast<CallExpr>(expr);
-                    // A method's receiver value runs before the arguments; a
-                    // `mut fun` receiver is a place, read at the call.
+                    // A method's receiver value, or the function value of an
+                    // indirect call, runs before the arguments; a `mut fun`
+                    // receiver is a place, read at the call.
                     const CheckedCall* checked = types_.call(&call);
                     const bool method = checked && checked->kind == CallKind::Method && !mutating_call(call);
-                    const usize first = method ? 1 : 0;
+                    const usize first = method || indirect(call) ? 1 : 0;
                     if (stage < first) {
-                        if (checked->receiver) tasks.push_back({checked->receiver});
+                        if (!method) tasks.push_back({call.callee});
+                        else if (checked->receiver) tasks.push_back({checked->receiver});
                         else values.push_back(snapshots ? snapshot(self_) : self_);
                         break;
                     }
@@ -831,6 +867,15 @@ private:
             emit({.op = Op::Make, .dst = dst, .args = std::move(fields)});
             return dst;
         }
+        if (checked.kind == CallKind::IndirectFunction) {
+            // A diverging operand has already ended the block.
+            for (const Reg arg : args)
+                if (!arg.valid()) return {};
+            const Reg dst = has_value(type) ? reg(type) : Reg{};
+            emit({.op = Op::CallIndirect, .dst = dst, .a = args.front(), .args = {args.begin() + 1, args.end()}});
+            if (type == Type::Never) end(Term::Unreachable);
+            return dst;
+        }
         const auto& callee = *cast<FunItem>(resolution_.binding(checked.target).item);
         // Arguments run in source order and are passed in parameter order,
         // after a method's receiver.
@@ -867,6 +912,7 @@ private:
     std::unordered_map<std::string, u64> strings_;  // literal bytes to their index in program_.strings
     std::unordered_map<usize, u32> layouts_;  // struct declaration binding to its index in program_.layouts
     std::unordered_map<usize, u32> tuples_;   // tuple type descriptor to its index in program_.layouts
+    std::unordered_map<usize, u32> function_types_;  // function type descriptor to its index in program_.layouts
     std::unordered_map<u32, u32> fields_;     // field declaration offset to its declaration index
     std::unordered_map<const FunItem*, BindingId> owners_;  // a method's struct
     Reg self_;  // the current method's receiver

@@ -58,6 +58,10 @@ inline constexpr std::string_view kPrintBool = "_P$print_bool";
 // "_P" followed by the length-prefixed MIR name (abi.md A.7, without a package).
 [[nodiscard]] std::string symbol_name(const mir::Function& function);
 
+// Whether emit can compile the program: not yet when it makes or calls
+// function values.
+[[nodiscard]] bool supports(const mir::Program& program);
+
 // Symbols 0..n-1 are the program's functions in order; the trap entry follows,
 // then, as they are first used, print entries and string literals (local
 // .rodata symbols).

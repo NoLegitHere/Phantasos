@@ -119,7 +119,7 @@ fun main(): Int {
     defer {}
     let m: Int = match 1 { _ -> 2 }
     let u: Int = unsafe { 3 }
-    let h = other
+    let h: Bool = other == other
     let v = if true { 1 } else { 2 }
     return v + v
 }

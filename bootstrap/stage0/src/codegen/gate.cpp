@@ -179,6 +179,7 @@ private:
                     const auto field = types_.binding(values_.at(param.name.span.lo));
                     if (stored(param.type->span, field, "fields")) continue;
                     structs_.erase(items_.at(type).value);
+                    composites_.clear();
                     changed = true;
                     break;
                 }
@@ -226,14 +227,22 @@ private:
         const auto children = [&](const TypeDeclItem& type) {
             std::vector<usize> out;
             for (const auto& param : type.ctor_params) {
-                // A field holds the structs inside its tuples too.
+                // A field holds the structs inside its tuples too, and,
+                // conservatively, those its function types take or return.
+                // Composite types can share parts, so each is walked once.
                 std::vector<ScalarType> held{types_.binding(values_.at(param.name.span.lo))};
+                std::unordered_set<usize> seen;
                 while (!held.empty()) {
                     const auto field = held.back();
                     held.pop_back();
                     if (field.optional_depth) continue;
+                    if ((field.kind == ScalarType::Tuple || field.kind == ScalarType::Function) &&
+                        !seen.insert(field.detail).second)
+                        continue;
                     const auto* descriptor = types_.descriptor(field);
-                    if (field.kind == ScalarType::Tuple) held.insert(held.end(), descriptor->parameters.begin(), descriptor->parameters.end());
+                    if (field.kind == ScalarType::Tuple || field.kind == ScalarType::Function)
+                        held.insert(held.end(), descriptor->parameters.begin(), descriptor->parameters.end());
+                    if (field.kind == ScalarType::Function) held.push_back(descriptor->result);
                     else if (field.kind == ScalarType::Nominal && by_id.contains(descriptor->declaration.value))
                         out.push_back(descriptor->declaration.value);
                 }
@@ -273,16 +282,25 @@ private:
             if (!cyclic.contains(items_.at(type).value)) continue;
             unsupported(type->name.span, "recursive structs");
             structs_.erase(items_.at(type).value);
+            composites_.clear();
         }
     }
 
     bool supported_type(ScalarType type) const {
         if (supported_scalar(type)) return true;
-        if (type.kind == ScalarType::Tuple && !type.optional_depth) {
-            // Elements hold values, so they cannot be 'Unit' or 'Never'.
-            return std::ranges::all_of(types_.descriptor(type)->parameters, [&](ScalarType element) {
-                return element.kind != ScalarType::Unit && element.kind != ScalarType::Never && supported_type(element);
-            });
+        if ((type.kind == ScalarType::Tuple || type.kind == ScalarType::Function) && !type.optional_depth) {
+            // Composite types can share parts, so each answer is kept.
+            if (const auto it = composites_.find(type.detail); it != composites_.end()) return it->second;
+            const auto* descriptor = types_.descriptor(type);
+            // Elements and parameters hold values, so they cannot be 'Unit' or
+            // 'Never'; a function's result may be either.
+            const bool supported =
+                (type.kind == ScalarType::Tuple || (!descriptor->throws && supported_type(descriptor->result))) &&
+                std::ranges::all_of(descriptor->parameters, [&](ScalarType part) {
+                    return part.kind != ScalarType::Unit && part.kind != ScalarType::Never && supported_type(part);
+                });
+            composites_.emplace(type.detail, supported);
+            return supported;
         }
         if (type.kind != ScalarType::Nominal || type.optional_depth) return false;
         const auto* descriptor = types_.descriptor(type);
@@ -450,10 +468,16 @@ private:
 
     void expression(const Expr& expr, bool used, std::vector<Work>& work) {
         if (!supported_kind(expr)) return;
-        if (const auto* binary = as<BinaryExpr>(&expr); binary && (types_.expression(binary->lhs).kind == ScalarType::Tuple ||
-                                                                 types_.expression(binary->rhs).kind == ScalarType::Tuple)) {
-            unsupported(expr.span, "comparisons of tuples");
-            return;
+        if (const auto* binary = as<BinaryExpr>(&expr)) {
+            const auto lhs = types_.expression(binary->lhs).kind, rhs = types_.expression(binary->rhs).kind;
+            if (lhs == ScalarType::Tuple || rhs == ScalarType::Tuple) {
+                unsupported(expr.span, "comparisons of tuples");
+                return;
+            }
+            if (lhs == ScalarType::Function || rhs == ScalarType::Function) {
+                unsupported(expr.span, "operators on function values");
+                return;
+            }
         }
         if (const auto* name = as<NameExpr>(&expr)) {
             if (const auto id = target(*name); id.valid() && rejected_.contains(id.value)) return;
@@ -568,6 +592,7 @@ private:
                 work.push_back(binary->rhs);
             } else if (const auto* call = as<CallExpr>(expr)) {
                 for (const auto& arg : call->args) work.push_back(arg.value);
+                work.push_back(call->callee);
             } else if (const auto* member = as<MemberExpr>(expr)) {
                 work.push_back(member->base);
             } else if (const auto* element = as<TupleFieldExpr>(expr)) {
@@ -599,7 +624,12 @@ private:
         const auto kind = id.valid() ? resolution_.binding(id).kind : BindingKind::Import;
         // A bare field name inside a method reads the receiver's field.
         if (kind == BindingKind::Local || kind == BindingKind::Parameter || kind == BindingKind::Field) return;
-        if (kind == BindingKind::Function) unsupported(name.span, "function values");
+        // A top-level function named as a value.
+        if (const auto function = types_.function(&name); function.valid()) {
+            const auto* fun = as<FunItem>(resolution_.binding(function).item);
+            if (fun && functions_.contains(fun)) return;
+        }
+        if (kind == BindingKind::Function) unsupported(name.span, "values of functions stage0 cannot compile");
         else unsupported(name.span, "this name");
     }
 
@@ -646,6 +676,16 @@ private:
             }
             for (usize i = call.args.size(); i-- > 0;) work.push_back({call.args[i].value, true});
             if (checked->receiver) work.push_back({checked->receiver, true});
+            return;
+        }
+        if (checked && checked->kind == CallKind::IndirectFunction) {
+            // Calls of function values: the callee runs first, then the arguments.
+            if (checked->state != CallState::Resolved) {
+                unsupported_type(call.span, ScalarType{});
+                return;
+            }
+            for (usize i = call.args.size(); i-- > 0;) work.push_back({call.args[i].value, true});
+            work.push_back({call.callee, true});
             return;
         }
         const auto* callee = as<NameExpr>(call.callee);
@@ -695,6 +735,9 @@ private:
     std::unordered_map<const Item*, BindingId> items_;
     std::unordered_map<u32, BindingId> values_;  // locals and parameters by declaration offset
     std::unordered_set<const FunItem*> functions_;
+    // Whether each tuple and function type is supported, by descriptor; reset
+    // when a struct is rejected.
+    mutable std::unordered_map<usize, bool> composites_;
     std::unordered_set<usize> rejected_;  // locals whose declaration was reported
     std::unordered_set<usize> structs_;   // binding IDs of supported structs
     bool ok_ = true;

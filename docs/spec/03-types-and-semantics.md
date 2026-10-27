@@ -984,7 +984,10 @@ the subset, so that nothing half-checked reaches code generation:
   locals, arguments, results and fields. A plain struct whose fields all have
   value types of the subset is a value type too; a struct with a field of
   any other type is rejected along with the field. So is a non-optional
-  tuple whose elements all have value types of the subset.
+  tuple whose elements all have value types of the subset, and a
+  non-optional, non-throwing function type whose parameters have value types
+  of the subset and whose result is a type of the subset. A struct cannot
+  take or return itself through a function type in its fields either.
 - **Statements.** `let` and `var` locals, with or without an initializer;
   assignment and compound assignment to locals, to `self` in a `mut fun`,
   and to fields of either at any depth, tuple elements included; tuple
@@ -995,7 +998,8 @@ the subset, so that nothing half-checked reaches code generation:
   (3.27), integer conversions, primary constructors of supported structs,
   reads of their fields, calls to their methods with an explicit or implicit
   receiver, `self` and bare field names inside methods, tuple literals and
-  `.0` element reads, unary `-`, `!` and `~`, arithmetic including
+  `.0` element reads, top-level functions named as values (3.14) and calls
+  of function values, unary `-`, `!` and `~`, arithmetic including
   the wrapping forms, `&`, `|`, `^`, comparisons, `&&` and `||`. Used `if` and block
   results are allowed where their type is known (3.24).
 
@@ -1003,7 +1007,8 @@ Everything else reports `E0600`. That includes shifts, `for`, `defer`,
 `throw`, `match`, `unsafe` blocks, operators on strings, string interpolation,
 floating-point values, arrays, comparisons of tuples,
 optionals, classes, enums, interfaces, members other than struct fields and
-method calls, method values, globals, and function values. A `mut fun` call
+method calls, method values, globals, operators on function values, and
+values of generic or `where`-constrained functions. A `mut fun` call
 needs a receiver rooted in a local, `self` or a field of `self`. A local whose
 type is still deferred also reports `E0600` and needs an annotation. One
 `E0600` is reported per construct, and uses of a rejected local are not
@@ -1024,7 +1029,8 @@ before it evaluates `e`. Assignment to a field of a local struct, such as
 that point; `p.a.x op= e` reads `p.a.x` first. A method call evaluates its
 receiver before its arguments, except that a `mut fun` receiver is a place:
 it is read when the call starts, after the arguments, and the method's
-changes reach it when the call returns. `&&` and `||` evaluate their right operand only when
+changes reach it when the call returns. A call of a function value evaluates
+the function value before its arguments. `&&` and `||` evaluate their right operand only when
 the left operand does not decide the result.
 
 Integer `+`, `-`, `*` and unary `-` trap when the result does not fit the
@@ -1035,7 +1041,10 @@ sign of its left operand. The `&+`, `&-` and `&*` forms wrap.
 
 Stage0 lowers checked programs to a typed MIR that makes this order
 explicit. `phantasos-stage0 mir <file>` prints it for a file that passes
-`gate` (3.25).
+`gate` (3.25). A function value in MIR is two words, the code to call and an
+environment that the code receives as a hidden first argument; a top-level
+function's value has a null environment. The x86_64 backend does not compile
+function values yet: `asm` and `build` report that and exit with status 1.
 
 Stage0's first x86_64 backend checks every trapping operation inline. A
 failed check calls `__phantasos_trap` with the trap code in the first

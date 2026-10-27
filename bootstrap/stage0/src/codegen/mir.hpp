@@ -30,7 +30,9 @@
 // strings are literals, passed around whole. A struct is an aggregate value
 // with a Layout (abi.md A.2), and so is a tuple, whose fields are its elements;
 // aggregates are built whole, read one field at a time, and updated by copying
-// them with one field replaced.
+// them with one field replaced. A function value is an aggregate of two words:
+// the code to call and an environment, passed to that code as a hidden first
+// argument; a top-level function's value has a null environment.
 
 namespace phs::mir {
 
@@ -61,6 +63,8 @@ enum class Op : u8 {
     Make,   // an aggregate from args, its fields in declaration order
     Field,  // field imm of the aggregate a
     With,   // the aggregate a with field imm replaced by b
+    FnRef,  // the function value of function callee, with a null environment
+    CallIndirect,  // a call of the function value a with args
 };
 
 struct Inst {
@@ -69,8 +73,10 @@ struct Inst {
     Reg a, b;             // operands; comparisons use the operand type
     u64 imm = 0;          // Const: the value, sign-extended for signed types; Str: index into Program::strings;
                           // Field, With: the field's declaration index
-    u32 callee = 0;       // Call: function index
-    std::vector<Reg> args;  // Call: arguments in parameter order, a method's receiver first; Make: field values
+    u32 callee = 0;       // Call, FnRef: function index
+    // Call: arguments in parameter order, a method's receiver first;
+    // CallIndirect: arguments in parameter order; Make: field values
+    std::vector<Reg> args;
 };
 
 enum class Term : u8 { Br, CondBr, Ret, Unreachable };
@@ -99,20 +105,25 @@ inline bool is_inout(const Function& fun, u32 param) { return param < fun.inout.
 
 // Fields keep declaration order; offsets place them by decreasing alignment,
 // stable among equal alignments, and the size is a multiple of the alignment.
+// A function type's layout has two U64 fields, code and env, and records the
+// signature that indirect calls through it follow.
 struct Layout {
-    std::string name;  // a struct's name, or a tuple type's spelling
-    bool tuple = false;  // fields named 0, 1, ...
+    enum Kind : u8 { Struct, Tuple, Function };
+    std::string name;  // a struct's name, or a tuple or function type's spelling
+    Kind kind = Struct;  // a tuple's fields are named 0, 1, ...
     std::vector<Type> fields;
     std::vector<std::string> names;
     std::vector<u32> offsets;
     u32 size = 0, align = 1;
+    std::vector<Type> params;  // Function: parameter types
+    Type result = Type::Unit;  // Function: result type
 };
 
 struct Program {
     std::vector<Function> functions;
     u32 main = 0;
     std::vector<std::string> strings;  // literal bytes, each distinct value once
-    std::vector<Layout> layouts;       // each struct and tuple type once
+    std::vector<Layout> layouts;       // each struct, tuple and function type once
 };
 
 std::string type_name(const Program& program, Type type);

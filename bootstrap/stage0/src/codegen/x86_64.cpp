@@ -692,7 +692,8 @@ private:
                 as_.setcc(compare(inst.op, sign));
                 break;
             }
-            case Op::Call: case Op::Str: case Op::Print: case Op::Make: case Op::Field: case Op::With: break;
+            case Op::Call: case Op::Str: case Op::Print: case Op::Make: case Op::Field: case Op::With:
+            case Op::FnRef: case Op::CallIndirect: break;
         }
         as_.store(slot(inst.dst), RAX);
     }
@@ -1054,7 +1055,16 @@ std::string symbol_name(const mir::Function& function) {
     return std::format("_P{}{}", function.name.size(), function.name);
 }
 
+bool supports(const mir::Program& program) {
+    for (const auto& fun : program.functions)
+        for (const auto& block : fun.blocks)
+            for (const auto& inst : block.insts)
+                if (inst.op == Op::FnRef || inst.op == Op::CallIndirect) return false;
+    return true;
+}
+
 obj::Object emit(const mir::Program& program, std::string* listing) {
+    PHS_ASSERT(supports(program));
     obj::Object object;
     Emitter emitter(program, object, listing);
     emitter.run();

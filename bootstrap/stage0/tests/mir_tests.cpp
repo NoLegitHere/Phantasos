@@ -17,6 +17,7 @@
 
 #include <limits>
 #include <string>
+#include <format>
 #include <vector>
 
 #include "codegen/mir.hpp"
@@ -381,6 +382,60 @@ void tuples() {
     CHECK(traps("fun main(): Int {\n    var t = (UInt8(0), 1)\n    t.0 -= 1\n    return 0\n}\n"));
 }
 
+void function_values() {
+    Frontend f;
+    const auto text = f.dump("fun twice(x: Int): Int = x * 2\n"
+                             "fun main(): Int {\n    let g = twice\n    return g(4)\n}\n");
+    // A function type is two words, code then environment, with its signature.
+    CHECK(text.starts_with("function @fun(Int) -> Int { code: u64 +0, env: u64 +8 } size 16 align 8 "
+                           "signature (i64) -> i64\n\n"));
+    CHECK(text.contains("= fnref @twice\n") && text.contains("%3: i64 = call %1(%2)\n"));
+    // Overloads pick the one of the expected type; values travel through
+    // parameters, results, struct fields and tuple elements.
+    CHECK(result("fun add(a: Int, b: Int): Int = a + b\nfun add(a: Int): Int = a + 1\n"
+                 "fun twice(x: Int): Int = x * 2\n"
+                 "fun apply(f: fun(Int) -> Int, x: Int): Int = f(x)\n"
+                 "fun pick(first: Bool): fun(Int) -> Int {\n    return if first { twice } else { add }\n}\n"
+                 "struct Op(f: fun(Int, Int) -> Int)\n"
+                 "fun main(): Int {\n    let op = Op(add)\n    let t = (pick(true), 3)\n"
+                 "    return apply(add, 10) * 1000 + pick(false)(1) * 100 + op.f(2, 3) * 10 + t.0(t.1) - 6\n}\n") ==
+          11000 + 200 + 50);
+    // A field holding a function value, called through a bare field name and
+    // through self, and a local that shadows a function.
+    CHECK(result("fun one(): Int = 1\nfun two(): Int = 2\n"
+                 "struct S(f: fun() -> Int) {\n    fun run(): Int = f() + self.f()\n}\n"
+                 "fun main(): Int {\n    let s = S(two)\n    let one = two\n    return s.run() * 10 + one()\n}\n") == 42);
+    // The function value runs before the arguments, and a later write does
+    // not change which function is called.
+    Frontend order;
+    const auto run = order.run("fun one(): Int {\n    print(\"one\")\n    return 1\n}\n"
+                               "fun two(): Int {\n    print(\"two\")\n    return 2\n}\n"
+                               "fun id(x: Int): Int = x\nfun neg(x: Int): Int = -x\n"
+                               "fun choose(): fun(Int) -> Int {\n    print(\"choose\")\n    return id\n}\n"
+                               "fun main(): Int {\n    var g = id\n"
+                               "    let a = g(if true {\n        g = neg\n        one()\n    } else { 0 })\n    return choose()(two()) * 10 + a + g(0)\n}\n");
+    CHECK(!run.trapped && run.value == 21 && run.output == "one\nchoose\ntwo\n");
+    // A diverging callee or argument ends the block before the call.
+    Frontend stop;
+    const auto text2 = stop.dump("fun stop(): Never {\n    loop {}\n}\nfun id(x: Int): Int = x\n"
+                                 "fun main(): Int {\n    let g = id\n    return g(stop())\n}\n");
+    CHECK(text2.contains("    call @stop()\n    unreachable\n") && !text2.contains("call %"));
+    // Unit and Never results, and traps inside the callee.
+    Frontend unit;
+    const auto hello = unit.run("fun hello() { print(\"hi\") }\n"
+                                "fun main(): Int {\n    let h = hello\n    h()\n    return 0\n}\n");
+    CHECK(!hello.trapped && hello.output == "hi\n");
+    // Function types that share their parts are checked and lowered once
+    // per type, not once per path through them.
+    std::string shared = "fun f0(): Int = 7\n";
+    for (int i = 1; i < 64; ++i) shared += std::format("fun f{}() = (f{}, f{})\n", i, i - 1, i - 1);
+    shared += "struct S(f: fun() -> Int, deep: fun() -> (fun() -> Int, fun() -> Int))\n";
+    shared += "fun main(): Int = f2().1().0()\n";
+    CHECK(result(shared) == 7);
+    CHECK(traps("fun dec(x: UInt8): UInt8 = x - 1\n"
+                "fun main(): Int {\n    let f = dec\n    return Int(f(0))\n}\n"));
+}
+
 void rejected_files() {
     FrontendSession session;
     const auto id = session.sources().add("mir.phs", "fun main(): Float64 = 1.0\n");
@@ -419,6 +474,7 @@ int main() {
     structs();
     methods();
     tuples();
+    function_values();
     rejected_files();
     long_trees();
     std::println("mir tests passed");

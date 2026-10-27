@@ -16,9 +16,9 @@ gate_errors.phs:28:12: error[E0600]: stage0 code generation does not support shi
 gate_errors.phs:31:29: error[E0600]: stage0 code generation does not support 'match' yet
    31 | fun matching(x: Int): Int = match x {
       |                             ^^^^^^^^^
-gate_errors.phs:37:9: error[E0600]: stage0 code generation does not support values of type 'fun() -> Int' yet
-   37 |     let f = values
-      |         ^
+gate_errors.phs:37:22: error[E0600]: stage0 code generation does not support operators on function values yet
+   37 |     let same: Bool = values == values
+      |                      ^^^^^^^^^^^^^^^^
 gate_errors.phs:42:9: error[E0600]: stage0 code generation needs the type of 'v'; add a type annotation
    42 |     let v = if c { 1 } else { 2 }
       |         ^

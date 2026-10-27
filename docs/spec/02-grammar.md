@@ -54,6 +54,8 @@ CaseField     = [ Ident ':' ] Type
 InitDecl      = 'init' [ '(' [ ParamList ] ')' [ Throws ] ] Block
 DeinitDecl    = 'deinit' Block
 VarDecl       = ( 'let' | 'var' | 'const' ) Ident [ ':' Type ] [ '=' Expr ]
+LocalDecl     = VarDecl
+              | ( 'let' | 'var' ) '(' Ident ',' Ident { ',' Ident } [ ',' ] ')' [ ':' Type ] '=' Expr
 ExternBlock   = 'extern' StringLit '{' { ExternFun Terms } '}'
 ExternFun     = { Attribute } [ Visibility ] { Modifier } FunDecl   (* e.g. public unsafe fun ... *)
 TypeAlias     = 'type' Ident [ GenericParams ] [ ':' Bounds ] [ '=' Type ]
@@ -89,14 +91,19 @@ PrefixType    = 'shared' PrefixType | 'weak' PrefixType
 PrimaryType   = Path [ GenericArgs ] | 'Self'
               | '[' Type ']'                               (* array *)
               | '(' ')'                                    (* Unit *)
+              | '(' Type ')'                               (* grouping *)
+              | '(' Type ',' Type { ',' Type } [ ',' ] ')' (* tuple *)
               | 'fun' '(' [ Type { ',' Type } [ ',' ] ] ')' [ '->' Type ] [ Throws ]
 GenericArgs   = '<' Type { ',' Type } [ ',' ] '>'
 ```
+Parentheses around one type only group it, as in `(fun() -> Int)?`, an
+optional function. A tuple type has two or more elements and no labels:
+`(Int,)` and `(x: Int, y: Int)` are errors (`E0113`).
 
 ## 2.3 Statements
 ```
 Block         = '{' { Stmt Terms } '}'
-Stmt          = VarDecl
+Stmt          = LocalDecl
               | 'return' [ Expr ] | 'break' | 'continue' | 'throw' Expr
               | 'while' Cond Block
               | 'for' Ident 'in' Expr Block
@@ -108,6 +115,10 @@ Cond          = 'let' Ident [ ':' Type ] '=' Expr | Expr
 ```
 The optional operand of `return` and the required operand of `throw` must
 start before a significant `Newline`. `break` and `continue` have no operand.
+A destructuring local (3.28) names two or more plain bindings and needs an
+initializer; `const` cannot destructure, and nested names such as
+`let ((a, b), c)` are not part of Core yet (`E0113`). The target of an
+assignment cannot be a tuple literal (`E0113`).
 
 ## 2.4 Expressions (lowest to highest precedence)
 | Level | Operators | Associativity |
@@ -123,7 +134,7 @@ start before a significant `Newline`. `break` and `continue` have no operand.
 | 9 | `<< >>` | left |
 | 10 | `as T`, `as? T` | left (postfix-like) |
 | 11 | prefix `- ! ~ try try? await shared` | right |
-| 12 | postfix call `()`, member `.x`, `?.x`, index `[]`, unwrap `!` | left |
+| 12 | postfix call `()`, member `.x`, tuple element `.0`, `?.x`, index `[]`, unwrap `!` | left |
 
 - Bitwise operators bind tighter than comparison, so `a & mask == 0` means
   `(a & mask) == 0`.
@@ -135,13 +146,14 @@ start before a significant `Newline`. `break` and `continue` have no operand.
   whitespace or comments between them.
 
 ```
-Postfix       = Primary { '(' [ ArgList ] ')' | '.' Ident | '?.' Ident | '[' Expr ']' | '!' | GenericArgs }
+Postfix       = Primary { '(' [ ArgList ] ')' | '.' Ident | '.' IntLit | '?.' Ident | '[' Expr ']' | '!' | GenericArgs }
 ArgList       = Arg { ',' Arg } [ ',' ]
 Arg           = [ Ident ':' ] Expr
 Primary       = Literal | InterpString
               | 'self' | 'super' | 'Self' | Ident
               | '.' Ident                                  (* implicit member, e.g. .Empty *)
               | '(' [ Expr ] ')'                           (* empty parentheses are Unit *)
+              | '(' Expr ',' Expr { ',' Expr } [ ',' ] ')' (* tuple *)
               | '[' [ Expr { ',' Expr } [ ',' ] ] ']'
               | IfExpr | MatchExpr | 'unsafe' Block
 InterpString  = StringHead Expr { StringMiddle Expr } StringTail
@@ -149,6 +161,10 @@ IfExpr        = 'if' Cond Block [ 'else' ( IfExpr | Block ) ]
 MatchExpr     = 'match' Expr '{' { Arm ( Terms | ',' ) } '}'
 Arm           = Pattern [ 'if' Expr ] '->' ( Block | Expr )
 ```
+One expression in parentheses is just that expression; a comma makes a tuple.
+A tuple literal has two or more elements and no labels, so `(1,)` and
+`(x: 1, y: 2)` are errors (`E0113`). The `IntLit` after `.` is a tuple index
+(1.5).
 
 ## 2.5 Patterns
 ```

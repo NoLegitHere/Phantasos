@@ -80,7 +80,7 @@ foundation. Complete.
   - [x] Struct values: construction, field reads, locals, arguments and results.
   - [x] Field assignment.
   - [x] Methods, including `mut fun`.
-  - [ ] Tuples in the front end: types, literals, `.0` access and destructuring.
+  - [x] Tuples in the front end: types, literals, `.0` access and destructuring.
   - [ ] Tuple code generation.
   - [ ] Sample programs and run tests.
 - [ ] Generic base substitution and built-in traits. Instantiate

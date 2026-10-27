@@ -213,17 +213,22 @@ private:
 
     void lex_number() {
         const u32 start = pos_;
-        if (src_[pos_] == '0' && (peek(1) == 'x' || peek(1) == 'o' || peek(1) == 'b')) return lex_prefixed_int(start);
+        // Right after a '.', even across a line break, digits are a tuple
+        // index, so `t.0.1` is two accesses.
+        usize last = out_.size();
+        if (last && out_[last - 1].kind == Tok::Newline) --last;
+        const bool index = last && out_[last - 1].kind == Tok::Dot;
+        if (!index && src_[pos_] == '0' && (peek(1) == 'x' || peek(1) == 'o' || peek(1) == 'b')) return lex_prefixed_int(start);
 
         const auto scan_digits = [&] { skip_while([](char ch) { return std::isdigit(static_cast<unsigned char>(ch)) || ch == '_'; }); };
         scan_digits();
         bool is_float = false;
-        if (peek() == '.' && std::isdigit(static_cast<unsigned char>(peek(1)))) {
+        if (!index && peek() == '.' && std::isdigit(static_cast<unsigned char>(peek(1)))) {
             is_float = true;
             ++pos_;
             scan_digits();
         }
-        if (peek() == 'e' || peek() == 'E') {
+        if (!index && (peek() == 'e' || peek() == 'E')) {
             const u32 save = pos_;
             ++pos_;
             if (peek() == '+' || peek() == '-') ++pos_;
@@ -242,6 +247,9 @@ private:
                         src_.substr(suffix, pos_ - suffix));
         }
         const std::string_view literal = src_.substr(start, end - start);
+        if (index && (literal.contains('_') || (literal.size() > 1 && literal.front() == '0')))
+            diag_.error(DiagCode::InvalidNumber, span(start, end), "tuple index '{}' must be written without underscores or leading zeros",
+                        literal);
 
         if (is_float) {
             const auto value = parse_f64(literal);

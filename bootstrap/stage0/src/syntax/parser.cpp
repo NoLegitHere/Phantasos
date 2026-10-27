@@ -759,8 +759,25 @@ private:
             }
             case Tok::LParen: {
                 advance();
-                expect(Tok::RParen);
-                return new_type(TypeKind::Unit, from(start));
+                if (eat(Tok::RParen)) return new_type(TypeKind::Unit, from(start));
+                // `(T)` is just T; two or more types make a tuple type.
+                const ScopedValue enclosed_types(cast_type_, false);
+                const usize errs = diag_.error_count();
+                std::vector<TypeExpr*> elems;
+                bool comma = false;
+                while (true) {
+                    tuple_label("tuple element types");
+                    elems.push_back(parse_type());
+                    if (spec_failed_ || !eat(Tok::Comma)) break;
+                    comma = true;
+                    if (at(Tok::RParen)) break;  // trailing comma
+                }
+                close_list(errs, Tok::LParen, Tok::RParen);
+                if (!comma) return elems.front();
+                if (elems.size() == 1) error(DiagCode::InvalidTuple, from(start), "a tuple type needs at least two elements");
+                TypeExpr* t = new_type(TypeKind::Tuple, from(start));
+                t->args = arena_.copy(elems);
+                return t;
             }
             case Tok::KwSelfType:
                 advance();
@@ -880,11 +897,17 @@ private:
                 VarStmt* v = mk<VarStmt>(start);
                 v->binding = at(Tok::KwLet) ? Binding::Let : at(Tok::KwVar) ? Binding::Var : Binding::Const;
                 advance();
-                v->name = expect_name("variable name");
+                if (at(Tok::LParen)) {
+                    v->names = parse_destructuring(*v);
+                } else {
+                    v->name = expect_name("variable name");
+                }
                 if (eat(Tok::Colon)) v->type = parse_type();
                 if (eat(Tok::Eq)) {
                     skip_newlines();
                     v->init = parse_expr();
+                } else if (!v->names.empty()) {
+                    expect(Tok::Eq);
                 }
                 v->span = from(start);
                 return v;
@@ -954,6 +977,10 @@ private:
         }
         Expr* e = parse_expr();
         if (auto op = assign_op(cur().kind)) {
+            const Expr* target = e;
+            while (const auto* paren = as<ParenExpr>(target)) target = paren->inner;
+            if (target->kind == ExprKind::Tuple)
+                error(DiagCode::InvalidTuple, target->span, "cannot assign to a tuple; assign each element on its own");
             advance();
             skip_newlines();
             AssignStmt* a = mk<AssignStmt>(start);
@@ -1254,6 +1281,49 @@ private:
         return arena_.copy(args);
     }
 
+    // Tuple elements are unlabeled; a label is reported and skipped.
+    void tuple_label(std::string_view what) {
+        if (!at(Tok::Ident) || peek().kind != Tok::Colon) return;
+        error(DiagCode::InvalidTuple, Span::join(cur().span, peek().span), "{} cannot have labels", what);
+        advance();
+        advance();
+    }
+
+    // After `(first,`: the remaining elements of a tuple literal.
+    Expr* parse_tuple(Span start, Expr* first, usize errs) {
+        std::vector<Expr*> elems{first};
+        while (eat(Tok::Comma) && !at(Tok::RParen)) {
+            tuple_label("tuple elements");
+            elems.push_back(parse_expr());
+            if (diag_.error_count() > errs) break;
+        }
+        close_list(errs, Tok::LParen, Tok::RParen);
+        if (elems.size() == 1) error(DiagCode::InvalidTuple, from(start), "a tuple needs at least two elements");
+        TupleExpr* t = mk<TupleExpr>(from(start));
+        t->elems = arena_.copy(elems);
+        return t;
+    }
+
+    // `(a, b)` after `let` or `var`: one name per tuple element.
+    List<Name> parse_destructuring(const VarStmt& var) {
+        const Span start = cur().span;
+        advance();  // '('
+        const usize errs = diag_.error_count();
+        std::vector<Name> names;
+        while (!at(Tok::RParen) && !at(Tok::Eof)) {
+            names.push_back(expect_name("variable name"));
+            if (diag_.error_count() > errs || !eat(Tok::Comma)) break;
+        }
+        close_list(errs, Tok::LParen, Tok::RParen);
+        if (diag_.error_count() == errs) {
+            if (names.size() < 2)
+                error(DiagCode::InvalidTuple, from(start), "destructuring needs at least two names");
+            else if (var.binding == Binding::Const)
+                error(DiagCode::InvalidTuple, from(start), "'const' cannot destructure a tuple; use 'let'");
+        }
+        return arena_.copy(names);
+    }
+
     Expr* parse_postfix() {
         Expr* e = parse_primary();
         while (true) {
@@ -1273,6 +1343,16 @@ private:
                     bool opt = at(Tok::QuestionDot);
                     advance();
                     skip_newlines();
+                    if (!opt && at(Tok::IntLit)) {
+                        TupleFieldExpr* f = mk<TupleFieldExpr>(start);
+                        f->base = e;
+                        f->index = static_cast<u32>(std::min<u64>(cur().int_value(), std::numeric_limits<u32>::max()));
+                        f->index_span = cur().span;
+                        advance();
+                        f->span = from(start);
+                        e = f;
+                        continue;
+                    }
                     Name n = expect_name("member name");
                     if (opt) {
                         OptMemberExpr* m = mk<OptMemberExpr>(from(start));
@@ -1386,9 +1466,12 @@ private:
             case Tok::LParen: {
                 advance();
                 if (eat(Tok::RParen)) return mk<UnitExpr>(from(start));
-                ParenExpr* p = mk<ParenExpr>(start);
                 const usize errs = diag_.error_count();
-                p->inner = parse_expr();
+                tuple_label("tuple elements");
+                Expr* first = parse_expr();
+                if (at(Tok::Comma)) return parse_tuple(start, first, errs);
+                ParenExpr* p = mk<ParenExpr>(start);
+                p->inner = first;
                 close_list(errs, Tok::LParen, Tok::RParen);
                 p->span = from(start);
                 return p;

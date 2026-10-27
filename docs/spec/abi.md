@@ -108,9 +108,12 @@ type     = 'i1'|'i2'|'i4'|'i8'|'u1'|'u2'|'u4'|'u8'|'f4'|'f8'|'b'|'c'|'s'
          | 'O' type                 ; optional
          | 'A' type                 ; array
          | 'S' type | 'W' type      ; shared / weak
+         | 'T' type type { type } 'E'  ; tuple, elements in order
 ```
 - Example: `geometry.shapes.Circle.area` is mangled as
   `_P8geometry6shapes6Circle4area`.
+- Tuple types are structural, so their code spells out every element:
+  `(Int8, (Bool, String))` is `Ti1TbsEE`.
 - The `_P$` prefix is reserved for privileged internal symbols, which are
   always emitted with hidden visibility.
 

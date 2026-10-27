@@ -113,6 +113,13 @@ std::string TypeTable::name(ScalarType root, const Resolution& resolution, const
                 append(d->mutable_pointer ? "*mut " : "*"); push(d->element); break;
             case ScalarType::Shared: case ScalarType::Weak:
                 append(d->kind == ScalarType::Shared ? "shared " : "weak "); push(d->element); break;
+            case ScalarType::Tuple:
+                append("("); push(")");
+                for (usize i = d->parameters.size(); i > 0 && !elided; --i) {
+                    push(d->parameters[i - 1]);
+                    if (i > 1) push(", ");
+                }
+                break;
             case ScalarType::Function:
                 append("fun(");
                 if (d->throws) {

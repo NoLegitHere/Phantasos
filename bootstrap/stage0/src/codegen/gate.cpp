@@ -38,6 +38,8 @@ std::string_view expr_name(ExprKind kind) {
         case ExprKind::SelfType: return "'Self'";
         case ExprKind::ImplicitMember: return "implicit member expressions";
         case ExprKind::Array: return "array literals";
+        case ExprKind::Tuple: return "tuples";
+        case ExprKind::TupleField: return "tuple elements";
         case ExprKind::Cast: return "casts";
         case ExprKind::Member: return "member access";
         case ExprKind::OptMember: return "optional member access";
@@ -361,6 +363,12 @@ private:
         switch (stmt.kind) {
             case StmtKind::Var: {
                 const auto& var = *cast<VarStmt>(&stmt);
+                if (!var.names.empty()) {
+                    unsupported(var.span, "tuple destructuring");
+                    for (const Name& name : var.names)
+                        if (const auto bound = values_.find(name.span.lo); bound != values_.end()) rejected_.insert(bound->second.value);
+                    return;
+                }
                 const auto it = values_.find(var.name.span.lo);
                 const auto local = it == values_.end() ? ScalarType{ScalarType::Unit} : types_.binding(it->second);
                 if (var.binding == Binding::Const) unsupported(var.name.span, "'const' locals");

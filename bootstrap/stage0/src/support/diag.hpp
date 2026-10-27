@@ -56,6 +56,7 @@ enum class DiagCode : u16 {
     ImportOrder = 110,
     DuplicateModifier = 111,
     NestingLimit = 112,
+    InvalidTuple = 113,
     DuplicateBinding = 200,
     InvalidDeclarationContext = 201,
     InvalidTypeAlias = 202,
@@ -124,6 +125,7 @@ constexpr std::string_view diag_code(DiagCode code) {
         case DiagCode::ImportOrder: return "E0110";
         case DiagCode::DuplicateModifier: return "E0111";
         case DiagCode::NestingLimit: return "E0112";
+        case DiagCode::InvalidTuple: return "E0113";
         case DiagCode::DuplicateBinding: return "E0200";
         case DiagCode::InvalidDeclarationContext: return "E0201";
         case DiagCode::InvalidTypeAlias: return "E0202";

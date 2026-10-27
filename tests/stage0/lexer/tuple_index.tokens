@@ -1,0 +1,40 @@
+18:1 KwLet (sp)
+18:5 Ident a (sp)
+18:7 Eq (sp)
+18:9 Ident t (sp)
+18:10 Dot
+18:11 IntLit 0
+18:12 Dot
+18:13 IntLit 1
+18:14 Newline
+19:1 KwLet (sp)
+19:5 Ident b (sp)
+19:7 Eq (sp)
+19:9 Ident t (sp)
+19:10 Dot
+19:11 IntLit 10
+19:14 Plus (sp)
+19:16 FloatLit 0.5 (sp)
+19:19 Newline
+20:1 KwLet (sp)
+20:5 Ident c (sp)
+20:7 Eq (sp)
+20:9 LParen (sp)
+20:10 IntLit 1
+20:11 Comma
+20:13 FloatLit 2.5 (sp)
+20:16 RParen
+20:17 Dot
+20:18 IntLit 1
+20:19 Newline
+21:1 KwLet (sp)
+21:5 Ident d (sp)
+21:7 Eq (sp)
+21:9 Ident t (sp)
+21:10 Dot
+21:11 Newline
+22:5 IntLit 0 (sp)
+22:6 Dot
+22:7 IntLit 1
+22:8 Newline
+23:1 Eof

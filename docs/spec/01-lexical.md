@@ -70,6 +70,11 @@ Reserved for future use, and lexed as keywords: `comptime macro yield spawn`.
   `Float64`. The value is rounded to the nearest `Float64`; a literal whose
   value overflows to infinity, or a non-zero literal that underflows to zero,
   is an error (`E0005`). Subnormal results are allowed.
+- **Tuple index**: digits right after a `.` token, even across a line break,
+  are an integer literal and never start a float, so `t.0.1` lexes as `t`
+  `.` `0` `.` `1` (two element accesses, 3.28). Such an index is written in
+  decimal without underscores or leading zeros: `t.01`, `t.1_0`, `t.0x1` and
+  `t.1e5` are errors (`E0006`).
 - **Character**: `'a'`, `'\n'`, `'\u{1F600}'`. Its value is one Unicode
   scalar value, of type `Char`.
 - **String**: `"text"`. Escapes are `\n \r \t \0 \\ \" \' \u{H..H}`

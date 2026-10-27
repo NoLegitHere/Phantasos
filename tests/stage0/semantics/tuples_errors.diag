@@ -1,0 +1,36 @@
+tuples_errors.phs:21:23: error[E0400]: expected 'Bool', found 'Int'
+   21 |     let wrong: Bool = t.0
+      |                       ^^^
+tuples_errors.phs:22:21: error[E0450]: tuple '(Int, Int)' has no element 2
+   22 |     let missing = t.2
+      |                     ^
+tuples_errors.phs:23:35: error[E0402]: integer literal is out of range for 'Int8'
+   23 |     let range: (Int8, Int8) = (1, 300)
+      |                                   ^^^
+tuples_errors.phs:24:29: error[E0400]: expected '(Int, Int)', found a tuple of 3 elements
+   24 |     let arity: (Int, Int) = (1, 2, 3)
+      |                             ^^^^^^^^^
+tuples_errors.phs:25:34: error[E0400]: expected '(Int, Bool)', found '(Int, Int)'
+   25 |     let invariant: (Int, Bool) = t
+      |                                  ^
+tuples_errors.phs:26:34: error[E0400]: expected '(Int8, Int8)', found '(Int, Int)'
+   26 |     let narrowed: (Int8, Int8) = t
+      |                                  ^
+tuples_errors.phs:28:27: error[E0451]: '.0' needs a tuple, found 'Int'
+   28 |     let notTuple = scalar.0
+      |                           ^
+tuples_errors.phs:30:27: error[E0451]: '.0' needs a non-optional tuple, found '(Int, Int)?'; unwrap it first
+   30 |     let unwrapped = maybe.0
+      |                           ^
+tuples_errors.phs:31:22: error[E0400]: expected 'Int', found '(Int, Int)'
+   31 |     let whole: Int = (1, 2)
+      |                      ^^^^^^
+tuples_errors.phs:32:18: error[E0400]: cannot destructure 'Int' into 2 names; it needs a tuple of 2 elements
+   32 |     let (e, f) = 5
+      |                  ^
+tuples_errors.phs:33:21: error[E0400]: cannot destructure '(Int, Int)' into 3 names; it needs a tuple of 3 elements
+   33 |     let (g, h, i) = t
+      |                     ^
+tuples_errors.phs:34:17: error[E0400]: cannot destructure '(Int, Int, Int)' into 2 names; it needs a tuple of 2 elements
+   34 |     let (j, k): (Int, Int, Int) = (1, 2, 3)
+      |                 ^^^^^^^^^^^^^^^

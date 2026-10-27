@@ -28,8 +28,8 @@
 // traps on overflow, and division and remainder also trap on a zero divisor.
 // A String is two words, a pointer to its UTF-8 bytes and their length; stage0
 // strings are literals, passed around whole. A struct is an aggregate value
-// with a Layout (abi.md A.2); aggregates are built whole and read one field at
-// a time.
+// with a Layout (abi.md A.2); aggregates are built whole, read one field at a
+// time, and updated by copying them with one field replaced.
 
 namespace phs::mir {
 
@@ -59,6 +59,7 @@ enum class Op : u8 {
     Print,  // writes a's value and a newline to standard output
     Make,   // an aggregate from args, its fields in declaration order
     Field,  // field imm of the aggregate a
+    With,   // the aggregate a with field imm replaced by b
 };
 
 struct Inst {
@@ -66,7 +67,7 @@ struct Inst {
     Reg dst;              // invalid for a call without a value and for print
     Reg a, b;             // operands; comparisons use the operand type
     u64 imm = 0;          // Const: the value, sign-extended for signed types; Str: index into Program::strings;
-                          // Field: the field's declaration index
+                          // Field, With: the field's declaration index
     u32 callee = 0;       // Call: function index
     std::vector<Reg> args;  // Call: arguments in parameter order; Make: field values
 };

@@ -265,6 +265,17 @@ fun main(): Int {
     const auto stop = g.dump("struct P(x: Int, y: Int)\nfun stop(): Never {\n    loop {}\n}\n"
                              "fun main(): Int {\n    let p = P(x: 1, y: stop())\n    return p.x\n}\n");
     CHECK(stop.contains("    call @stop()\n    unreachable\n") && !stop.contains("make"));
+    // Field assignment rebuilds each enclosing struct from the outside in.
+    Frontend h;
+    const auto with = h.dump("struct P(var x: Int, var y: Int)\nstruct L(var a: P, var b: P)\n"
+                             "fun main(): Int {\n    var l = L(a: P(x: 1, y: 2), b: P(x: 3, y: 4))\n"
+                             "    l.b.y += 10\n    return l.b.y\n}\n");
+    CHECK(with.contains("    %8: @P = field %7, b\n    %9: i64 = field %8, y\n    %10: i64 = const 10\n"
+                        "    %11: i64 = add %9, %10\n    %12: @P = field %7, b\n    %12: @P = with %12, y, %11\n"
+                        "    %7: @L = with %7, b, %12\n"));
+    CHECK(result("struct P(var x: Int8, var y: Int)\nfun main(): Int {\n    var p = P(x: 1, y: 2)\n    let q = p\n"
+                 "    p.x = -5\n    p.y *= 3\n    return Int(p.x) * 100 + p.y * 10 + Int(q.x)\n}\n") == -500 + 60 + 1);
+    CHECK(traps("struct P(var x: UInt8)\nfun main(): Int {\n    var p = P(x: 0)\n    p.x -= 1\n    return 0\n}\n"));
     // Field values trap like any other arithmetic.
     CHECK(traps("struct P(x: Int8)\nfun main(): Int {\n    let p = P(x: 127)\n    return Int(P(x: p.x + 1).x)\n}\n"));
 }

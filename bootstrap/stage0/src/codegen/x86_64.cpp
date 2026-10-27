@@ -610,11 +610,25 @@ private:
         } else copy(RBP, slot(inst.dst), RBP, at, size(type));
     }
 
+    // A copy of the aggregate with one field replaced; in place when dst is a.
+    void with(const mir::Inst& inst) {
+        const Type type = fun_->regs[inst.a.id];
+        const auto& layout = program_.layouts[mir::layout_index(type)];
+        if (inst.dst != inst.a) copy(RBP, slot(inst.dst), RBP, slot(inst.a), size(type));
+        const i32 at = slot(inst.dst) + static_cast<i32>(layout.offsets[inst.imm]);
+        const Type field = layout.fields[inst.imm];
+        if (scalar(field)) {
+            as_.load(RAX, slot(inst.b));
+            as_.store_bytes(RBP, at, RAX, size(field));
+        } else copy(RBP, at, RBP, slot(inst.b), size(field));
+    }
+
     void instruction(const mir::Inst& inst) {
         if (inst.op == Op::Call) return call(inst);
         if (inst.op == Op::Print) return print(inst);
         if (inst.op == Op::Make) return make(inst);
         if (inst.op == Op::Field) return field(inst);
+        if (inst.op == Op::With) return with(inst);
         const Type type = fun_->regs[inst.dst.id];
         if (mir::is_aggregate(type)) {
             PHS_ASSERT(inst.op == Op::Copy);
@@ -667,7 +681,7 @@ private:
                 as_.setcc(compare(inst.op, sign));
                 break;
             }
-            case Op::Call: case Op::Str: case Op::Print: case Op::Make: case Op::Field: break;
+            case Op::Call: case Op::Str: case Op::Print: case Op::Make: case Op::Field: case Op::With: break;
         }
         as_.store(slot(inst.dst), RAX);
     }

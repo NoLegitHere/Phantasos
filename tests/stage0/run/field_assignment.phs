@@ -1,0 +1,59 @@
+// Copyright 2026 The Phantasos Authors
+// SPDX-License-Identifier: Apache-2.0
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// Assignment to fields of local structs, at any depth. A narrow field traps on
+// overflow like any other value of its type.
+
+struct Point(var x: Int, var y: Int)
+struct Flags(var on: Bool, var level: Int8, var mask: UInt16)
+struct Box(var min: Point, var max: Point, var flags: Flags, var name: String)
+
+fun main(): Int {
+    var p = Point(x: 1, y: 2)
+    p.x = 10
+    p.y += 5
+    print(p.x)
+    print(p.y)
+    var b = Box(min: p, max: Point(x: 3, y: 4), flags: Flags(on: false, level: -1, mask: 7), name: "box")
+    b.max.y = 40
+    b.flags.level -= 100
+    b.flags.on = true
+    b.flags.mask *= 1000
+    b.min = Point(x: -1, y: -2)
+    b.name = "renamed"
+    print(b.max.y)
+    print(Int(b.flags.level))
+    print(b.flags.on)
+    print(UInt(b.flags.mask))
+    print(b.min.x + b.min.y)
+    print(b.name)
+    print(p.x)
+    var i = 0
+    while i < 5 {
+        b.max.x += i
+        i += 1
+    }
+    print(b.max.x)
+    // The field is read before the value runs; the result lands in the
+    // struct the local holds afterwards.
+    p.x += if true {
+        p = Point(x: 100, y: 200)
+        1
+    } else { 0 }
+    print(p.x)
+    print(p.y)
+    b.flags.level -= 100   // -201 does not fit Int8
+    return 0
+}

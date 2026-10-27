@@ -366,7 +366,8 @@ struct Generator {
 
     // A struct of random fields, built from labels in a random order, passed
     // after a random number of words so that it lands in registers, on the
-    // stack or behind a pointer, and returned the same ways.
+    // stack or behind a pointer, returned the same ways, and updated one
+    // field at a time, sometimes with checked arithmetic that may trap.
     std::string struct_program() {
         const usize fields = 1 + pick(5), pad = pick(6);
         std::vector<const Kind*> kinds;
@@ -380,8 +381,8 @@ struct Generator {
             return text + ')';
         };
         std::string source = "struct S(";
-        for (usize i = 0; i < fields; ++i) source += std::format("{}f{}: {}", i ? ", " : "", i, kinds[i]->name);
-        source += ")\nfun step(";
+        for (usize i = 0; i < fields; ++i) source += std::format("{}var f{}: {}", i ? ", " : "", i, kinds[i]->name);
+        source += ")\nstruct T(var s: S, var n: Int)\nfun step(";
         for (usize i = 0; i < pad; ++i) source += std::format("w{}: Int, ", i);
         source += "s: S, last: Int): S = ";
         source += make([&](usize i) { return std::format("s.f{} &+ {}", i, literal(*kinds[i])); });
@@ -394,7 +395,13 @@ struct Generator {
             for (usize i = 0; i < pad; ++i) source += std::format("{}, ", i);
             source += "s, 7)";
         }
-        return source + "\n    return mix(s)\n}\n";
+        source += "\n    var t = T(s: s, n: 1)";
+        for (usize i = pick(4); i-- > 0;) {
+            const usize f = pick(fields - 1);
+            const auto* op = pick(2) == 0 ? "+=" : pick(1) ? "&=" : "=";
+            source += std::format("\n    {}.f{} {} {}", pick(1) ? "s" : "t.s", f, op, literal(*kinds[f]));
+        }
+        return source + "\n    return mix(s) &+ mix(t.s)\n}\n";
     }
 };
 

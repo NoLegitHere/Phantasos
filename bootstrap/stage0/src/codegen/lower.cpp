@@ -299,6 +299,7 @@ private:
             }
             case StmtKind::Assign: {
                 const auto& assign = *cast<AssignStmt>(&stmt);
+                if (const auto* member = as<MemberExpr>(assign.target)) return assign_field(assign, *member);
                 const Reg dst = local(*cast<NameExpr>(assign.target));
                 if (assign.op == AssignOp::Assign) {
                     copy(dst, any(assign.value));
@@ -351,6 +352,39 @@ private:
                 return;
             }
             default: PHS_ASSERT(false && "statement outside the code generation subset");
+        }
+    }
+
+    // A field of a local struct, possibly nested: the new value is built into
+    // each enclosing struct in turn, from the local's value after the assigned
+    // value was evaluated. Compound assignment reads the field first.
+    void assign_field(const AssignStmt& assign, const MemberExpr& target) {
+        Reg src;
+        if (assign.op == AssignOp::Assign) src = any(assign.value);
+        else {
+            const Reg old = value(&target);
+            const Reg rhs = any(assign.value);
+            if (rhs.valid()) {
+                src = reg(fun_->regs[old.id]);
+                emit({.op = assign_op(assign.op), .dst = src, .a = old, .b = rhs});
+            }
+        }
+        // A diverging value has already ended the block.
+        if (!src.valid()) return;
+        std::vector<const MemberExpr*> path{&target};
+        while (const auto* outer = as<MemberExpr>(unparen(path.back()->base))) path.push_back(outer);
+        const Reg root = local(*cast<NameExpr>(unparen(path.back()->base)));
+        // Read each enclosing struct from the outside in, then rebuild them.
+        std::vector<Reg> owners{root};
+        for (usize i = path.size(); i-- > 1;) {
+            const Reg inner = reg(lower_type(scalar(path[i])));
+            emit({.op = Op::Field, .dst = inner, .a = owners.back(), .imm = field(*path[i])});
+            owners.push_back(inner);
+        }
+        for (usize i = 0; i < path.size(); ++i) {
+            const Reg owner = owners[owners.size() - 1 - i];
+            emit({.op = Op::With, .dst = owner, .a = owner, .b = src, .imm = field(*path[i])});
+            src = owner;
         }
     }
 

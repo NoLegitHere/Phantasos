@@ -15,6 +15,7 @@
 
 #include "test_support.hpp"
 
+#include <algorithm>
 #include <cstring>
 #include <format>
 #include <random>
@@ -283,6 +284,30 @@ fun main(): Int {
     agrees("fun minus(): Int = -1\nfun main(): Int = (-9223372036854775807 - 1) % minus()\n");
     agrees("fun minus(): Int16 = -1\nfun main(): Int = Int(Int16(-32768) / minus())\n");
     agrees("fun main(): Int {\n    let x: Int32 = -2147483647 - 1\n    return Int(-x)\n}\n");
+    // Structs: narrow fields, nesting, Strings, passing and returning every way.
+    agrees(R"(
+struct Flags(on: Bool, level: Int8, mask: UInt16, wide: Int32)
+struct Point(x: Int, y: Int)
+struct Box(min: Point, max: Point, flags: Flags)
+struct Text(label: String, size: Int)
+fun flags(level: Int8): Flags = Flags(wide: -100000, mask: 65535, level: level, on: level < 0)
+fun corner(b: Box): Point = b.max
+fun swap(b: Box): Box = Box(min: b.max, max: b.min, flags: b.flags)
+fun late(a: Int, b: Int, c: Int, d: Int, e: Int, p: Point, f: Int, b2: Box, t: Text): Int =
+    a + b + c + d + e + p.x * p.y + f + b2.min.x + t.size + Int(b2.flags.level)
+fun deep(n: Int, b: Box): Box {
+    if n == 0 { return b }
+    return deep(n - 1, Box(min: b.min, max: Point(x: b.max.x + 1, y: b.max.y), flags: b.flags))
+}
+fun main(): Int {
+    let box = swap(Box(min: Point(x: 1, y: 2), max: Point(x: 3, y: 4), flags: flags(-7)))
+    let far = deep(20, box)
+    var total = corner(far).x * 1000 + Int(far.flags.mask) + Int(far.flags.wide)
+    if far.flags.on { total += late(1, 2, 3, 4, 5, corner(box), 6, far, Text(label: "t", size: 9)) }
+    return total
+}
+)");
+    agrees("struct P(x: Int8, y: Int8)\nfun main(): Int {\n    let p = P(x: 100, y: 27)\n    let q = P(x: p.x + p.y, y: p.x + 28)\n    return Int(q.x)\n}\n");
     agrees("fun boom(): Bool = 1 / 0 == 1\nfun main(): Int {\n    let a = false && boom()\n    let b = true || boom()\n    if a || !b { return 1 }\n    return 0\n}\n");
 }
 
@@ -338,11 +363,45 @@ struct Generator {
         source += ")\n    return Int.truncating(r)\n}\n";
         return source;
     }
+
+    // A struct of random fields, built from labels in a random order, passed
+    // after a random number of words so that it lands in registers, on the
+    // stack or behind a pointer, and returned the same ways.
+    std::string struct_program() {
+        const usize fields = 1 + pick(5), pad = pick(6);
+        std::vector<const Kind*> kinds;
+        for (usize i = 0; i < fields; ++i) kinds.push_back(&kKinds[pick(std::size(kKinds) - 1)]);
+        const auto make = [&](const auto& value) {
+            std::vector<usize> order(fields);
+            for (usize i = 0; i < fields; ++i) order[i] = i;
+            std::shuffle(order.begin(), order.end(), rng);
+            std::string text = "S(";
+            for (usize i = 0; i < fields; ++i) text += std::format("{}f{}: {}", i ? ", " : "", order[i], value(order[i]));
+            return text + ')';
+        };
+        std::string source = "struct S(";
+        for (usize i = 0; i < fields; ++i) source += std::format("{}f{}: {}", i ? ", " : "", i, kinds[i]->name);
+        source += ")\nfun step(";
+        for (usize i = 0; i < pad; ++i) source += std::format("w{}: Int, ", i);
+        source += "s: S, last: Int): S = ";
+        source += make([&](usize i) { return std::format("s.f{} &+ {}", i, literal(*kinds[i])); });
+        source += "\nfun mix(s: S): Int {\n    var h = 0\n";
+        for (usize i = 0; i < fields; ++i) source += std::format("    h = h &* 31 &+ Int.truncating(s.f{})\n", i);
+        source += "    return h\n}\nfun main(): Int {\n    var s = ";
+        source += make([&](usize i) { return literal(*kinds[i]); });
+        for (int round = 0; round < 2; ++round) {
+            source += "\n    s = step(";
+            for (usize i = 0; i < pad; ++i) source += std::format("{}, ", i);
+            source += "s, 7)";
+        }
+        return source + "\n    return mix(s)\n}\n";
+    }
 };
 
 void random_expressions() {
     Generator generator;
     for (int i = 0; i < 400; ++i) agrees(generator.program());
+    for (int i = 0; i < 200; ++i) agrees(generator.struct_program());
 }
 }  // namespace
 

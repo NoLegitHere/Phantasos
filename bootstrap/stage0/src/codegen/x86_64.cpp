@@ -37,11 +37,14 @@ constexpr Reg kArgs[] = {RDI, RSI, RDX, RCX, R8, R9};
 
 // Where a value is passed: System V gives each word an integer register while
 // they last, but a two-word value takes two registers or goes on the stack
-// whole. Stack words count up from the first stack argument.
+// whole. A value over two words is passed by address (abi.md A.6), and a
+// result over two words is returned through a hidden pointer in the first
+// argument register. Stack words count up from the first stack argument.
 struct Place {
     u32 words = 1;
     i32 reg = -1;    // first register in kArgs, or -1 on the stack
     u32 stack = 0;   // first stack word when on the stack
+    bool address = false;  // the word is a pointer to the value
 };
 
 struct Places {
@@ -49,11 +52,14 @@ struct Places {
     u32 stack_words = 0;
 };
 
-Places places(const std::vector<mir::Type>& types) {
+bool indirect(const mir::Program& program, Type type) { return mir::words(program, type) > 2; }
+
+Places places(const mir::Program& program, const std::vector<mir::Type>& types, bool indirect_result) {
     Places out;
-    u32 next = 0;
+    u32 next = indirect_result ? 1 : 0;
     for (const auto type : types) {
-        Place place{mir::words(type)};
+        Place place{mir::words(program, type)};
+        if (indirect(program, type)) place = {.words = 1, .address = true};
         if (next + place.words <= std::size(kArgs)) {
             place.reg = static_cast<i32>(next);
             next += place.words;
@@ -329,6 +335,50 @@ public:
         end(start, std::format("mov byte [{}], {}", name(base), kByte[src]));
     }
 
+
+    // ------------------------------------------------------------ aggregates
+
+    // Loads a value of type from memory into dst, sign- or zero-extended to 64 bits.
+    void load_field(Reg dst, Reg base, i32 offset, Type type) {
+        const auto at = address(base, offset);
+        switch (type) {
+            case Type::I8: memop(true, {0x0F, 0xBE}, dst, base, offset, std::format("movsx {}, byte {}", name(dst), at)); break;
+            case Type::I16: memop(true, {0x0F, 0xBF}, dst, base, offset, std::format("movsx {}, word {}", name(dst), at)); break;
+            case Type::I32: memop(true, {0x63}, dst, base, offset, std::format("movsxd {}, dword {}", name(dst), at)); break;
+            case Type::Bool: case Type::U8: load_bytes(dst, base, offset, 1); break;
+            case Type::U16: load_bytes(dst, base, offset, 2); break;
+            case Type::U32: load_bytes(dst, base, offset, 4); break;
+            default: load_bytes(dst, base, offset, 8); break;
+        }
+    }
+    // Loads 1, 2, 4 or 8 bytes from memory into dst, zero-extended.
+    void load_bytes(Reg dst, Reg base, i32 offset, u32 bytes) {
+        const auto at = address(base, offset);
+        switch (bytes) {
+            case 1: memop(false, {0x0F, 0xB6}, dst, base, offset, std::format("movzx {}, byte {}", kDword[dst], at)); break;
+            case 2: memop(false, {0x0F, 0xB7}, dst, base, offset, std::format("movzx {}, word {}", kDword[dst], at)); break;
+            case 4: memop(false, {0x8B}, dst, base, offset, std::format("mov {}, dword {}", kDword[dst], at)); break;
+            default: memop(true, {0x8B}, dst, base, offset, std::format("mov {}, qword {}", name(dst), at)); break;
+        }
+    }
+    // Stores the low 1, 2, 4 or 8 bytes of src.
+    void store_bytes(Reg base, i32 offset, Reg src, u32 bytes) {
+        const auto at = address(base, offset);
+        switch (bytes) {
+            case 1: memop(false, {0x88}, src, base, offset, std::format("mov byte {}, {}", at, kByte[src]), true); break;
+            case 2:
+                byte(0x66);
+                memop(false, {0x89}, src, base, offset, std::format("mov word {}, {}", at, kWord[src]), false, 1);
+                break;
+            case 4: memop(false, {0x89}, src, base, offset, std::format("mov dword {}, {}", at, kDword[src])); break;
+            default: memop(true, {0x89}, src, base, offset, std::format("mov qword {}, {}", at, name(src))); break;
+        }
+    }
+    // lea dst, [base + offset]
+    void lea(Reg dst, Reg base, i32 offset) {
+        memop(true, {0x8D}, dst, base, offset, std::format("lea {}, {}", name(dst), address(base, offset)));
+    }
+
 private:
     static constexpr u64 kUnplaced = std::numeric_limits<u64>::max();
     struct Line {
@@ -375,6 +425,25 @@ private:
         put(static_cast<u32>(offset));
         end(start, std::move(text));
     }
+    static std::string address(Reg base, i32 offset) {
+        if (base == RBP) return disp(offset);
+        if (offset == 0) return std::format("[{}]", name(base));
+        return offset < 0 ? std::format("[{}-{}]", name(base), -offset) : std::format("[{}+{}]", name(base), offset);
+    }
+    // [base + disp32] operand for a base other than rsp and r12, which would need
+    // a SIB byte. A byte register above bl needs a REX prefix to be addressed;
+    // prefixed counts bytes already emitted for this instruction.
+    void memop(bool wide, std::initializer_list<u8> opcode, Reg reg, Reg base, i32 offset, std::string text,
+               bool byte_reg = false, u64 prefixed = 0) {
+        PHS_ASSERT((base & 7) != RSP);
+        const auto start = begin() - prefixed;
+        const u8 prefix = static_cast<u8>(0x40 | (wide ? 8 : 0) | (reg >= 8 ? 4 : 0) | (base >= 8 ? 1 : 0));
+        if (prefix != 0x40 || (byte_reg && reg >= RSP)) byte(prefix);
+        for (const u8 b : opcode) byte(b);
+        byte(static_cast<u8>(0x80 | (reg & 7) << 3 | (base & 7)));
+        put(static_cast<u32>(offset));
+        end(start, std::move(text));
+    }
     void branch(std::initializer_list<u8> opcode, Label target, std::string mnemonic) {
         const auto start = begin();
         for (const u8 b : opcode) byte(b);
@@ -406,7 +475,8 @@ public:
     std::string listing() const { return as_.render(); }
 
 private:
-    // A register's first word; a String's length follows 8 bytes above it.
+    // A register's lowest address: a String's length and a struct's later
+    // bytes lie above it.
     i32 slot(mir::Reg r) const { return slots_[r.id]; }
 
     void function(u32 index) {
@@ -428,22 +498,36 @@ private:
         slots_.clear();
         i32 used = 0;
         for (const auto type : fun.regs) {
-            used += 8 * static_cast<i32>(std::max(mir::words(type), 1u));
+            used += 8 * static_cast<i32>(std::max(words(type), 1u));
             slots_.push_back(-used);
+        }
+        const bool sret = indirect(program_, fun.result);
+        if (sret) {
+            used += 8;
+            result_ = -used;
         }
         as_.prologue();
         const auto frame = (used + 15) / 16 * 16;
         if (frame) as_.adjust_rsp(-frame);
-        const auto params = places(std::vector<Type>(fun.regs.begin(), fun.regs.begin() + fun.params));
+        if (sret) as_.store(result_, RDI);
+        const auto params = places(program_, std::vector<Type>(fun.regs.begin(), fun.regs.begin() + fun.params), sret);
+        // Registers first, so that copying a value passed by address cannot clobber them.
         for (u32 p = 0; p < fun.params; ++p) {
             const auto& place = params.values[p];
-            for (u32 w = 0; w < place.words; ++w) {
-                const i32 at = slot({p}) + 8 * static_cast<i32>(w);
-                if (place.reg >= 0) as_.store(at, kArgs[place.reg + w]);
-                else {
-                    // Stack arguments sit above the return address and saved rbp.
-                    as_.load(RAX, 16 + 8 * static_cast<i32>(place.stack + w));
-                    as_.store(at, RAX);
+            for (u32 w = 0; place.reg >= 0 && w < place.words; ++w)
+                as_.store(slot({p}) + 8 * static_cast<i32>(w), kArgs[place.reg + w]);
+        }
+        for (u32 p = 0; p < fun.params; ++p) {
+            const auto& place = params.values[p];
+            // Stack arguments sit above the return address and saved rbp.
+            const auto stack = [&](u32 w) { return 16 + 8 * static_cast<i32>(place.stack + w); };
+            if (place.address) {
+                as_.load(RSI, place.reg >= 0 ? slot({p}) : stack(0));
+                copy(RBP, slot({p}), RSI, 0, size(fun.regs[p]));
+            } else if (place.reg < 0) {
+                for (u32 w = 0; w < place.words; ++w) {
+                    as_.load(RAX, stack(w));
+                    as_.store(slot({p}) + 8 * static_cast<i32>(w), RAX);
                 }
             }
         }
@@ -486,10 +570,56 @@ private:
         overflow(NE);
     }
 
+    u32 size(Type type) const { return mir::size_of(program_, type); }
+    u32 words(Type type) const { return mir::words(program_, type); }
+
+    // Copies bytes from [src + from] to [dst + to] through rax.
+    void copy(Reg dst, i32 to, Reg src, i32 from, u32 bytes) {
+        for (u32 done = 0; done < bytes;) {
+            const u32 left = bytes - done;
+            const u32 chunk = left >= 8 ? 8 : left >= 4 ? 4 : left >= 2 ? 2 : 1;
+            as_.load_bytes(RAX, src, from + static_cast<i32>(done), chunk);
+            as_.store_bytes(dst, to + static_cast<i32>(done), RAX, chunk);
+            done += chunk;
+        }
+    }
+
+    // Scalars sit in their slots as normalized 64-bit values; inside an
+    // aggregate they take their natural size.
+    static bool scalar(Type type) { return type != Type::Str && !mir::is_aggregate(type); }
+
+    void make(const mir::Inst& inst) {
+        const auto& layout = program_.layouts[mir::layout_index(fun_->regs[inst.dst.id])];
+        for (usize i = 0; i < inst.args.size(); ++i) {
+            const i32 at = slot(inst.dst) + static_cast<i32>(layout.offsets[i]);
+            const Type type = layout.fields[i];
+            if (scalar(type)) {
+                as_.load(RAX, slot(inst.args[i]));
+                as_.store_bytes(RBP, at, RAX, size(type));
+            } else copy(RBP, at, RBP, slot(inst.args[i]), size(type));
+        }
+    }
+
+    void field(const mir::Inst& inst) {
+        const auto& layout = program_.layouts[mir::layout_index(fun_->regs[inst.a.id])];
+        const i32 at = slot(inst.a) + static_cast<i32>(layout.offsets[inst.imm]);
+        const Type type = layout.fields[inst.imm];
+        if (scalar(type)) {
+            as_.load_field(RAX, RBP, at, type);
+            as_.store(slot(inst.dst), RAX);
+        } else copy(RBP, slot(inst.dst), RBP, at, size(type));
+    }
+
     void instruction(const mir::Inst& inst) {
         if (inst.op == Op::Call) return call(inst);
         if (inst.op == Op::Print) return print(inst);
+        if (inst.op == Op::Make) return make(inst);
+        if (inst.op == Op::Field) return field(inst);
         const Type type = fun_->regs[inst.dst.id];
+        if (mir::is_aggregate(type)) {
+            PHS_ASSERT(inst.op == Op::Copy);
+            return copy(RBP, slot(inst.dst), RBP, slot(inst.a), size(type));
+        }
         if (type == Type::Str) return string(inst);
         const Type operand = inst.a.valid() ? fun_->regs[inst.a.id] : type;
         const bool sign = mir::is_signed(operand);
@@ -537,7 +667,7 @@ private:
                 as_.setcc(compare(inst.op, sign));
                 break;
             }
-            case Op::Call: case Op::Str: case Op::Print: break;
+            case Op::Call: case Op::Str: case Op::Print: case Op::Make: case Op::Field: break;
         }
         as_.store(slot(inst.dst), RAX);
     }
@@ -613,7 +743,8 @@ private:
     void call(const mir::Inst& inst) {
         std::vector<Type> types;
         for (const auto arg : inst.args) types.push_back(fun_->regs[arg.id]);
-        const auto args = places(types);
+        const bool sret = indirect(program_, program_.functions[inst.callee].result);
+        const auto args = places(program_, types, sret);
         // rsp stays 16-byte aligned at the call.
         const i32 pad = args.stack_words % 2 ? 8 : 0;
         if (pad) as_.adjust_rsp(-pad);
@@ -621,20 +752,26 @@ private:
             const auto& place = args.values[i];
             if (place.reg >= 0) continue;
             for (u32 w = place.words; w-- > 0;) {
-                as_.load(RAX, slot(inst.args[i]) + 8 * static_cast<i32>(w));
+                if (place.address) as_.lea(RAX, RBP, slot(inst.args[i]));
+                else as_.load(RAX, slot(inst.args[i]) + 8 * static_cast<i32>(w));
                 as_.push(RAX);
             }
         }
         for (usize i = 0; i < inst.args.size(); ++i) {
             const auto& place = args.values[i];
-            for (u32 w = 0; place.reg >= 0 && w < place.words; ++w)
-                as_.load(kArgs[place.reg + w], slot(inst.args[i]) + 8 * static_cast<i32>(w));
+            if (place.reg < 0) continue;
+            if (place.address) as_.lea(kArgs[place.reg], RBP, slot(inst.args[i]));
+            else
+                for (u32 w = 0; w < place.words; ++w)
+                    as_.load(kArgs[place.reg + w], slot(inst.args[i]) + 8 * static_cast<i32>(w));
         }
+        // The callee writes a large result straight into its register's slot.
+        if (sret) as_.lea(RDI, RBP, slot(inst.dst));
         as_.call(inst.callee);
         if (const auto cleanup = static_cast<i32>(8 * args.stack_words) + pad) as_.adjust_rsp(cleanup);
-        if (!inst.dst.valid()) return;
+        if (!inst.dst.valid() || sret) return;
         as_.store(slot(inst.dst), RAX);
-        if (fun_->regs[inst.dst.id] == Type::Str) as_.store(slot(inst.dst) + 8, RDX);
+        if (words(fun_->regs[inst.dst.id]) == 2) as_.store(slot(inst.dst) + 8, RDX);
     }
 
     void terminator(const mir::Block& block, u32 index) {
@@ -654,8 +791,16 @@ private:
                 break;
             case Term::Ret:
                 if (block.value.valid()) {
-                    as_.load(RAX, slot(block.value));
-                    if (fun_->regs[block.value.id] == Type::Str) as_.load(RDX, slot(block.value) + 8);
+                    const Type type = fun_->regs[block.value.id];
+                    if (indirect(program_, type)) {
+                        // Copy to *ret* and return its address.
+                        as_.load(RDX, result_);
+                        copy(RDX, 0, RBP, slot(block.value), size(type));
+                        as_.mov(RAX, RDX);
+                    } else {
+                        as_.load(RAX, slot(block.value));
+                        if (words(type) == 2) as_.load(RDX, slot(block.value) + 8);
+                    }
                 }
                 as_.epilogue();
                 break;
@@ -668,6 +813,7 @@ private:
     Assembler as_;
     const mir::Function* fun_ = nullptr;
     std::vector<i32> slots_;
+    i32 result_ = 0;  // the slot holding a large result's destination address
     std::unordered_map<std::string_view, u32> runtime_;  // print entries by name
     std::vector<Assembler::Label> blocks_;
     Assembler::Label overflow_ = 0, divide_ = 0;

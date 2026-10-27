@@ -947,31 +947,41 @@ stored-field initialization and global initialization order.
 ## 3.25 Stage0 code generation subset
 
 This section describes an implementation limit of stage0, not a language rule.
-Stage0's first native backend lowers only a scalar subset. The `gate` command
+Stage0's first native backend lowers only a subset of scalars and plain
+structs. The `gate` command
 runs `check` first. If `check` succeeds, `gate` reports every construct outside
 the subset, so that nothing half-checked reaches code generation:
 
-- **Declarations.** Only top-level functions with a body. They cannot be
-  generic, `async`, `unsafe` or throwing, and cannot carry attributes. Their
-  parameters use the default convention and have no defaults.
+- **Declarations.** Top-level functions with a body, and plain structs. A
+  function cannot be generic, `async`, `unsafe` or throwing, and cannot carry
+  attributes. Its parameters use the default convention and have no
+  defaults. A plain struct takes all its fields, at least one, from its
+  primary constructor, without conventions or defaults. It has no generic
+  parameters, attributes, conformances or body members (methods, body
+  fields, `init` or `deinit`), and it cannot hold itself through its fields,
+  directly or through other structs.
 - **Types.** `Bool`, `Int8` to `Int64`, `UInt8` to `UInt64`, `Int`, `UInt`,
   `String`, `Unit` and `Never`, without optional wrappers. Parameters and
   locals need one of the value types, so they cannot be `Unit` or `Never`.
   `String` values come from literals and are only passed around whole: as
-  locals, arguments and results.
+  locals, arguments, results and fields. A plain struct whose fields all have
+  value types of the subset is a value type too; a struct with a field of
+  any other type is rejected along with the field.
 - **Statements.** `let` and `var` locals, with or without an initializer;
   assignment and compound assignment to locals; `if`, `while`, `loop`, `break`,
   `continue` and `return`.
 - **Expressions.** Integer, Boolean and string literals, `()`, local and
   parameter names, parentheses, direct calls to top-level functions, `print`
-  (3.27), integer conversions, unary `-`, `!` and `~`, arithmetic including
+  (3.27), integer conversions, primary constructors of supported structs,
+  reads of their fields, unary `-`, `!` and `~`, arithmetic including
   the wrapping forms, `&`, `|`, `^`, comparisons, `&&` and `||`. Used `if` and block
   results are allowed where their type is known (3.24).
 
 Everything else reports `E0600`. That includes shifts, `for`, `defer`,
 `throw`, `match`, `unsafe` blocks, operators on strings, string interpolation,
 floating-point values, arrays,
-optionals, types and members, globals, and function values. A local whose
+optionals, classes, enums, interfaces, members other than struct fields,
+assignment to fields, globals, and function values. A local whose
 type is still deferred also reports `E0600` and needs an annotation. One
 `E0600` is reported per construct, and uses of a rejected local are not
 reported again.
@@ -1005,7 +1015,8 @@ argument register: 1 for overflow and 2 for division by zero. The signed
 minimum divided by `-1` is an overflow. `__phantasos_trap` does not return.
 Functions use the System V AMD64 calling convention and get the symbol
 `_P<length><name>` for their MIR name, so `fib` becomes `_P3fib` and an
-overload named `sub.1` becomes `_P5sub.1`. `phantasos-stage0 asm <file>` prints the code as a
+overload named `sub.1` becomes `_P5sub.1`. Struct values use the layout of
+abi.md A.2 and are passed as A.6 describes. `phantasos-stage0 asm <file>` prints the code as a
 listing. These names and codes are a stage0 detail, not a stable ABI.
 
 On Linux x86_64, stage0 links a program into a static ELF executable with a

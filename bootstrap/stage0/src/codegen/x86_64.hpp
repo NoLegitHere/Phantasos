@@ -29,7 +29,10 @@
 // rest on the stack, and the result in rax. A String takes two slots and is
 // passed like a 16-byte struct: in two consecutive argument registers if both
 // are free, otherwise both words on the stack, and returned in rax:rdx. String
-// literals live in .rodata.
+// literals live in .rodata. A struct lies in its slots with the layout of
+// abi.md A.2, narrow fields at their own size. Up to two words it travels like
+// a String; a larger one is passed by address and copied in by the callee,
+// and a larger result is written through a hidden pointer in rdi.
 //
 // A failed check calls the runtime's trap entry with a Trap code in edi; the
 // entry does not return.

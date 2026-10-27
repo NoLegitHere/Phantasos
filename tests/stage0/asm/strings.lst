@@ -7,11 +7,11 @@ _P4last:  ; last
     0019  488995e8ffffff         mov qword [rbp-24], rdx
     0020  48898de0ffffff         mov qword [rbp-32], rcx
     0027  4c8985d8ffffff         mov qword [rbp-40], r8
-    002e  488b8510000000         mov rax, qword [rbp+16]
-    0035  488985c8ffffff         mov qword [rbp-56], rax
-    003c  488b8518000000         mov rax, qword [rbp+24]
-    0043  488985d0ffffff         mov qword [rbp-48], rax
-    004a  4c898dc0ffffff         mov qword [rbp-64], r9
+    002e  4c898dc0ffffff         mov qword [rbp-64], r9
+    0035  488b8510000000         mov rax, qword [rbp+16]
+    003c  488985c8ffffff         mov qword [rbp-56], rax
+    0043  488b8518000000         mov rax, qword [rbp+24]
+    004a  488985d0ffffff         mov qword [rbp-48], rax
   bb0:  ; .L0
     0051  488b85c8ffffff         mov rax, qword [rbp-56]
     0058  488b95d0ffffff         mov rdx, qword [rbp-48]

@@ -30,7 +30,8 @@ using mir::Type;
 
 // A reference interpreter for MIR semantics: checked operations trap. Stage0
 // strings are literals passed whole, so a String value is its index in
-// Program::strings.
+// Program::strings. An aggregate value is an index into a pool of immutable
+// field lists, which Copy and Call share freely.
 struct Outcome {
     bool trapped = false;
     u64 value = 0;
@@ -57,6 +58,7 @@ public:
     Outcome run() { return run(program_.main); }
     Outcome run(u32 function) {
         output_.clear();
+        aggregates_.clear();
         auto outcome = call(function, {});
         outcome.output = output_;
         return outcome;
@@ -79,6 +81,27 @@ private:
                     const auto result = call(inst.callee, std::move(values));
                     if (result.trapped) return result;
                     if (inst.dst.valid()) regs[inst.dst.id] = result.value;
+                    continue;
+                }
+                if (inst.op == Op::Make) {
+                    const Type type = fun.regs[inst.dst.id];
+                    CHECK(mir::is_aggregate(type));
+                    const auto& layout = program_.layouts[mir::layout_index(type)];
+                    CHECK(inst.args.size() == layout.fields.size());
+                    std::vector<u64> fields;
+                    for (usize i = 0; i < inst.args.size(); ++i) {
+                        CHECK(fun.regs[inst.args[i].id] == layout.fields[i]);
+                        fields.push_back(regs[inst.args[i].id]);
+                    }
+                    aggregates_.push_back(std::move(fields));
+                    regs[inst.dst.id] = aggregates_.size() - 1;
+                    continue;
+                }
+                if (inst.op == Op::Field) {
+                    const Type type = fun.regs[inst.a.id];
+                    CHECK(mir::is_aggregate(type));
+                    CHECK(fun.regs[inst.dst.id] == program_.layouts[mir::layout_index(type)].fields[inst.imm]);
+                    regs[inst.dst.id] = aggregates_[regs[inst.a.id]][inst.imm];
                     continue;
                 }
                 if (inst.op == Op::Print) {
@@ -148,7 +171,7 @@ private:
                     case Op::Ge: out = sign ? sa >= sb : a >= b2; break;
                     case Op::Widen: out = a; CHECK(fits(type, a)); break;
                     case Op::Truncate: out = normalize(type, a); break;
-                    case Op::Call: case Op::Print: break;
+                    case Op::Call: case Op::Print: case Op::Make: case Op::Field: break;
                 }
                 if (trap) return {true, 0, trap};
                 regs[inst.dst.id] = out;
@@ -167,6 +190,7 @@ private:
     const mir::Program& program_;
     usize depth_ = 0;
     std::string output_;
+    std::vector<std::vector<u64>> aggregates_;
 };
 
 

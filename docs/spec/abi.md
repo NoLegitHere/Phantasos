@@ -24,6 +24,11 @@ ABI**.
 - `@repr("C")` keeps declaration order with C padding rules and is required
   for FFI.
 - Zero-sized structs take up 0 bytes inside other aggregates.
+- Field offsets follow the reordered fields, each aligned to its own
+  alignment. The struct's alignment is the largest field alignment, and its
+  size is rounded up to a multiple of it. A `String` field is two words with
+  8-byte alignment. For example, `struct Flags(on: Bool, level: Int8, mask:
+  UInt32)` puts `mask` at 0, `on` at 4 and `level` at 5, and takes 8 bytes.
 
 ## A.3 Class objects
 ```
@@ -80,6 +85,13 @@ parameters in this order:
   consecutive integer argument registers when both are free, otherwise both
   words on the stack (later scalars may still take the remaining register),
   and it returns one in `rax:rdx`. String literals live in `.rodata` (A.8).
+- Stage0 passes other structs the same way by size. A struct of up to two
+  words is passed in one or two integer registers, eightbyte by eightbyte, or
+  on the stack whole, and returned in `rax` or `rax:rdx`. A larger struct is
+  passed by address, as a `borrow` parameter; the callee copies it before use.
+  A larger result is written through `ret*` in `rdi`, and the callee returns
+  that address in `rax`. Stage0 has no floating-point fields yet, so every
+  eightbyte is of the INTEGER class.
 
 ## A.7 Symbol mangling
 ```

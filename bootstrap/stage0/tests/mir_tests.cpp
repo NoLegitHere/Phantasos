@@ -228,6 +228,47 @@ fun main(): Int {
     CHECK(!text.contains("neg") && !text.contains("not"));
 }
 
+void structs() {
+    Frontend f;
+    const auto& program = f.lower(R"(
+struct Flags(on: Bool, level: Int8, mask: UInt32)
+struct Point(x: Int, y: Int)
+struct Label(text: String, at: Point, tag: Flags)
+struct Bits(a: Bool, b: Bool, c: Bool)
+fun tagged(l: Label): Int = Int(l.tag.level) + l.at.y
+fun main(): Int {
+    let l = Label(tag: Flags(mask: 1, level: -2, on: true), text: "x", at: Point(y: 5, x: 3))
+    let bits = Bits(a: false, b: true, c: false)
+    if bits.b { return tagged(l) }
+    return 0
+}
+)");
+    // Layouts follow declaration order, nested structs first, with fields by
+    // decreasing alignment (abi.md A.2).
+    CHECK(program.layouts.size() == 4);
+    const auto& flags = program.layouts[0];
+    CHECK(flags.name == "Flags" && flags.offsets == std::vector<u32>{4, 5, 0} && flags.size == 8 && flags.align == 4);
+    const auto& label = program.layouts[2];
+    CHECK(label.name == "Label" && label.offsets == std::vector<u32>{0, 16, 32} && label.size == 40 && label.align == 8);
+    CHECK(mir::size_of(program, label.fields[1]) == 16 && mir::words(program, mir::aggregate(2)) == 5);
+    const auto& bits = program.layouts[3];
+    CHECK(bits.offsets == std::vector<u32>{0, 1, 2} && bits.size == 3 && bits.align == 1);
+    CHECK(Interpreter(program).run().value == 3);
+    const auto text = mir::dump(program);
+    CHECK(text.starts_with("struct @Flags { on: bool +4, level: i8 +5, mask: u32 +0 } size 8 align 4\n\n"));
+    // Labeled arguments run in source order and fill fields in declaration order.
+    CHECK(text.contains("    %0: u32 = const 1\n    %1: i8 = const -2\n    %2: bool = const true\n"
+                        "    %3: @Flags = make %2, %1, %0\n"));
+    CHECK(text.contains("= field %0, tag\n"));
+    // A diverging field value ends the block before the struct is made.
+    Frontend g;
+    const auto stop = g.dump("struct P(x: Int, y: Int)\nfun stop(): Never {\n    loop {}\n}\n"
+                             "fun main(): Int {\n    let p = P(x: 1, y: stop())\n    return p.x\n}\n");
+    CHECK(stop.contains("    call @stop()\n    unreachable\n") && !stop.contains("make"));
+    // Field values trap like any other arithmetic.
+    CHECK(traps("struct P(x: Int8)\nfun main(): Int {\n    let p = P(x: 127)\n    return Int(P(x: p.x + 1).x)\n}\n"));
+}
+
 void rejected_files() {
     FrontendSession session;
     const auto id = session.sources().add("mir.phs", "fun main(): Float64 = 1.0\n");
@@ -263,6 +304,7 @@ int main() {
     short_circuit();
     calls_and_order();
     writes_during_evaluation();
+    structs();
     rejected_files();
     long_trees();
     std::println("mir tests passed");

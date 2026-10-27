@@ -15,11 +15,14 @@
 
 #include "codegen/mir.hpp"
 
+#include <algorithm>
 #include <format>
+#include <numeric>
 
 namespace phs::mir {
 
-std::string_view type_name(Type type) {
+std::string type_name(const Program& program, Type type) {
+    if (is_aggregate(type)) return '@' + program.layouts[layout_index(type)].name;
     switch (type) {
         case Type::Unit: return "unit";
         case Type::Never: return "never";
@@ -33,6 +36,7 @@ std::string_view type_name(Type type) {
         case Type::U32: return "u32";
         case Type::U64: return "u64";
         case Type::Str: return "string";
+        case Type::Aggregate: break;
     }
     unreachable();
 }
@@ -48,13 +52,41 @@ u32 bit_width(Type type) {
         case Type::I32: case Type::U32: return 32;
         case Type::I64: case Type::U64: return 64;
         case Type::Str: return 128;
+        default: return 0;
     }
-    unreachable();
 }
 
-u32 words(Type type) {
-    if (type == Type::Unit || type == Type::Never) return 0;
-    return type == Type::Str ? 2 : 1;
+u32 size_of(const Program& program, Type type) {
+    if (is_aggregate(type)) return program.layouts[layout_index(type)].size;
+    if (type == Type::Bool) return 1;
+    return bit_width(type) / 8;
+}
+
+u32 align_of(const Program& program, Type type) {
+    if (is_aggregate(type)) return program.layouts[layout_index(type)].align;
+    if (type == Type::Str) return 8;
+    return std::max(size_of(program, type), 1u);
+}
+
+u32 words(const Program& program, Type type) { return (size_of(program, type) + 7) / 8; }
+
+void place_fields(const Program& program, Layout& layout) {
+    std::vector<usize> order(layout.fields.size());
+    std::iota(order.begin(), order.end(), usize{0});
+    std::ranges::stable_sort(order, [&](usize a, usize b) {
+        return align_of(program, layout.fields[a]) > align_of(program, layout.fields[b]);
+    });
+    layout.offsets.assign(layout.fields.size(), 0);
+    u32 at = 0;
+    layout.align = 1;
+    for (const usize field : order) {
+        const u32 align = align_of(program, layout.fields[field]);
+        at = (at + align - 1) / align * align;
+        layout.offsets[field] = at;
+        at += size_of(program, layout.fields[field]);
+        layout.align = std::max(layout.align, align);
+    }
+    layout.size = (at + layout.align - 1) / layout.align * layout.align;
 }
 
 namespace {
@@ -88,6 +120,8 @@ std::string_view op_name(Op op) {
         case Op::Truncate: return "truncate";
         case Op::Call: return "call";
         case Op::Print: return "print";
+        case Op::Make: return "make";
+        case Op::Field: return "field";
     }
     unreachable();
 }
@@ -117,20 +151,28 @@ std::string literal(std::string_view bytes) {
 
 std::string dump(const Program& program) {
     std::string out;
+    for (const auto& layout : program.layouts) {
+        out += std::format("struct @{} {{", layout.name);
+        for (usize i = 0; i < layout.fields.size(); ++i)
+            out += std::format("{} {}: {} +{}", i ? "," : "", layout.names[i], type_name(program, layout.fields[i]),
+                               layout.offsets[i]);
+        out += std::format(" }} size {} align {}\n\n", layout.size, layout.align);
+    }
     const auto reg = [](Reg r) { return std::format("%{}", r.id); };
+    const auto name_of = [&](Type type) { return type_name(program, type); };
     for (usize f = 0; f < program.functions.size(); ++f) {
         const auto& fun = program.functions[f];
         if (f) out += '\n';
         out += std::format("fun @{}(", fun.name);
         for (u32 p = 0; p < fun.params; ++p)
-            out += std::format("{}%{}: {}", p ? ", " : "", p, type_name(fun.regs[p]));
-        out += std::format(") -> {}{} {{\n", type_name(fun.result), f == program.main ? " entry" : "");
+            out += std::format("{}%{}: {}", p ? ", " : "", p, name_of(fun.regs[p]));
+        out += std::format(") -> {}{} {{\n", name_of(fun.result), f == program.main ? " entry" : "");
         for (usize b = 0; b < fun.blocks.size(); ++b) {
             const auto& block = fun.blocks[b];
             out += std::format("bb{}:\n", b);
             for (const auto& inst : block.insts) {
                 out += "    ";
-                if (inst.dst.valid()) out += std::format("{}: {} = ", reg(inst.dst), type_name(fun.regs[inst.dst.id]));
+                if (inst.dst.valid()) out += std::format("{}: {} = ", reg(inst.dst), name_of(fun.regs[inst.dst.id]));
                 out += op_name(inst.op);
                 switch (inst.op) {
                     case Op::Const: out += ' ' + constant(fun.regs[inst.dst.id], inst.imm); break;
@@ -140,6 +182,14 @@ std::string dump(const Program& program) {
                         for (usize a = 0; a < inst.args.size(); ++a) out += (a ? ", " : "") + reg(inst.args[a]);
                         out += ')';
                         break;
+                    case Op::Make:
+                        for (usize a = 0; a < inst.args.size(); ++a) out += (a ? ", " : " ") + reg(inst.args[a]);
+                        break;
+                    case Op::Field: {
+                        const auto& layout = program.layouts[layout_index(fun.regs[inst.a.id])];
+                        out += std::format(" {}, {}", reg(inst.a), layout.names[inst.imm]);
+                        break;
+                    }
                     default:
                         out += ' ' + reg(inst.a);
                         if (inst.b.valid()) out += ", " + reg(inst.b);

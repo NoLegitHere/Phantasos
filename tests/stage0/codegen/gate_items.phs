@@ -16,7 +16,7 @@
 // Declarations outside the subset. Bodies of unsupported signatures are not
 // reported again.
 
-struct Point(let x: Int, let y: Int) {}
+class Shape {}
 
 let limit = 3
 

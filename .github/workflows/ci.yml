@@ -55,6 +55,7 @@ jobs:
       - run: python tests/test_golden_runner.py
       - run: python tests/run_golden.py --stage0 build/stage0/phantasos-stage0
       - run: python tests/test_frontend.py --stage0 build/stage0/phantasos-stage0
+      - run: python tests/stress/profile_hierarchy.py --stage0 build/stage0/phantasos-stage0 --classes 5000
       - run: python tests/fuzz_frontend.py --stage0 build/stage0/phantasos-stage0 --cases 300
       - run: python tests/fuzz_frontend.py --stage0 build/stage0/phantasos-stage0 --command check --cases 300
       - run: python tests/fuzz_frontend.py --stage0 build/stage0/phantasos-stage0 --command gate --cases 300

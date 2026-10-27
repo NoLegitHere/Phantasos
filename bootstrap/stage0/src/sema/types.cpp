@@ -178,6 +178,8 @@ public:
                 b.kind != BindingKind::Type && b.kind != BindingKind::TypeAlias)
                 member_values_[b.scope.value][b.name.sym.id].push_back(BindingId{i});
         }
+        for (usize i = 0; i < resolution_.scopes().size(); ++i)
+            for (const auto id : resolution_.scopes()[i].bindings) scope_names_[i][resolution_.binding(id).name.sym.id].push_back(id);
         normalize_aliases();
         build_hierarchies();
         hierarchy_ready_ = true;
@@ -1955,9 +1957,12 @@ private:
             } else {
                 MemberLookup result;
                 std::vector<BindingId> types;
-                for (const auto id : resolution_.scopes()[scope.value].bindings) {
+                const auto table = scope_names_.find(scope.value);
+                if (table == scope_names_.end()) continue;
+                const auto named = table->second.find(name.id);
+                if (named == table->second.end()) continue;
+                for (const auto id : named->second) {
                     const auto& b = resolution_.binding(id);
-                    if (b.name.sym != name) continue;
                     if (b.kind == BindingKind::Type || b.kind == BindingKind::TypeAlias || b.kind == BindingKind::GenericParameter || b.kind == BindingKind::BuiltinType) types.push_back(id);
                     else if (!types_only) result.ids.push_back(id);
                 }
@@ -3796,6 +3801,7 @@ private:
     std::unordered_map<const Expr*, ExpandedType> entities_;
     std::unordered_map<usize, BindingId> member_owners_;
     std::unordered_map<usize, std::unordered_map<u32, std::vector<BindingId>>> member_values_;
+    std::unordered_map<usize, std::unordered_map<u32, std::vector<BindingId>>> scope_names_;  // each scope's bindings by name
     std::unordered_map<usize, CheckedHierarchy> hierarchies_;
     std::vector<BindingId> hierarchy_order_;
     bool hierarchy_ready_ = false;

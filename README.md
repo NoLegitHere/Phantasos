@@ -212,6 +212,16 @@ python tests/fuzz_frontend.py --stage0 build/stage0/phantasos-stage0 --command b
 python tools/license-check/license_check.py                            # license headers
 ```
 
+To time and profile `check` on large class hierarchies (deep chains, wide
+fan-out, trees and forests), build with `-DCMAKE_BUILD_TYPE=RelWithDebInfo
+"-DCMAKE_CXX_FLAGS=-fno-omit-frame-pointer"` and run:
+
+```sh
+python tests/stress/profile_hierarchy.py --stage0 build/prof/phantasos-stage0 --classes 10000,50000,200000
+python tests/stress/profile_hierarchy.py --stage0 build/prof/phantasos-stage0 --shapes chain --perf  # hottest functions (Linux perf)
+python tests/stress/gen_hierarchy.py --shape tree --classes 200000 -o big.phs                        # just the input file
+```
+
 The build separates the `phantasos-stage0` CLI from the `phantasos_frontend`
 static library (CMake alias `Phantasos::Frontend`). Link the library to reuse
 source management, diagnostics, lexing, parsing, AST dumps, structural

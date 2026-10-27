@@ -387,6 +387,13 @@ let ambiguous = add
 let generic = gen
 let convention = mutate
 let direct = inc(1)
+interface I {}
+struct S()
+fun constrained(x: Int): Int where S: I = x
+let constrainedValue = constrained
+fun one(x: Int): Int = x
+fun one(x: Bool) = one(x)
+let filtered: fun(Int) -> Int = one
 )");
     const auto init = [&](std::string_view name) { return ast::cast<ast::VarItem>(f.result.resolution->binding(f.binding(name)).item)->init; };
     const auto name = [&](Type type) { return f.result.scalar_types->type_name(type, *f.result.resolution, f.session.names()); };
@@ -407,8 +414,10 @@ let direct = inc(1)
     const auto throwing = f.type("throwing");
     CHECK(throwing.kind == Type::Function && f.result.scalar_types->descriptor(throwing)->throws);
     // Without an expected type an overload set stays deferred, as do generic
-    // functions and functions whose parameters take a convention.
-    for (std::string_view deferred : {"ambiguous", "generic", "convention"}) {
+    // functions, functions with constraints, and functions whose parameters
+    // take a convention.
+    CHECK(target(init("filtered")) == f.binding("one", BindingKind::Function));
+    for (std::string_view deferred : {"ambiguous", "generic", "convention", "constrainedValue"}) {
         CHECK(f.type(deferred) == Type::Deferred && !target(init(deferred)).valid());
     }
     // A direct call is still a direct call.
@@ -422,6 +431,12 @@ let direct = inc(1)
          DiagCode::NoMatchingCall},
         {"fun inc(x: Int): Int = x\nlet bad: Int = inc", DiagCode::ScalarTypeMismatch},
         {"fun inc(x: Int): Int = x\nlet f = inc\nlet bad = f(true)", DiagCode::NoMatchingCall},
+        // Known parameter types rule out an overload whose result is still unknown.
+        {"fun f(x: Int): Int = x\nfun f(x: Bool) = f(x)\nlet bad: fun(String) -> Int = f", DiagCode::ScalarTypeMismatch},
+        {"fun f(x: Int): Int = x\nfun f(x: Bool) = f(x)\nfun take(g: fun(String) -> Int) {}\nlet bad = take(f)",
+         DiagCode::NoMatchingCall},
+        // Overloads that differ only in labels have the same function type.
+        {"fun f(x: Int): Int = x\nfun f(y: Int): Int = y + 1\nlet bad: fun(Int) -> Int = f", DiagCode::AmbiguousCall},
     }) { Frontend bad; bad.check(test.first, {test.second}); }
 }
 }  // namespace

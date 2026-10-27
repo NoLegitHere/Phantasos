@@ -2363,8 +2363,10 @@ private:
     bool function_value_candidate(BindingId id) const {
         const auto& b = resolution_.binding(id);
         if (b.kind != BindingKind::Function || resolution_.scopes()[b.scope.value].kind != ScopeKind::File) return false;
-        if (signatures_.at(id.value).generic) return false;
-        return std::ranges::all_of(cast<FunItem>(b.item)->sig.params, [](const Param& param) {
+        const auto& sig = cast<FunItem>(b.item)->sig;
+        // Constraints are checked per call, so constrained functions wait too.
+        if (signatures_.at(id.value).generic || !sig.where.empty()) return false;
+        return std::ranges::all_of(sig.params, [](const Param& param) {
             return param.conv == Convention::Default || param.conv == Convention::Borrow;
         });
     }
@@ -2379,6 +2381,18 @@ private:
                               (!fun->sig.throws || known(descriptor.error));
         if (!complete) return std::nullopt;
         return descriptor;
+    }
+    // Whether a function's type can still turn out to be the function type
+    // target: its known parts all agree with it.
+    bool may_have_type(BindingId id, const TypeDescriptor& target) const {
+        const auto* fun = cast<FunItem>(resolution_.binding(id).item);
+        const auto& parameters = signatures_.at(id.value).parameters;
+        if (parameters.size() != target.parameters.size() || fun->sig.throws != target.throws) return false;
+        for (usize p = 0; p < parameters.size(); ++p)
+            if (known(parameters[p]) && parameters[p] != target.parameters[p]) return false;
+        const auto result = nodes_[function_nodes_.at(id.value)].value.type;
+        if (known(result) && result != target.result) return false;
+        return !fun->sig.throws || !known(function_errors_.at(id.value)) || function_errors_.at(id.value) == target.error;
     }
     Type function_value(BindingId id) {
         auto descriptor = function_descriptor(id);
@@ -2401,21 +2415,26 @@ private:
     std::optional<Value> select_function(usize index, Type expected, Span span) {
         const auto* names = overloads(index);
         if (!names || expected.kind != Type::Function || !known(expected)) return std::nullopt;
-        std::optional<BindingId> found;
+        std::vector<BindingId> found;
         bool pending = false;
         for (BindingId id : *names) {
             const auto type = function_value(id);
-            if (type == expected.scalar()) found = id;
-            else pending |= type == Type::Deferred;
+            if (type == expected.scalar()) found.push_back(id);
+            else pending |= type == Type::Deferred && may_have_type(id, *types_.descriptor(expected));
         }
-        if (!found) {
-            if (pending) return Value{};
-            const auto* name = cast<NameExpr>(unparen(nodes_[index].expr));
-            diag_.error(DiagCode::ScalarTypeMismatch, span, "no overload of '{}' has type '{}'", names_.str(name->name.sym),
-                        types_.name(expected.scalar(), resolution_, names_));
+        const auto* name = cast<NameExpr>(unparen(nodes_[index].expr));
+        if (pending) return Value{};
+        if (found.size() != 1) {
+            // Function values drop labels, so overloads that differ only in labels look alike.
+            if (found.empty())
+                diag_.error(DiagCode::ScalarTypeMismatch, span, "no overload of '{}' has type '{}'", names_.str(name->name.sym),
+                            types_.name(expected.scalar(), resolution_, names_));
+            else
+                diag_.error(DiagCode::AmbiguousCall, span, "{} overloads of '{}' have type '{}'", found.size(),
+                            names_.str(name->name.sym), types_.name(expected.scalar(), resolution_, names_));
             return Value{Type::Error};
         }
-        functions_[unparen(nodes_[index].expr)] = *found;
+        functions_[name] = found.front();
         for (usize i = index;;) {
             nodes_[i].value = {expected.scalar()};
             const auto* paren = as<ParenExpr>(nodes_[i].expr);
@@ -2842,10 +2861,11 @@ private:
             }
             if (const auto* names = overloads(index); names && target.kind == Type::Function && known(target)) {
                 bool found = false, pending = false;
+                const auto& wanted = *types_.descriptor(target);
                 for (BindingId id : *names) {
                     const auto descriptor = function_descriptor(id);
-                    found |= descriptor && *descriptor == *types_.descriptor(target);
-                    pending |= !descriptor;
+                    found |= descriptor && *descriptor == wanted;
+                    pending |= !descriptor && may_have_type(id, wanted);
                 }
                 if (found) result.lifts += target.optional_depth;
                 else if (pending) result.deferred = true;

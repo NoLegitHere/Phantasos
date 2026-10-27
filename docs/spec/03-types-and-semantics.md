@@ -558,10 +558,14 @@ and the declared or inferred result, with the function's `throws` clause;
 labels and defaults are dropped, so calls through the value are positional.
 When the name is overloaded, the expected type picks the overload whose
 function type is exactly that type, as in `let f: fun(Int8) -> Int8 = neg` or
-an argument for a function-typed parameter. `E0400` reports an expected
-function type that no overload has, and a single function whose type differs
-from the expected one. Without an expected type, an overloaded name stays
-deferred. Generic functions, methods and functions with an `inout` or `own`
+an argument for a function-typed parameter. An overload whose known parameter
+types already differ is ruled out even while its result is still being
+inferred. `E0400` reports an expected function type that no overload has, and a
+single function whose type differs from the expected one. Function values drop
+labels, so overloads that differ only in labels can share a function type; the
+expected type cannot choose between them, and `E0412` reports the ambiguity.
+Without an expected type, an overloaded name stays deferred. Generic functions,
+methods, functions with a `where` clause and functions with an `inout` or `own`
 parameter do not have plain function values yet; their names stay deferred
 too.
 

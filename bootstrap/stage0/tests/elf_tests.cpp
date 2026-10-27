@@ -27,8 +27,10 @@
 #include "codegen/elf.hpp"
 #include "codegen/x86_64.hpp"
 #include "frontend/session.hpp"
+#include "mir_interpreter.hpp"
 
 #if defined(__linux__) && defined(__x86_64__)
+#include <fcntl.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #define PHS_EXEC 1
@@ -115,7 +117,8 @@ void headers() {
     CHECK(read(image, data + 16, 8) == elf::kBaseAddress + data_offset);
     CHECK(read(image, data + 32, 8) == built.objects[1].rodata.size());
     const std::string_view rodata(reinterpret_cast<const char*>(image.data() + data_offset), built.objects[1].rodata.size());
-    CHECK(rodata == "panic: arithmetic overflow\npanic: division by zero\n");
+    CHECK(rodata == "panic: arithmetic overflow\npanic: division by zero\npanic: cannot write to standard output\n"
+                    "\ntrue\nfalse\n");
 
     // .symtab names every defined symbol, locals first.
     const u64 shoff = read(image, 40, 8);
@@ -123,7 +126,7 @@ void headers() {
     const u64 rodata_section = shoff + 2 * 64, symtab = shoff + 3 * 64, strtab = shoff + 4 * 64;
     CHECK(read(image, rodata_section + 8, 8) == 2 && read(image, rodata_section + 24, 8) == data_offset);
     CHECK(read(image, symtab + 4, 4) == 2 && read(image, strtab + 4, 4) == 3);
-    CHECK(read(image, symtab + 40, 4) == 4 && read(image, symtab + 44, 4) == 3);  // link, first global
+    CHECK(read(image, symtab + 40, 4) == 4 && read(image, symtab + 44, 4) == 7);  // link, first global
     const u64 symbols = read(image, symtab + 24, 8), strings = read(image, strtab + 24, 8);
     std::vector<std::string> names;
     std::vector<u64> info;
@@ -131,9 +134,10 @@ void headers() {
         names.emplace_back(reinterpret_cast<const char*>(image.data() + strings + read(image, at, 4)));
         info.push_back(read(image, at + 4, 1) | read(image, at + 6, 2) << 8);
     }
-    CHECK((names[0] == ".Lstr0" && names[1] == ".Lstr1"));
-    CHECK(info[0] == (0 << 4 | 1 | 2 << 8) && info[1] == info[0]);  // STB_LOCAL, STT_OBJECT, .rodata
-    for (const auto* expected : {"_P3fib", "_P5sumTo", "_P4main", "_start", "__phantasos_trap"}) {
+    for (usize i = 0; i < 6; ++i)  // STB_LOCAL, STT_OBJECT, .rodata
+        CHECK(names[i] == std::format(".Lstr{}", i) && info[i] == (0 << 4 | 1 | 2 << 8));
+    for (const auto* expected : {"_P3fib", "_P5sumTo", "_P4main", "_start", "__phantasos_trap", "_P$write",
+                                 "_P$print_string", "_P$print_int", "_P$print_uint", "_P$print_bool"}) {
         const auto found = std::ranges::find(names, expected);
         CHECK(found != names.end() && info[found - names.begin()] == (1 << 4 | 2 | 1 << 8));
     }
@@ -207,6 +211,10 @@ void runtime_listing() {
     CHECK(listing.contains("lea rsi, [rip+.Lstr1]"));
     CHECK(listing.contains(".rodata\n    0000  .Lstr0:  db \"panic: arithmetic overflow\\n\""));
     CHECK(listing.contains("    001b  .Lstr1:  db \"panic: division by zero\\n\""));
+    CHECK(listing.contains("_P$write:  ; writes rsi bytes at rdi to stdout"));
+    CHECK(listing.contains("cmp rax, -4"));
+    CHECK(listing.contains("mov byte [r8], dl"));
+    CHECK(listing.contains("call _P$print_decimal"));
 
     Built unit("fun main() {}\n");
     (void)x86_64::runtime(*unit.program, &listing);
@@ -216,11 +224,20 @@ void runtime_listing() {
 #ifdef PHS_EXEC
 struct Exit {
     int status = -1;
-    std::string err;
+    std::string out, err;
 };
 
-// Writes the image to a file, runs it and collects its exit status and stderr.
-Exit run(const std::vector<u8>& image) {
+std::string drain(int fd) {
+    std::string text;
+    char buffer[256];
+    for (ssize_t n; (n = ::read(fd, buffer, sizeof buffer)) > 0;) text.append(buffer, static_cast<usize>(n));
+    close(fd);
+    return text;
+}
+
+// Writes the image to a file, runs it and collects its exit status, stdout
+// and stderr. With full, stdout is /dev/full, so every write to it fails.
+Exit run(const std::vector<u8>& image, bool full = false) {
     test::TempDirectory dir;
     const auto path = dir.path / "program";
     {
@@ -229,25 +246,30 @@ Exit run(const std::vector<u8>& image) {
         CHECK(out.good());
     }
     std::filesystem::permissions(path, std::filesystem::perms::owner_all);
-    int pipe_fds[2];
-    CHECK(pipe(pipe_fds) == 0);
+    int out_fds[2], err_fds[2];
+    CHECK(pipe(out_fds) == 0 && pipe(err_fds) == 0);
     const pid_t pid = fork();
     CHECK(pid >= 0);
     if (pid == 0) {
-        dup2(pipe_fds[1], 2);
-        close(pipe_fds[0]);
-        close(pipe_fds[1]);
+        if (full) {
+            const int device = open("/dev/full", O_WRONLY);
+            if (device < 0) _exit(126);
+            dup2(device, 1);
+        } else dup2(out_fds[1], 1);
+        dup2(err_fds[1], 2);
+        for (const int fd : {out_fds[0], out_fds[1], err_fds[0], err_fds[1]}) close(fd);
         const std::string file = path.string();
         char* argv[] = {const_cast<char*>(file.c_str()), nullptr};
         char* envp[] = {nullptr};
         execve(file.c_str(), argv, envp);
         _exit(127);
     }
-    close(pipe_fds[1]);
+    close(out_fds[1]);
+    close(err_fds[1]);
+    // Test programs write little, so neither pipe fills while the other drains.
     Exit result;
-    char buffer[256];
-    for (ssize_t n; (n = ::read(pipe_fds[0], buffer, sizeof buffer)) > 0;) result.err.append(buffer, static_cast<usize>(n));
-    close(pipe_fds[0]);
+    result.out = drain(out_fds[0]);
+    result.err = drain(err_fds[0]);
     int status = 0;
     CHECK(waitpid(pid, &status, 0) == pid);
     CHECK(WIFEXITED(status));
@@ -255,13 +277,71 @@ Exit run(const std::vector<u8>& image) {
     return result;
 }
 
-void expect(std::string_view source, int status, std::string_view err = "") {
+void expect(std::string_view source, int status, std::string_view err = "", std::string_view out = "") {
     Built built(source);
     const auto result = run(built.image);
-    if (result.status != status || result.err != err) {
-        std::println(stderr, "{}\nexpected exit {} '{}', got {} '{}'", source, status, err, result.status, result.err);
+    if (result.status != status || result.err != err || result.out != out) {
+        std::println(stderr, "{}\nexpected exit {} '{}' '{}', got {} '{}' '{}'", source, status, out, err, result.status,
+                     result.out, result.err);
         CHECK(false);
     }
+}
+
+// The executable's output matches the MIR interpreter's.
+void prints(std::string_view source, std::string_view out) {
+    Built built(source);
+    const auto reference = test::Interpreter(*built.program).run();
+    CHECK(!reference.trapped && reference.output == out);
+    expect(source, static_cast<int>(reference.value & 0xFF), "", out);
+}
+
+void output() {
+    prints(R"(
+fun main() {
+    print("Hello, world!")
+    print(value: "\u{1F30D} \"quoted\"\ttab")
+    print("")
+}
+)", "Hello, world!\n\U0001F30D \"quoted\"\ttab\n\n");
+    prints(R"(
+fun main() {
+    print(0)
+    print(7)
+    print(-7)
+    print(10)
+    print(-1000000)
+    print(9223372036854775807)
+    print(-9223372036854775807 - 1)
+    let zero: UInt = 0
+    let top: UInt = 18446744073709551615
+    print(zero)
+    print(top)
+    print(true)
+    print(1 > 2)
+}
+)", "0\n7\n-7\n10\n-1000000\n9223372036854775807\n-9223372036854775808\n0\n18446744073709551615\ntrue\nfalse\n");
+    // Arguments evaluate before the write, left to right with other calls.
+    prints(R"(
+fun shout(text: String): String {
+    print("evaluating")
+    return text
+}
+fun main(): Int {
+    print(shout("done"))
+    var i = 0
+    while i < 3 {
+        print(i * i)
+        i += 1
+    }
+    return 3
+}
+)", "evaluating\ndone\n0\n1\n4\n");
+    // Output written before a panic stays written.
+    expect("fun main(): Int {\n    print(\"before\")\n    return 1 / 0\n}\n", 101, "panic: division by zero\n", "before\n");
+    // A failed write panics instead of losing output silently.
+    Built full("fun main(): Int {\n    print(\"lost\")\n    return 0\n}\n");
+    const auto failed = run(full.image, true);
+    CHECK(failed.status == 101 && failed.err == "panic: cannot write to standard output\n" && failed.out.empty());
 }
 
 void executables() {
@@ -315,6 +395,7 @@ int main() {
     runtime_listing();
 #ifdef PHS_EXEC
     executables();
+    output();
 #endif
     std::println("elf tests passed");
 }

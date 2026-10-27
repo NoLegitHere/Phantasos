@@ -87,6 +87,7 @@ std::string_view op_name(Op op) {
         case Op::Widen: return "widen";
         case Op::Truncate: return "truncate";
         case Op::Call: return "call";
+        case Op::Print: return "print";
     }
     unreachable();
 }

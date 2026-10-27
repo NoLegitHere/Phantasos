@@ -15,7 +15,9 @@
 
 #pragma once
 
+#include <format>
 #include <limits>
+#include <string>
 #include <vector>
 
 #include "codegen/mir.hpp"
@@ -33,6 +35,7 @@ struct Outcome {
     bool trapped = false;
     u64 value = 0;
     u32 trap = 0;  // the x86_64 trap code: 1 for overflow, 2 for division by zero
+    std::string output;  // what print wrote to standard output
 };
 
 inline u64 normalize(Type type, u64 bits) {
@@ -51,8 +54,13 @@ class Interpreter {
 public:
     explicit Interpreter(const mir::Program& program) : program_(program) {}
 
-    Outcome run() { return call(program_.main, {}); }
-    Outcome run(u32 function) { return call(function, {}); }
+    Outcome run() { return run(program_.main); }
+    Outcome run(u32 function) {
+        output_.clear();
+        auto outcome = call(function, {});
+        outcome.output = output_;
+        return outcome;
+    }
 
 private:
     Outcome call(u32 index, std::vector<u64> args) {
@@ -71,6 +79,16 @@ private:
                     const auto result = call(inst.callee, std::move(values));
                     if (result.trapped) return result;
                     if (inst.dst.valid()) regs[inst.dst.id] = result.value;
+                    continue;
+                }
+                if (inst.op == Op::Print) {
+                    const Type type = fun.regs[inst.a.id];
+                    const u64 value = regs[inst.a.id];
+                    if (type == Type::Str) output_ += program_.strings[value];
+                    else if (type == Type::Bool) output_ += value ? "true" : "false";
+                    else if (mir::is_signed(type)) output_ += std::format("{}", static_cast<i64>(value));
+                    else output_ += std::format("{}", value);
+                    output_ += '\n';
                     continue;
                 }
                 const Type type = fun.regs[inst.dst.id];
@@ -130,7 +148,7 @@ private:
                     case Op::Ge: out = sign ? sa >= sb : a >= b2; break;
                     case Op::Widen: out = a; CHECK(fits(type, a)); break;
                     case Op::Truncate: out = normalize(type, a); break;
-                    case Op::Call: break;
+                    case Op::Call: case Op::Print: break;
                 }
                 if (trap) return {true, 0, trap};
                 regs[inst.dst.id] = out;
@@ -148,6 +166,7 @@ private:
 
     const mir::Program& program_;
     usize depth_ = 0;
+    std::string output_;
 };
 
 

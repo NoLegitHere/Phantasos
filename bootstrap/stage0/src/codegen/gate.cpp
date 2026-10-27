@@ -389,7 +389,9 @@ private:
         }
         const CheckedCall* checked = types_.call(&call);
         if (checked && checked->kind == CallKind::Builtin) {
-            unsupported(call.callee->span, "output with 'print'");
+            // print: its argument is a String, Int, UInt or Bool (3.27).
+            if (checked->state != CallState::Resolved) unsupported_type(call.span, ScalarType{});
+            else work.push_back({call.args.front().value, true});
             return;
         }
         const auto* callee = as<NameExpr>(call.callee);

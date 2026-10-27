@@ -13,11 +13,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// String values are lowered, but print is reported until the runtime can
-// write output.
+// print reaches code generation for each of its overloads (3.27).
 
 fun main() {
     let text: String = "hi"
     print(1)
     print(text)
+    print(value: UInt(2))
+    print(1 < 2)
 }

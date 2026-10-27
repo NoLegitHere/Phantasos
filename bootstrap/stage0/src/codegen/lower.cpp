@@ -550,6 +550,11 @@ private:
             return dst;
         }
         const CheckedCall& checked = *types_.call(&call);
+        if (checked.kind == CallKind::Builtin) {
+            // print: a diverging argument has already ended the block.
+            if (args.front().valid()) emit({.op = Op::Print, .a = args.front()});
+            return {};
+        }
         const auto& callee = *cast<FunItem>(resolution_.binding(checked.target).item);
         // Arguments run in source order and are passed in parameter order.
         std::vector<Reg> ordered(callee.sig.params.size());

@@ -31,7 +31,8 @@ using mir::Type;
 // A reference interpreter for MIR semantics: checked operations trap. Stage0
 // strings are literals passed whole, so a String value is its index in
 // Program::strings. An aggregate value is an index into a pool of immutable
-// field lists, which Copy and Call share freely.
+// field lists, which Copy and Call share freely. A function value's code word
+// is the function's index.
 struct Outcome {
     bool trapped = false;
     u64 value = 0;
@@ -76,15 +77,42 @@ private:
             CHECK(steps < 10'000'000);
             const auto& b = fun.blocks[block];
             for (const auto& inst : b.insts) {
-                if (inst.op == Op::Call) {
+                if (inst.op == Op::Call || inst.op == Op::CallIndirect) {
                     std::vector<u64> values;
                     for (const auto reg : inst.args) values.push_back(regs[reg.id]);
-                    const auto result = call(inst.callee, std::move(values));
+                    u32 target = inst.callee;
+                    if (inst.op == Op::CallIndirect) {
+                        // The callee's signature must be the function type's.
+                        const Type type = fun.regs[inst.a.id];
+                        CHECK(mir::is_aggregate(type));
+                        const auto& layout = program_.layouts[mir::layout_index(type)];
+                        CHECK(layout.kind == mir::Layout::Function);
+                        const auto& code = aggregates_[regs[inst.a.id]];
+                        CHECK(code[1] == 0);
+                        target = static_cast<u32>(code[0]);
+                        const auto& callee = program_.functions[target];
+                        CHECK(callee.params == layout.params.size() && callee.inout.empty());
+                        CHECK(callee.result == layout.result);
+                        for (u32 p = 0; p < callee.params; ++p) CHECK(callee.regs[p] == layout.params[p]);
+                        CHECK(inst.args.size() == layout.params.size());
+                        for (usize p = 0; p < inst.args.size(); ++p) CHECK(fun.regs[inst.args[p].id] == layout.params[p]);
+                        if (inst.dst.valid()) CHECK(fun.regs[inst.dst.id] == layout.result);
+                    }
+                    const auto result = call(target, std::move(values));
                     if (result.trapped) return result;
                     if (inst.dst.valid()) regs[inst.dst.id] = result.value;
-                    const auto& callee = program_.functions[inst.callee];
+                    const auto& callee = program_.functions[target];
                     for (u32 p = 0; p < callee.params; ++p)
                         if (mir::is_inout(callee, p)) regs[inst.args[p].id] = result.params[p];
+                    continue;
+                }
+                if (inst.op == Op::FnRef) {
+                    const Type type = fun.regs[inst.dst.id];
+                    CHECK(mir::is_aggregate(type));
+                    CHECK(program_.layouts[mir::layout_index(type)].kind == mir::Layout::Function);
+                    CHECK(inst.callee < program_.functions.size());
+                    aggregates_.push_back({inst.callee, 0});
+                    regs[inst.dst.id] = aggregates_.size() - 1;
                     continue;
                 }
                 if (inst.op == Op::Make) {
@@ -185,7 +213,8 @@ private:
                     case Op::Ge: out = sign ? sa >= sb : a >= b2; break;
                     case Op::Widen: out = a; CHECK(fits(type, a)); break;
                     case Op::Truncate: out = normalize(type, a); break;
-                    case Op::Call: case Op::Print: case Op::Make: case Op::Field: case Op::With: break;
+                    case Op::Call: case Op::Print: case Op::Make: case Op::Field: case Op::With:
+                    case Op::FnRef: case Op::CallIndirect: break;
                 }
                 if (trap) return {true, 0, trap};
                 regs[inst.dst.id] = out;

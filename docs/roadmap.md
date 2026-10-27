@@ -87,7 +87,7 @@ foundation. Complete.
   then brace closures (`{ x -> x * 2 }`) that capture by value, on Linux
   x86_64. A function value is two words, code and environment.
   - [x] Function values of named functions in the front end.
-  - [ ] Function values and indirect calls in MIR.
+  - [x] Function values and indirect calls in MIR.
   - [ ] x86_64 indirect calls and function value passing.
   - [ ] Function value samples and run tests.
   - [ ] Closure syntax.

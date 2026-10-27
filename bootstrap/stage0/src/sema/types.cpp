@@ -2265,7 +2265,10 @@ private:
                     if (!direct_callees_.contains(&expr) && !candidates.empty() &&
                         std::ranges::all_of(candidates, [&](BindingId id) { return function_value_candidate(id); })) {
                         function_names_.emplace(&expr, std::vector<BindingId>(candidates.begin(), candidates.end()));
-                        for (BindingId id : candidates) nodes_[index].deps.push_back(function_nodes_.at(id.value));
+                        // An overload set has no edges: the expected type that rules
+                        // overloads out comes later, and rejected overloads must not
+                        // create inference cycles.
+                        if (candidates.size() == 1) nodes_[index].deps.push_back(function_nodes_.at(candidates.front().value));
                     } else if (candidates.size() == 1) nodes_[index].deps.push_back(candidates.front().value);
                 }
                 break;
@@ -2865,7 +2868,12 @@ private:
                 for (BindingId id : *names) {
                     const auto descriptor = function_descriptor(id);
                     found |= descriptor && *descriptor == wanted;
-                    pending |= !descriptor && may_have_type(id, wanted);
+                    if (!descriptor && may_have_type(id, wanted)) {
+                        pending = true;
+                        // A call resumes once the overload's result is inferred.
+                        const auto node = function_nodes_.at(id.value);
+                        if (nodes_[node].state == 0) pending_dependencies_.push_back(node);
+                    }
                 }
                 if (found) result.lifts += target.optional_depth;
                 else if (pending) result.deferred = true;
@@ -3785,7 +3793,7 @@ private:
     std::unordered_map<usize, std::unordered_map<usize, std::unordered_set<u32>>> constraint_spans_;
     std::unordered_set<u32> reported_constraints_;
     std::vector<CheckedConstraint> constraints_;
-    std::vector<usize> pending_dependencies_;
+    mutable std::vector<usize> pending_dependencies_;  // probe adds overloads of function values
     std::vector<const Expr*> defaults_;
 };
 

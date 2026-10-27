@@ -394,6 +394,9 @@ let constrainedValue = constrained
 fun one(x: Int): Int = x
 fun one(x: Bool) = one(x)
 let filtered: fun(Int) -> Int = one
+let viaOverload = twice(dbl, 1)
+fun dbl(x: Int) = x * 2
+fun dbl(x: Bool) = x
 )");
     const auto init = [&](std::string_view name) { return ast::cast<ast::VarItem>(f.result.resolution->binding(f.binding(name)).item)->init; };
     const auto name = [&](Type type) { return f.result.scalar_types->type_name(type, *f.result.resolution, f.session.names()); };
@@ -417,6 +420,9 @@ let filtered: fun(Int) -> Int = one
     // functions, functions with constraints, and functions whose parameters
     // take a convention.
     CHECK(target(init("filtered")) == f.binding("one", BindingKind::Function));
+    // A call waits for the inferred result of an overload passed as a value.
+    CHECK(f.type("viaOverload") == Type::Int &&
+          target(ast::cast<ast::CallExpr>(init("viaOverload"))->args[0].value) == f.binding("dbl", BindingKind::Function));
     for (std::string_view deferred : {"ambiguous", "generic", "convention", "constrainedValue"}) {
         CHECK(f.type(deferred) == Type::Deferred && !target(init(deferred)).valid());
     }
@@ -435,6 +441,10 @@ let filtered: fun(Int) -> Int = one
         {"fun f(x: Int): Int = x\nfun f(x: Bool) = f(x)\nlet bad: fun(String) -> Int = f", DiagCode::ScalarTypeMismatch},
         {"fun f(x: Int): Int = x\nfun f(x: Bool) = f(x)\nfun take(g: fun(String) -> Int) {}\nlet bad = take(f)",
          DiagCode::NoMatchingCall},
+        // An overload that the expected type rules out adds no inference edge, so
+        // an earlier use of the function value cannot leave its result deferred.
+        {"fun a() = use(b)\nfun b(x: Bool) = a()\nfun b(x: Int) = 1\nfun use(f: fun(Int) -> Int): Int = f(1)\n"
+         "let first = a()\nlet bad: Bool = b(true)", DiagCode::ScalarTypeMismatch},
         // Overloads that differ only in labels have the same function type.
         {"fun f(x: Int): Int = x\nfun f(y: Int): Int = y + 1\nlet bad: fun(Int) -> Int = f", DiagCode::AmbiguousCall},
     }) { Frontend bad; bad.check(test.first, {test.second}); }

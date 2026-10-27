@@ -449,6 +449,9 @@ fun dbl(x: Bool) = x
         {"fun f(x: Int) = x\nfun f(x: Bool) = x\nlet bad: fun(Int) -> Bool = f", DiagCode::ScalarTypeMismatch},
         {"fun f(x: Int): Int = x\nfun f(y: Int) = y + 1\nfun take(g: fun(Int) -> Int): Int = g(1)\nlet result = take(f)",
          DiagCode::AmbiguousCall},
+        // A call candidate that another argument rejects schedules no results.
+        {"fun a() = use(b, 1)\nfun b(x: Bool) = a()\nfun b(x: Int) = 1\nfun use(g: fun(Bool) -> Int, n: Bool): Int = 1\n"
+         "fun use(g: fun(Int) -> Int, n: Int): Int = 1\nlet first = a()\nlet bad: Bool = b(true)", DiagCode::ScalarTypeMismatch},
         // Overloads that differ only in labels have the same function type.
         {"fun f(x: Int): Int = x\nfun f(y: Int): Int = y + 1\nlet bad: fun(Int) -> Int = f", DiagCode::AmbiguousCall},
     }) { Frontend bad; bad.check(test.first, {test.second}); }

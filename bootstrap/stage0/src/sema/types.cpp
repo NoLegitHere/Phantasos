@@ -3327,6 +3327,8 @@ private:
             if (interface_owner(id) && !method_inputs_known(id) && !signature.generic) match.deferred = true;
             if (context) match.deferred |= !defaults_known(fun->sig.params, match.parameters, match.types);
             bool compatible_args = true, fits = true;
+            // Results that probing schedules matter only for viable candidates.
+            const usize scheduled = pending_dependencies_.size();
             for (usize a = 0; a < expr.args.size(); ++a) {
                 const Type expected = match.types[match.parameters[a]];
                 const auto p = probe(expressions_.at(expr.args[a].value), expected);
@@ -3334,8 +3336,12 @@ private:
                 match.score += p.score; match.lifts += p.lifts;
                 fits &= p.fits; compatible_args &= p.matches;
             }
-            if (!compatible_args) continue;
-            if (fits && failed.valid()) { failed_constraints.push_back({failed, context}); continue; }
+            if (!compatible_args) { pending_dependencies_.resize(scheduled); continue; }
+            if (fits && failed.valid()) {
+                pending_dependencies_.resize(scheduled);
+                failed_constraints.push_back({failed, context});
+                continue;
+            }
             if (fits) matches.push_back(std::move(match));
             else out_of_range.push_back(std::move(match));
         }

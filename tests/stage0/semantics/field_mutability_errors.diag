@@ -1,6 +1,120 @@
-field_mutability_errors.phs:142:8: error[E0200]: duplicate binding 'Slot'
-  142 | struct Slot(var a: Int, let b: Int)
-      |        ^^^^
-field_mutability_errors.phs:123:8: note: first declared here
-  123 | struct Slot(var a: Int) {
-      |        ^^^^
+field_mutability_errors.phs:26:9: error[E0502]: cannot assign to field 'n' because 'self' is read-only
+   26 |         inner.n = 1
+      |         ^^^^^^^
+field_mutability_errors.phs:25:9: note: 'self' is read-only in a method without 'mut'
+   25 |     fun look() {
+      |         ^^^^
+field_mutability_errors.phs:27:9: error[E0502]: cannot call 'mut fun bump' because 'self' is read-only
+   27 |         inner.bump()
+      |         ^^^^^^^^^^
+field_mutability_errors.phs:25:9: note: 'self' is read-only in a method without 'mut'
+   25 |     fun look() {
+      |         ^^^^
+field_mutability_errors.phs:28:9: error[E0502]: cannot call 'mut fun bump2' because 'self' is read-only
+   28 |         bump2()
+      |         ^^^^^
+field_mutability_errors.phs:25:9: note: 'self' is read-only in a method without 'mut'
+   25 |     fun look() {
+      |         ^^^^
+field_mutability_errors.phs:29:9: error[E0502]: cannot call 'mut fun bump' because 'self' is read-only
+   29 |         self.inner.bump()
+      |         ^^^^^^^^^^^^^^^
+field_mutability_errors.phs:25:9: note: 'self' is read-only in a method without 'mut'
+   25 |     fun look() {
+      |         ^^^^
+field_mutability_errors.phs:30:9: error[E0502]: cannot assign to read-only 'self'
+   30 |         self = Outer(Inner(1), Inner(2))
+      |         ^^^^
+field_mutability_errors.phs:25:9: note: 'self' is read-only in a method without 'mut'
+   25 |     fun look() {
+      |         ^^^^
+field_mutability_errors.phs:33:9: error[E0502]: cannot assign to field 'n' because field 'fixed' is immutable
+   33 |         fixed.n = 2
+      |         ^^^^^^^
+field_mutability_errors.phs:23:36: note: declared with 'let' here
+   23 | struct Outer(var inner: Inner, let fixed: Inner) {
+      |                                    ^^^^^
+field_mutability_errors.phs:34:9: error[E0502]: cannot call 'mut fun bump' because field 'fixed' is immutable
+   34 |         fixed.bump()
+      |         ^^^^^^^^^^
+field_mutability_errors.phs:23:36: note: declared with 'let' here
+   23 | struct Outer(var inner: Inner, let fixed: Inner) {
+      |                                    ^^^^^
+field_mutability_errors.phs:41:9: error[E0502]: cannot assign to field 'value' because 'self' is read-only
+   41 |         value = 2
+      |         ^^^^^
+field_mutability_errors.phs:40:9: note: 'self' is read-only in a method without 'mut'
+   40 |     fun peek(): Int {
+      |         ^^^^
+field_mutability_errors.phs:42:9: error[E0502]: cannot call 'mut fun grow' because 'self' is read-only
+   42 |         grow()
+      |         ^^^^
+field_mutability_errors.phs:40:9: note: 'self' is read-only in a method without 'mut'
+   40 |     fun peek(): Int {
+      |         ^^^^
+field_mutability_errors.phs:47:5: error[E0502]: cannot assign to field 'value' because 'b' is read-only
+   47 |     b.value = 1
+      |     ^^^^^^^
+field_mutability_errors.phs:46:14: note: parameters are read-only unless declared 'inout'
+   46 | fun borrowed(b: Box, o: Outer) {
+      |              ^
+field_mutability_errors.phs:48:5: error[E0502]: cannot call 'mut fun grow' because 'b' is read-only
+   48 |     b.grow()
+      |     ^^^^^^
+field_mutability_errors.phs:46:14: note: parameters are read-only unless declared 'inout'
+   46 | fun borrowed(b: Box, o: Outer) {
+      |              ^
+field_mutability_errors.phs:49:5: error[E0502]: cannot assign to field 'n' because 'o' is read-only
+   49 |     o.inner.n = 1
+      |     ^^^^^^^^^
+field_mutability_errors.phs:46:22: note: parameters are read-only unless declared 'inout'
+   46 | fun borrowed(b: Box, o: Outer) {
+      |                      ^
+field_mutability_errors.phs:50:5: error[E0502]: cannot call 'mut fun bump' because 'o' is read-only
+   50 |     o.inner.bump()
+      |     ^^^^^^^^^^^^
+field_mutability_errors.phs:46:22: note: parameters are read-only unless declared 'inout'
+   46 | fun borrowed(b: Box, o: Outer) {
+      |                      ^
+field_mutability_errors.phs:55:5: error[E0502]: cannot assign to field 'n' because 'o' is immutable
+   55 |     o.inner.n = 4
+      |     ^^^^^^^^^
+field_mutability_errors.phs:54:9: note: declared with 'let' here
+   54 |     let o = Outer(Inner(1), Inner(2))
+      |         ^
+field_mutability_errors.phs:56:5: error[E0502]: cannot call 'mut fun bump' because 'o' is immutable
+   56 |     o.inner.bump()
+      |     ^^^^^^^^^^^^
+field_mutability_errors.phs:54:9: note: declared with 'let' here
+   54 |     let o = Outer(Inner(1), Inner(2))
+      |         ^
+field_mutability_errors.phs:57:5: error[E0502]: cannot assign to field 'n' of a temporary value
+   57 |     make().n = 1
+      |     ^^^^^^^^
+field_mutability_errors.phs:58:5: error[E0502]: cannot call 'mut fun bump' on a temporary value
+   58 |     make().bump()
+      |     ^^^^^^^^^^^
+field_mutability_errors.phs:60:5: error[E0502]: cannot assign to immutable field 'size'
+   60 |     b.size = 2
+      |     ^^^^^^
+field_mutability_errors.phs:38:9: note: declared with 'let' here
+   38 |     let size: Int = 1
+      |         ^^^^
+field_mutability_errors.phs:61:5: error[E0502]: cannot assign to immutable field 'limit'
+   61 |     Outer.limit = 4
+      |     ^^^^^^^^^^^
+field_mutability_errors.phs:24:16: note: declared with 'let' here
+   24 |     static let limit: Int = 3
+      |                ^^^^^
+field_mutability_errors.phs:63:5: error[E0502]: cannot assign to field 'n' because field 'fixed' is immutable
+   63 |     p.fixed.n = 1
+      |     ^^^^^^^^^
+field_mutability_errors.phs:23:36: note: declared with 'let' here
+   23 | struct Outer(var inner: Inner, let fixed: Inner) {
+      |                                    ^^^^^
+field_mutability_errors.phs:64:5: error[E0502]: cannot call 'mut fun bump' because field 'fixed' is immutable
+   64 |     p.fixed.bump()
+      |     ^^^^^^^^^^^^
+field_mutability_errors.phs:23:36: note: declared with 'let' here
+   23 | struct Outer(var inner: Inner, let fixed: Inner) {
+      |                                    ^^^^^

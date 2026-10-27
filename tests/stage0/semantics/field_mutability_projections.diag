@@ -1,0 +1,48 @@
+field_mutability_projections.phs:23:5: error[E0502]: cannot assign to field 'value' because 'p' is read-only
+   23 |     p!.value = 1
+      |     ^^^^^^^^
+field_mutability_projections.phs:22:12: note: parameters are read-only unless declared 'inout'
+   22 | fun change(p: Cell?, cells: [Cell], pairs: [Pair]) {
+      |            ^
+field_mutability_projections.phs:24:5: error[E0502]: cannot call 'mut fun grow' because 'p' is read-only
+   24 |     p!.grow()
+      |     ^^^^^^^
+field_mutability_projections.phs:22:12: note: parameters are read-only unless declared 'inout'
+   22 | fun change(p: Cell?, cells: [Cell], pairs: [Pair]) {
+      |            ^
+field_mutability_projections.phs:25:5: error[E0502]: cannot assign to field 'value' because 'cells' is read-only
+   25 |     cells[0].value = 1
+      |     ^^^^^^^^^^^^^^
+field_mutability_projections.phs:22:22: note: parameters are read-only unless declared 'inout'
+   22 | fun change(p: Cell?, cells: [Cell], pairs: [Pair]) {
+      |                      ^^^^^
+field_mutability_projections.phs:26:5: error[E0502]: cannot call 'mut fun grow' because 'cells' is read-only
+   26 |     cells[0].grow()
+      |     ^^^^^^^^^^^^^
+field_mutability_projections.phs:22:22: note: parameters are read-only unless declared 'inout'
+   22 | fun change(p: Cell?, cells: [Cell], pairs: [Pair]) {
+      |                      ^^^^^
+field_mutability_projections.phs:27:5: error[E0502]: cannot assign to field 'a' because 'pairs' is read-only
+   27 |     pairs[0].a = 1
+      |     ^^^^^^^^^^
+field_mutability_projections.phs:22:37: note: parameters are read-only unless declared 'inout'
+   22 | fun change(p: Cell?, cells: [Cell], pairs: [Pair]) {
+      |                                     ^^^^^
+field_mutability_projections.phs:28:5: error[E0502]: cannot assign to an element because 'pairs' is read-only
+   28 |     pairs[0] = Pair(2)
+      |     ^^^^^^^^
+field_mutability_projections.phs:22:37: note: parameters are read-only unless declared 'inout'
+   22 | fun change(p: Cell?, cells: [Cell], pairs: [Pair]) {
+      |                                     ^^^^^
+field_mutability_projections.phs:32:5: error[E0502]: cannot assign to an element because 'numbers' is immutable
+   32 |     numbers[0] = 3
+      |     ^^^^^^^^^^
+field_mutability_projections.phs:31:9: note: declared with 'let' here
+   31 |     let numbers = [1, 2]
+      |         ^^^^^^^
+field_mutability_projections.phs:34:5: error[E0502]: cannot assign to field 'a' because 'pair' is immutable
+   34 |     pair!.a = 2
+      |     ^^^^^^^
+field_mutability_projections.phs:33:9: note: declared with 'let' here
+   33 |     let pair: Pair? = Pair(1)
+      |         ^^^^

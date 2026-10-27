@@ -29,7 +29,7 @@ struct ScalarType {
     enum Kind : u8 {
         Deferred, Error, Int8, Int16, Int32, Int64, UInt8, UInt16, UInt32, UInt64,
         Int, UInt, Float32, Float64, Bool, Char, String, Unit, Never,
-        Nominal, Array, Pointer, Shared, Weak, Function,
+        Nominal, Array, Pointer, Shared, Weak, Function, Tuple,
         TypeParameter, Projection // symbolic generic variables and associated type projections
     };
     Kind kind = Deferred;
@@ -50,7 +50,7 @@ std::string scalar_type_name(ScalarType type);
 struct TypeDescriptor {
     ScalarType::Kind kind = ScalarType::Deferred;
     ScalarType element;
-    std::vector<ScalarType> parameters;
+    std::vector<ScalarType> parameters; // function parameters, or tuple elements
     ScalarType result;
     ScalarType error;
     BindingId declaration;
@@ -132,7 +132,7 @@ private:
 [[nodiscard]] AliasExpansion expand_aliases(const Resolution& resolution, const Interner& names, DiagEngine& diag);
 
 struct ScalarSignature {
-    std::vector<ScalarType> parameters;
+    std::vector<ScalarType> parameters; // function parameters, or tuple elements
     ScalarType result = ScalarType::Deferred;
     bool generic = false;
 };

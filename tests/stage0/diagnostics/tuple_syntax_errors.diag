@@ -1,0 +1,48 @@
+tuple_syntax_errors.phs:19:15: error[E0113]: a tuple needs at least two elements
+   19 |     let one = (1,)
+      |               ^^^^
+tuple_syntax_errors.phs:20:20: error[E0113]: tuple elements cannot have labels
+   20 |     let labeled = (x: 1, y: 2)
+      |                    ^^
+tuple_syntax_errors.phs:20:26: error[E0113]: tuple elements cannot have labels
+   20 |     let labeled = (x: 1, y: 2)
+      |                          ^^
+tuple_syntax_errors.phs:21:18: error[E0113]: a tuple type needs at least two elements
+   21 |     let oneType: (Int,) = 1
+      |                  ^^^^^^
+tuple_syntax_errors.phs:22:23: error[E0113]: tuple element types cannot have labels
+   22 |     let labeledType: (x: Int, Int) = 1
+      |                       ^^
+tuple_syntax_errors.phs:23:9: error[E0113]: destructuring needs at least two names
+   23 |     let (single) = 1
+      |         ^^^^^^^^
+tuple_syntax_errors.phs:24:11: error[E0113]: 'const' cannot destructure a tuple; use 'let'
+   24 |     const (k, l) = (1, 2)
+      |           ^^^^^^
+tuple_syntax_errors.phs:25:15: error[E0100]: expected '=', found newline
+   25 |     let (m, n)
+      |               ^
+tuple_syntax_errors.phs:26:10: error[E0100]: expected variable name, found '('
+   26 |     let ((p, q), r) = 1
+      |          ^
+tuple_syntax_errors.phs:30:15: error[E0006]: tuple index '01' must be written without underscores or leading zeros
+   30 |     let a = t.01
+      |               ^^
+tuple_syntax_errors.phs:31:15: error[E0006]: tuple index '1_0' must be written without underscores or leading zeros
+   31 |     let b = t.1_0
+      |               ^^^
+tuple_syntax_errors.phs:32:16: error[E0006]: invalid suffix 'x1' on number literal
+   32 |     let c = t.0x1
+      |                ^^
+tuple_syntax_errors.phs:33:16: error[E0006]: invalid suffix 'e5' on number literal
+   33 |     let d = t.1e5
+      |                ^^
+tuple_syntax_errors.phs:34:16: error[E0100]: expected member name, found integer literal
+   34 |     let e = t?.0
+      |                ^
+tuple_syntax_errors.phs:40:5: error[E0113]: cannot assign to a tuple; assign each element on its own
+   40 |     (a, b) = (b, a)
+      |     ^^^^^^
+tuple_syntax_errors.phs:41:6: error[E0113]: cannot assign to a tuple; assign each element on its own
+   41 |     ((a, b)) += (1, 1)
+      |      ^^^^^^

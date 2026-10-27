@@ -1,0 +1,54 @@
+// Copyright 2026 The Phantasos Authors
+// SPDX-License-Identifier: Apache-2.0
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// Tuple values: contextual literal elements, defaults, element access,
+// destructuring, aliases, generics and overloads.
+type Pair = (Int8, Int8)
+
+fun take(p: (Int8, UInt)): Int8 = p.0
+fun over(p: (Int, Int)): Int = 1
+fun over(p: (Int8, Int16)): Int = 2
+fun first<T>(p: (T, Int)): T = p.0
+fun swap<A, B>(p: (A, B)): (B, A) = (p.1, p.0)
+
+struct Point(var x: Int, var y: Int)
+
+fun main(): Int {
+    let defaults = (1, 2.5, (true, 'c'))
+    let typed: ((Int8, Bool), [UInt8]) = ((1, true), [2])
+    let optional: (Int, Int)? = (1, 2)
+    let alias: Pair = (3, 4)
+    let same: (Int8, Int8) = alias
+    let grouped: (Int) = 5
+    let element: Int8 = take((1, 2)) + alias.1
+    let nested: Bool = typed.0.1
+    let indexed: UInt8 = typed.1[0]
+    let literal: Int = (1, 2).1
+    let generic: Bool = first((true, 1))
+    let swapped: (Bool, Int) = swap((1, true))
+    let chosen = over((1, 2))
+    let array: [(Int8, Int8)] = [(1, 2), (3, 4)]
+    let branch: (Int, Int) = if chosen > 0 { (1, 2) } else { (3, 4) }
+    var (y, x) = swap((Point(x: 1, y: 2), 3))
+    let (a, b): (Int8, Int16) = (5, 6)
+    x = Point(x: Int(a), y: Int(b))
+    y += 1
+    var t = (1, (2, 3))
+    t.1.0 = 9
+    t.0 += 1
+    var points = (Point(x: 1, y: 2), 0)
+    points.0.x = 4
+    return t.0 + t.1.0 + y + x.x
+}

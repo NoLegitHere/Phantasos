@@ -116,6 +116,9 @@ DeinitDecl = "deinit", Block ;
    its parameters are declared in TypeHead. *)
 
 VarDecl = ( "let" | "var" | "const" ), Ident, [ ":", Type ], [ "=", Expr ] ;
+LocalDecl = VarDecl
+          | ( "let" | "var" ), "(", Ident, ",", Ident, { ",", Ident }, [ "," ], ")",
+            [ ":", Type ], "=", Expr ;
 ExternBlock = "extern", StringLit, "{", [ Terms ],
               [ ExternFun, { Terms, ExternFun }, [ Terms ] ], "}" ;
 ExternFun = { Attribute }, [ Visibility ], { Modifier }, FunDecl ;
@@ -141,7 +144,11 @@ PrimaryType = Path, [ GenericArgs ]
             | "Self"
             | "[", Type, "]"
             | "(", ")"
+            | "(", Type, ")"
+            | "(", Type, ",", TypeList, ")"
             | "fun", "(", [ TypeList ], ")", [ "->", Type ], [ Throws ] ;
+(* Parentheses around one type group it. A comma makes a tuple type of two
+   or more unlabeled elements; (T,) is an error. *)
 TypeList = Type, { ",", Type }, [ "," ] ;
 GenericArgs = "<", TypeList, ">" ;
 
@@ -149,7 +156,7 @@ GenericArgs = "<", TypeList, ">" ;
    closing brace or EOF. Leading and repeated separators are permitted. *)
 
 Block = "{", [ Terms ], [ Stmt, { Terms, Stmt }, [ Terms ] ], "}" ;
-Stmt = VarDecl
+Stmt = LocalDecl
      | "return", [ Expr ]
      | "break"
      | "continue"
@@ -194,6 +201,7 @@ PrefixOp = "-" | "!" | "~" | "await" | "shared" ;
 Postfix = Primary, { PostfixSuffix } ;
 PostfixSuffix = "(", [ ArgList ], ")"
               | ".", Ident
+              | ".", IntLit
               | "?.", Ident
               | "[", Expr, "]"
               | "!"
@@ -211,6 +219,7 @@ Primary = Literal | InterpString
         | "self" | "super" | "Self" | Ident
         | ".", Ident
         | "(", [ Expr ], ")"
+        | "(", Expr, ",", Expr, { ",", Expr }, [ "," ], ")"
         | "[", [ Expr, { ",", Expr }, [ "," ] ], "]"
         | IfExpr | MatchExpr | "unsafe", Block ;
 Literal = IntLit | FloatLit | CharLit | StringLit | "true" | "false" | "none" ;
@@ -219,8 +228,11 @@ IfExpr = "if", Cond, Block, [ "else", ( IfExpr | Block ) ] ;
 MatchExpr = "match", Expr, "{", [ EntrySeparators ],
             [ Arm, { EntrySeparators, Arm }, [ EntrySeparators ] ], "}" ;
 Arm = Pattern, [ "if", Expr ], "->", ( Block | Expr ) ;
-(* Empty parentheses form the Unit value. Braces after control-flow heads
-   start blocks: Core has neither struct literals nor trailing closures. *)
+(* Empty parentheses form the Unit value. One parenthesized expression is
+   grouping; a comma makes a tuple of two or more unlabeled elements. The
+   IntLit after "." is a decimal tuple index (chapter 1). Braces after
+   control-flow heads start blocks: Core has neither struct literals nor
+   trailing closures. *)
 
 (* Patterns. A bare identifier always binds; enum cases use a leading dot,
    a qualified name, or a constructor argument list. *)

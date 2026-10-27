@@ -50,13 +50,13 @@ struct Path {
 
 // ---------------------------------------------------------------- types
 
-enum class TypeKind : u8 { Path, Optional, Shared, Weak, Pointer, Array, Unit, SelfType, Fun, Error };
+enum class TypeKind : u8 { Path, Optional, Shared, Weak, Pointer, Array, Unit, SelfType, Fun, Tuple, Error };
 
 struct TypeExpr {
     TypeKind kind = TypeKind::Error;
     Span span;
     Path path;                     // Path
-    List<TypeExpr*> args;          // Path: generic args; Fun: parameter types
+    List<TypeExpr*> args;          // Path: generic args; Fun: parameter types; Tuple: element types
     TypeExpr* inner = nullptr;     // Optional/Shared/Weak/Pointer/Array element; Fun: return type
     TypeExpr* throws_type = nullptr;  // Fun
     bool is_mut = false;           // Pointer
@@ -67,8 +67,8 @@ struct TypeExpr {
 
 enum class ExprKind : u8 {
     Int, Float, Char, String, Interp, Bool, None, Unit, SelfValue, Super, SelfType,
-    Name, ImplicitMember, Paren, Array, Unary, Binary, Cast, Call, Member, OptMember,
-    Index, Unwrap, GenericInst, If, Match, Block, Unsafe, Error
+    Name, ImplicitMember, Paren, Array, Tuple, Unary, Binary, Cast, Call, Member, OptMember,
+    TupleField, Index, Unwrap, GenericInst, If, Match, Block, Unsafe, Error
 };
 
 enum class UnOp : u8 { Neg, Not, BitNot, Try, TryOpt, Await, Share };
@@ -126,6 +126,7 @@ struct NameExpr : ExprOf<ExprKind::Name> { Name name; };
 struct ImplicitMemberExpr : ExprOf<ExprKind::ImplicitMember> { Name name; };
 struct ParenExpr : ExprOf<ExprKind::Paren> { Expr* inner = nullptr; };
 struct ArrayExpr : ExprOf<ExprKind::Array> { List<Expr*> elems; };
+struct TupleExpr : ExprOf<ExprKind::Tuple> { List<Expr*> elems; };  // two or more elements
 struct UnaryExpr : ExprOf<ExprKind::Unary> {
     UnOp op = UnOp::Neg;
     Expr* operand = nullptr;
@@ -151,6 +152,12 @@ struct MemberExpr : ExprOf<ExprKind::Member> {
 struct OptMemberExpr : ExprOf<ExprKind::OptMember> {
     Expr* base = nullptr;
     Name name;
+};
+// `t.0`: a tuple element, by its decimal index.
+struct TupleFieldExpr : ExprOf<ExprKind::TupleField> {
+    Expr* base = nullptr;
+    u32 index = 0;
+    Span index_span;
 };
 struct IndexExpr : ExprOf<ExprKind::Index> {
     Expr* base = nullptr;
@@ -232,7 +239,8 @@ struct StmtOf : Stmt {
 
 struct VarStmt : StmtOf<StmtKind::Var> {
     Binding binding = Binding::Let;
-    Name name;
+    Name name;          // empty when destructuring
+    List<Name> names;   // `let (a, b) = e`: one binding per tuple element
     TypeExpr* type = nullptr;
     Expr* init = nullptr;
 };

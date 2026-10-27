@@ -39,6 +39,8 @@ There are **no implicit numeric conversions**. Widening is written
 - **`interface`**: a set of requirements. It can declare default method
   bodies and associated types (`type Item`). A class or struct can implement
   any number of interfaces.
+- **Tuple**: `(A, B, ...)`, an unlabeled value type of two or more elements,
+  with structural identity (3.28).
 - **`actor`**: a reference type whose mutable state is isolated. See ch. 5.
   Primary-constructor parameters marked `let` or `var` become fields, as in
   classes; plain parameters do not.
@@ -982,7 +984,7 @@ the subset, so that nothing half-checked reaches code generation:
 
 Everything else reports `E0600`. That includes shifts, `for`, `defer`,
 `throw`, `match`, `unsafe` blocks, operators on strings, string interpolation,
-floating-point values, arrays,
+floating-point values, arrays, tuples,
 optionals, classes, enums, interfaces, members other than struct fields and
 method calls, method values, globals, and function values. A `mut fun` call
 needs a receiver rooted in a local, `self` or a field of `self`. A local whose
@@ -1065,3 +1067,50 @@ with the `write` system call, retrying after a partial write or `EINTR`. Any
 other failure, such as a full disk or a closed descriptor, panics with
 `panic: cannot write to standard output` (exit status 101). Writing to a
 closed pipe raises `SIGPIPE`, whose default action ends the process first.
+
+## 3.28 Tuples [Core]
+
+A tuple type `(A, B, ...)` has two or more unlabeled elements. Its identity is
+structural: two tuple types are the same type exactly when they have the same
+number of elements and the same element types in order, wherever they are
+written, and a type alias names the same type. Tuples are invariant, so
+`(Int8, Int)` and `(Int, Int)` are different types, as are `(Dog, Int)` and
+`(Animal, Int)`. Optional wrappers apply to the whole tuple: `(Int, Int)?`.
+Tuples are value types, like structs.
+
+A tuple literal `(a, b, ...)` takes its type from context. When it meets an
+expected tuple type of the same arity, through any parentheses, each element
+is checked against its element type, so literal elements take that type and
+other elements may lift into an optional element type:
+`let t: (Int8, Int?) = (1, 2)`. Without an expected tuple type, literal
+elements take their defaults, so `(1, 2.5)` is `(Int, Float64)`. An expected
+tuple type of another arity is `E0400`; so is a tuple where some other type is
+expected. A tuple whose element type is still deferred stays deferred. Only
+literals are retyped this way: a tuple value must already have the expected
+type, apart from optional lifting of the whole tuple. Overload selection and
+generic inference look inside tuple types element by element (3.15, 3.22).
+Contextual typing of nested literals recurses once per level, which the parser's
+nesting limit bounds.
+
+`t.0`, `t.1` and so on read an element; the index is a decimal literal (1.5)
+and chains such as `t.0.1` read nested elements. The receiver must be a
+non-optional tuple (`E0451`), and an index past the last element is `E0450`.
+A literal receiver takes its default type first, so `(1, 2).1` is an `Int`.
+
+`let (a, b) = e` and `var (a, b) = e` bind one local per element of a tuple
+`e`, which needs exactly as many elements as there are names (`E0400`
+otherwise). An annotation applies to the whole tuple, as in
+`let (a, b): (Int8, Bool) = (1, true)`. The names follow the binding keyword:
+`let` names cannot be assigned, and `var` names can. Duplicate names are
+`E0200`. Labeled tuples, tuple patterns in `match` and nested destructuring
+are not part of Core yet. A tuple literal is not a place, so assigning to
+several places at once, as in `(a, b) = (b, a)`, is `E0113`.
+
+An element is a place exactly as mutable as the tuple holding it (3.3): in a
+`var` tuple, `t.0 = 1` and `t.1.x = 2` assign in place, while through a `let`
+tuple, a parameter or a temporary they are `E0502`. Elements of class type
+still allow their fields to change through the reference.
+
+Equality and ordering of tuples remain deferred, like other composite
+comparisons; arithmetic on tuples is `E0401`. Stage0 type-checks tuples but does
+not generate code for them yet (3.25).

@@ -379,7 +379,8 @@ private:
         switch (stmt.kind) {
             case StmtKind::Var: {
                 const auto& var = *cast<VarStmt>(&stmt);
-                work_.push_back({Declare{var.name, BindingKind::Local}, context});
+                if (var.names.empty()) work_.push_back({Declare{var.name, BindingKind::Local}, context});
+                for (const Name& name : std::views::reverse(var.names)) work_.push_back({Declare{name, BindingKind::Local}, context});
                 push(var.init, context);
                 push(var.type, context);
                 break;
@@ -524,6 +525,9 @@ private:
             case ExprKind::Array:
                 for (const Expr* child : std::views::reverse(cast<ArrayExpr>(&expr)->elems)) push(child, context);
                 break;
+            case ExprKind::Tuple:
+                for (const Expr* child : std::views::reverse(cast<TupleExpr>(&expr)->elems)) push(child, context);
+                break;
             case ExprKind::Paren:
                 work_.push_back({FinishExpr{&expr}, context});
                 push(cast<ParenExpr>(&expr)->inner, context);
@@ -541,6 +545,7 @@ private:
                 push(cast<OptMemberExpr>(&expr)->base, context);
                 break;
             case ExprKind::Unwrap: push(cast<UnwrapExpr>(&expr)->operand, context); break;
+            case ExprKind::TupleField: push(cast<TupleFieldExpr>(&expr)->base, context); break;
             case ExprKind::GenericInst: {
                 const auto& generic = *cast<GenericInstExpr>(&expr);
                 work_.push_back({FinishExpr{&expr}, context});

@@ -55,7 +55,8 @@ u64 integer_limit(Type type, bool negative) {
     return (u64{1} << (bits - 1)) - 1 + static_cast<u64>(negative);
 }
 
-enum class Literal : u8 { None, Integer, Float, Array };
+// A Tuple literal has its default type, with elements typed in context later.
+enum class Literal : u8 { None, Integer, Float, Array, Tuple };
 struct Value {
     Type type = Type::Deferred;
     Literal literal = Literal::None;
@@ -92,7 +93,16 @@ struct Node {
     u8 state = 0; // unvisited, active, finished
     bool call_prepared = false;
     bool reference_prepared = false;
+    // Destructuring: a hidden node holds the whole value, and each named
+    // binding reads one element of its source.
+    const VarStmt* destructuring = nullptr;
+    usize source = std::numeric_limits<usize>::max();
+    usize element = 0;
 };
+const Expr* unparen(const Expr* expr) {
+    while (const auto* paren = as<ParenExpr>(expr)) expr = paren->inner;
+    return expr;
+}
 struct Requirement {
     const Expr* value;
     Type expected;
@@ -135,6 +145,7 @@ std::string scalar_type_name(ScalarType type) {
         case Type::Shared: return "<shared>";
         case Type::Weak: return "<weak>";
         case Type::Function: return "<function>";
+        case Type::Tuple: return "<tuple>";
         case Type::TypeParameter: return "<type-parameter>";
         case Type::Projection: return "<projection>";
     }
@@ -503,6 +514,7 @@ private:
             if (!descriptor || !seen.insert(current.detail).second) continue;
             if (current.kind == Type::TypeParameter) { if (parameters.contains(descriptor->declaration.value)) return true; continue; }
             if (current.kind == Type::Nominal) for (auto arg : descriptor->arguments) work.push_back(arg);
+            else if (current.kind == Type::Tuple) for (auto elem : descriptor->parameters) work.push_back(elem);
             else if (current.kind == Type::Function) {
                 for (auto param : descriptor->parameters) work.push_back(param);
                 work.push_back(descriptor->result); if (descriptor->throws) work.push_back(descriptor->error);
@@ -599,6 +611,8 @@ private:
                                         }
                                 }
                                 for (auto arg : descriptor.arguments) work.push_back(arg);
+                            } else if (type.kind == Type::Tuple) {
+                                for (auto elem : descriptor.parameters) work.push_back(elem);
                             } else if (type.kind == Type::Function) {
                                 for (auto param : descriptor.parameters) work.push_back(param);
                                 work.push_back(descriptor.result); if (descriptor.throws) work.push_back(descriptor.error);
@@ -697,6 +711,7 @@ private:
             if (!frame.ready) {
                 frame.ready = true;
                 if (type.kind == Type::Nominal) { for (auto arg : descriptor.arguments) work.push_back({arg}); }
+                else if (type.kind == Type::Tuple) { for (auto elem : descriptor.parameters) work.push_back({elem}); }
                 else if (type.kind == Type::Function) {
                     for (auto param : descriptor.parameters) work.push_back({param});
                     work.push_back({descriptor.result});
@@ -711,6 +726,7 @@ private:
                 cache[type] = value; continue;
             }
             if (type.kind == Type::Nominal) for (auto& arg : result.arguments) arg = cache.at(arg);
+            else if (type.kind == Type::Tuple) for (auto& elem : result.parameters) elem = cache.at(elem);
             else if (type.kind == Type::Function) {
                 for (auto& param : result.parameters) param = cache.at(param);
                 result.result = cache.at(result.result);
@@ -750,6 +766,7 @@ private:
             const auto* descriptor = types_.descriptor(type);
             if (!descriptor || !seen.insert(type.detail).second) continue;
             if (type.kind == Type::Nominal) for (auto arg : descriptor->arguments) work.push_back(arg);
+            else if (type.kind == Type::Tuple) for (auto elem : descriptor->parameters) work.push_back(elem);
             else if (type.kind == Type::Function) {
                 for (auto param : descriptor->parameters) work.push_back(param);
                 work.push_back(descriptor->result);
@@ -838,6 +855,9 @@ private:
                     if (x->declaration != y->declaration) continue; // generic base substitution remains pending
                     if (x->arguments.size() != y->arguments.size()) continue;
                     for (usize p = 0; p < x->arguments.size(); ++p) work.push_back({x->arguments[p], y->arguments[p]});
+                } else if (pattern.kind == Type::Tuple) {
+                    if (x->parameters.size() != y->parameters.size()) { result.state = Relation::No; return result; }
+                    for (usize p = 0; p < x->parameters.size(); ++p) work.push_back({x->parameters[p], y->parameters[p]});
                 } else if (pattern.kind == Type::Function) {
                     if (x->parameters.size() != y->parameters.size()) { result.state = Relation::No; return result; }
                     for (usize p = 0; p < x->parameters.size(); ++p) work.push_back({x->parameters[p], y->parameters[p]});
@@ -1023,7 +1043,12 @@ private:
                     continue;
                 }
             } else if (syntax->kind == TypeKind::Optional) value = cached(syntax->inner, env).optional();
-            else if (syntax->kind == TypeKind::Fun) {
+            else if (syntax->kind == TypeKind::Tuple) {
+                TypeDescriptor descriptor{.kind = Type::Tuple};
+                for (auto* elem : syntax->args) descriptor.parameters.push_back(cached(elem, env));
+                if (descriptor.parameters.size() >= 2 && std::ranges::all_of(descriptor.parameters, known))
+                    value = types_.intern(std::move(descriptor));
+            } else if (syntax->kind == TypeKind::Fun) {
                 TypeDescriptor descriptor{.kind = Type::Function, .result = cached(syntax->inner, env), .throws = syntax->throws};
                 bool complete = known(descriptor.result);
                 for (auto* param : syntax->args) { descriptor.parameters.push_back(cached(param, env)); complete &= known(cached(param, env)); }
@@ -2110,6 +2135,19 @@ private:
             node.init = init;
         }
     }
+    void destructure(const VarStmt& var) {
+        const usize whole = nodes_.size();
+        nodes_.push_back({.annotation = var.type, .init = var.init, .destructuring = &var});
+        for (usize i = 0; i < var.names.size(); ++i) {
+            const auto [first, last] = declarations_.equal_range(var.names[i].span.lo);
+            for (auto it = first; it != last; ++it) {
+                auto& node = nodes_[it->second];
+                node.source = whole;
+                node.element = i;
+                node.deps.push_back(whole);
+            }
+        }
+    }
     void parameters(List<Param> params) {
         for (const auto& p : params) {
             declare(p.name, p.type, nullptr);
@@ -2152,7 +2190,8 @@ private:
         switch (stmt.kind) {
             case StmtKind::Var: {
                 const auto& var = *cast<VarStmt>(&stmt);
-                declare(var.name, var.type, var.init);
+                if (var.names.empty()) declare(var.name, var.type, var.init);
+                else destructure(var);
                 push(var.init, returns);
                 break;
             }
@@ -2252,6 +2291,10 @@ private:
             case ExprKind::Array:
                 for (const Expr* elem : cast<ArrayExpr>(&expr)->elems) child(index, elem, returns);
                 break;
+            case ExprKind::Tuple:
+                for (const Expr* elem : cast<TupleExpr>(&expr)->elems) child(index, elem, returns);
+                break;
+            case ExprKind::TupleField: child(index, cast<TupleFieldExpr>(&expr)->base, returns); break;
             case ExprKind::Call: {
                 const auto& call = *cast<CallExpr>(&expr);
                 child(index, call.callee, returns);
@@ -2290,6 +2333,17 @@ private:
         Value actual = nodes_[index].value;
         if (none_mismatch(index, expected)) {
             diag_.error(DiagCode::ScalarTypeMismatch, span, "expected '{}', found 'none'", scalar_type_name(expected));
+            return {Type::Error};
+        }
+        if (const auto* tuple = as<TupleExpr>(unparen(nodes_[index].expr)); tuple && expected.kind == Type::Tuple) {
+            const usize arity = types_.descriptor(expected)->parameters.size();
+            if (arity == tuple->elems.size()) {
+                const auto checked = materialize_tuple(index, expected);
+                return !known(checked.type) ? checked : Value{expected};
+            }
+            diag_.error(DiagCode::ScalarTypeMismatch, span, "expected '{}', found a tuple of {} elements",
+                        scalar_type_name(expected), tuple->elems.size());
+            if (actual.literal != Literal::None) materialize(index, default_type(actual));
             return {Type::Error};
         }
         if (!known(expected) || unavailable(actual)) return actual;
@@ -2397,6 +2451,8 @@ private:
                 case ExprKind::Unwrap: exprs.push_back(cast<UnwrapExpr>(expr)->operand); break;
                 case ExprKind::GenericInst: exprs.push_back(cast<GenericInstExpr>(expr)->base); break;
                 case ExprKind::Array: for (const Expr* e : cast<ArrayExpr>(expr)->elems) exprs.push_back(e); break;
+                case ExprKind::Tuple: for (const Expr* e : cast<TupleExpr>(expr)->elems) exprs.push_back(e); break;
+                case ExprKind::TupleField: exprs.push_back(cast<TupleFieldExpr>(expr)->base); break;
                 case ExprKind::Interp: for (const Expr* e : cast<InterpExpr>(expr)->exprs) exprs.push_back(e); break;
                 default: break;
             }
@@ -2460,6 +2516,13 @@ private:
 
     Value materialize(usize root, Type type) {
         if (nodes_[root].value.literal == Literal::Array) return materialize_array(root, type);
+        if (nodes_[root].value.literal == Literal::Tuple) {
+            // Only a tuple type of the same arity fits; anything else takes the literal's default.
+            const auto* expected = type.kind == Type::Tuple ? types_.descriptor(type) : nullptr;
+            const auto* tuple = cast<TupleExpr>(unparen(nodes_[root].expr));
+            return materialize_tuple(root, expected && expected->parameters.size() == tuple->elems.size()
+                                               ? type : nodes_[root].value.type);
+        }
         struct Pending { usize index; bool negative; };
         std::vector<Pending> pending{{root, false}};
         std::vector<usize> visited;
@@ -2499,6 +2562,24 @@ private:
                 if (nodes_[dep].value.type == Type::Error) node.value = {Type::Error};
         }
         return nodes_[root].value;
+    }
+
+    // Types each element of a tuple literal, through any parentheses, against
+    // a tuple type of the same arity. Nesting is bounded by the parser.
+    Value materialize_tuple(usize root, Type expected) {
+        std::vector<usize> chain{root};
+        while (const auto* paren = as<ParenExpr>(nodes_[chain.back()].expr)) chain.push_back(expressions_.at(paren->inner));
+        const auto& tuple = *cast<TupleExpr>(nodes_[chain.back()].expr);
+        const auto elements = types_.descriptor(expected)->parameters;  // a copy: interning can move descriptors
+        PHS_ASSERT(expected.kind == Type::Tuple && elements.size() == tuple.elems.size());
+        Value result{expected.scalar()};
+        for (usize i = 0; i < elements.size(); ++i) {
+            const auto checked = require(tuple.elems[i], elements[i], tuple.elems[i]->span);
+            if (checked.type == Type::Error) result = checked;
+            else if (unavailable(checked) && result.type != Type::Error) result = {};
+        }
+        for (const usize index : chain) nodes_[index].value = result;
+        return result;
     }
 
     Value materialize_array(usize root, Type expected) {
@@ -2558,8 +2639,9 @@ private:
         if (equality) {
             // Validate independently inferred array elements before deferring
             // equality. Check both operands even when one literal fails.
-            if (lhs.literal == Literal::Array && known(lhs.type)) lhs = materialize(expressions_.at(expr.lhs), lhs.type);
-            if (rhs.literal == Literal::Array && known(rhs.type)) rhs = materialize(expressions_.at(expr.rhs), rhs.type);
+            const auto composite = [](Value v) { return (v.literal == Literal::Array || v.literal == Literal::Tuple) && known(v.type); };
+            if (composite(lhs)) lhs = materialize(expressions_.at(expr.lhs), lhs.type);
+            if (composite(rhs)) rhs = materialize(expressions_.at(expr.rhs), rhs.type);
         }
         if (lhs.type == Type::Error || rhs.type == Type::Error) return {Type::Error};
         if (expr.op == BinOp::Coalesce || expr.op == BinOp::Range || expr.op == BinOp::RangeExcl) return {};
@@ -2651,6 +2733,13 @@ private:
                 continue;
             }
             if (none_mismatch(index, target)) { result.matches = false; continue; }
+            if (const auto* tuple = as<TupleExpr>(unparen(nodes_[index].expr)); tuple && target.kind == Type::Tuple) {
+                const auto& elements = types_.descriptor(target)->parameters;
+                if (elements.size() != tuple->elems.size()) { result.matches = false; continue; }
+                result.lifts += target.optional_depth;
+                for (usize i = 0; i < elements.size(); ++i) work.push_back({expressions_.at(tuple->elems[i]), elements[i]});
+                continue;
+            }
             if (!known(target) || unavailable(actual)) { result.deferred = true; continue; }
             if (actual.type == Type::Never) continue;
             if (actual.literal == Literal::Array) {
@@ -3204,6 +3293,12 @@ private:
             } else node.value = {Type::Unit};
             return;
         }
+        if (!expr && node.source != std::numeric_limits<usize>::max()) {
+            const auto whole = nodes_[node.source].value.type;
+            if (whole == Type::Error) node.value = {Type::Error};
+            else if (whole.kind == Type::Tuple && !whole.optional_depth) node.value = {types_.descriptor(whole)->parameters.at(node.element)};
+            return;
+        }
         if (!expr) {
             const Type declared = annotation(node.annotation);
             Value initial = node.init ? value(node.init) : Value{};
@@ -3213,6 +3308,16 @@ private:
             } else if (node.init) {
                 if (initial.literal != Literal::None) initial = materialize(expressions_.at(node.init), default_type(initial));
                 node.value = initial;
+            }
+            if (const auto* var = node.destructuring; var && known(node.value.type)) {
+                const auto type = node.value.type;
+                const auto* tuple = type.kind == Type::Tuple && !type.optional_depth ? types_.descriptor(type) : nullptr;
+                if (!tuple || tuple->parameters.size() != var->names.size()) {
+                    diag_.error(DiagCode::ScalarTypeMismatch, var->type ? var->type->span : var->init->span,
+                                "cannot destructure '{}' into {} names; it needs a tuple of {} elements",
+                                scalar_type_name(type), var->names.size(), var->names.size());
+                    node.value = {Type::Error};
+                }
             }
             return;
         }
@@ -3268,6 +3373,39 @@ private:
                 if (element == Type::Error) node.value = {Type::Error};
                 else node.value = {known(element) ? types_.intern({.kind = Type::Array, .element = element}) : Type{},
                                    Literal::Array, context_pending && !known(element), concrete_anchor};
+                break;
+            }
+            case ExprKind::Tuple: {
+                // Literal elements default on their own until the tuple meets an expected type.
+                TypeDescriptor descriptor{.kind = Type::Tuple};
+                bool literal = false, failed = false, pending = false;
+                for (auto* child : cast<TupleExpr>(expr)->elems) {
+                    const auto element = value(child);
+                    failed |= element.type == Type::Error;
+                    literal |= element.literal != Literal::None;
+                    descriptor.parameters.push_back(default_type(element));
+                    pending |= !known(descriptor.parameters.back());
+                }
+                if (failed) node.value = {Type::Error};
+                else if (!pending) node.value = {types_.intern(std::move(descriptor)), literal ? Literal::Tuple : Literal::None};
+                break;
+            }
+            case ExprKind::TupleField: {
+                const auto& access = *cast<TupleFieldExpr>(expr);
+                auto base = value(access.base);
+                if (base.literal != Literal::None) base = materialize(expressions_.at(access.base), base.type);
+                if (base.type == Type::Error || base.type == Type::Never) { nodes_[index].value = {base.type}; break; }
+                if (!known(base.type)) break;
+                const auto* tuple = base.type.kind == Type::Tuple ? types_.descriptor(base.type) : nullptr;
+                if (!tuple || base.type.optional_depth) {
+                    diag_.error(DiagCode::InvalidMemberReceiver, access.index_span, "'.{}' needs a {}tuple, found '{}'{}", access.index,
+                                tuple ? "non-optional " : "", scalar_type_name(base.type), tuple ? "; unwrap it first" : "");
+                    nodes_[index].value = {Type::Error};
+                } else if (access.index >= tuple->parameters.size()) {
+                    diag_.error(DiagCode::UnknownMember, access.index_span, "tuple '{}' has no element {}",
+                                scalar_type_name(base.type), access.index);
+                    nodes_[index].value = {Type::Error};
+                } else nodes_[index].value = {tuple->parameters[access.index]};
                 break;
             }
             case ExprKind::Index: {

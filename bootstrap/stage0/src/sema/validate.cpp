@@ -332,7 +332,10 @@ private:
                 const auto stmts = cast<BlockExpr>(&expr)->stmts;
                 Names locals;
                 for (const Stmt* stmt : stmts)
-                    if (const auto* var = as<VarStmt>(stmt)) bind(locals, var->name);
+                    if (const auto* var = as<VarStmt>(stmt)) {
+                        bind(locals, var->name);
+                        for (const Name& name : var->names) bind(locals, name);
+                    }
                 for (const Stmt* stmt : std::views::reverse(stmts)) push(stmt, context);
                 break;
             }
@@ -389,11 +392,15 @@ private:
             case ExprKind::Array:
                 for (const Expr* child : std::views::reverse(cast<ArrayExpr>(&expr)->elems)) push(child, context);
                 break;
+            case ExprKind::Tuple:
+                for (const Expr* child : std::views::reverse(cast<TupleExpr>(&expr)->elems)) push(child, context);
+                break;
             case ExprKind::Paren: push(cast<ParenExpr>(&expr)->inner, context); break;
             case ExprKind::Cast: push(cast<CastExpr>(&expr)->operand, context); break;
             case ExprKind::Member: push(cast<MemberExpr>(&expr)->base, context); break;
             case ExprKind::OptMember: push(cast<OptMemberExpr>(&expr)->base, context); break;
             case ExprKind::Unwrap: push(cast<UnwrapExpr>(&expr)->operand, context); break;
+            case ExprKind::TupleField: push(cast<TupleFieldExpr>(&expr)->base, context); break;
             case ExprKind::GenericInst: push(cast<GenericInstExpr>(&expr)->base, context); break;
             case ExprKind::Unsafe: push(cast<UnsafeExpr>(&expr)->block, context); break;
             case ExprKind::Int:

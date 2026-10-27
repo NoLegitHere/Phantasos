@@ -346,7 +346,10 @@ private:
                     }
                     break;
                 case TypeKind::Optional:
+                    // A function type's result would take the '?' without parentheses.
+                    if (node->inner->kind == TypeKind::Fun) pending.emplace_back("(");
                     pending.emplace_back(node->inner);
+                    if (node->inner->kind == TypeKind::Fun) pending.emplace_back(")");
                     pending.emplace_back("?");
                     break;
                 case TypeKind::Shared:
@@ -362,6 +365,11 @@ private:
                     pending.emplace_back("]");
                     break;
                 case TypeKind::Unit: pending.emplace_back("()"); break;
+                case TypeKind::Tuple:
+                    pending.emplace_back("(");
+                    list(node->args);
+                    pending.emplace_back(")");
+                    break;
                 case TypeKind::SelfType: pending.emplace_back("Self"); break;
                 case TypeKind::Fun:
                     pending.emplace_back("fun(");
@@ -599,7 +607,13 @@ private:
         switch (s->kind) {
             case StmtKind::Var: {
                 const auto* v = cast<VarStmt>(s);
-                line(d, "{} {}{}", binding_title(v->binding), name(v->name), v->type ? ": " + type(v->type) : "");
+                std::string bound = name(v->name);
+                if (!v->names.empty()) {
+                    bound = "(";
+                    for (usize i = 0; i < v->names.size(); ++i) bound += (i ? ", " : "") + name(v->names[i]);
+                    bound += ")";
+                }
+                line(d, "{} {}{}", binding_title(v->binding), bound, v->type ? ": " + type(v->type) : "");
                 if (v->init) expr(d + 1, v->init);
                 return;
             }
@@ -698,6 +712,16 @@ private:
                 line(d, "Array");
                 for (const Expr* x : cast<ArrayExpr>(e)->elems) expr(d + 1, x);
                 return;
+            case ExprKind::Tuple:
+                line(d, "Tuple");
+                for (const Expr* x : cast<TupleExpr>(e)->elems) expr(d + 1, x);
+                return;
+            case ExprKind::TupleField: {
+                const auto* f = cast<TupleFieldExpr>(e);
+                line(d, "TupleField .{}", f->index);
+                expr(d + 1, f->base);
+                return;
+            }
             case ExprKind::Unary: {
                 const auto* u = cast<UnaryExpr>(e);
                 line(d, "Unary {}", unop_name(u->op));

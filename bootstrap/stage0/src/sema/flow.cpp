@@ -83,6 +83,7 @@ void operands(const Expr& expr, std::vector<const Expr*>& out) {
     switch (expr.kind) {
         case ExprKind::Paren: out.push_back(cast<ParenExpr>(&expr)->inner); break;
         case ExprKind::Array: for (const Expr* e : cast<ArrayExpr>(&expr)->elems) out.push_back(e); break;
+        case ExprKind::Tuple: for (const Expr* e : cast<TupleExpr>(&expr)->elems) out.push_back(e); break;
         case ExprKind::Interp: for (const Expr* e : cast<InterpExpr>(&expr)->exprs) out.push_back(e); break;
         case ExprKind::Unary: out.push_back(cast<UnaryExpr>(&expr)->operand); break;
         case ExprKind::Binary:
@@ -101,6 +102,7 @@ void operands(const Expr& expr, std::vector<const Expr*>& out) {
             out.push_back(cast<IndexExpr>(&expr)->index);
             break;
         case ExprKind::Unwrap: out.push_back(cast<UnwrapExpr>(&expr)->operand); break;
+        case ExprKind::TupleField: out.push_back(cast<TupleFieldExpr>(&expr)->base); break;
         case ExprKind::GenericInst: out.push_back(cast<GenericInstExpr>(&expr)->base); break;
         case ExprKind::If: {
             const auto& branch = *cast<IfExpr>(&expr);
@@ -215,6 +217,7 @@ private:
     struct Local {
         const VarStmt* decl;
         usize tracked;  // bit index, or kUntracked for locals with an initializer
+        Span declared;  // the name, which is one of decl->names when destructuring
     };
     static constexpr usize kUntracked = static_cast<usize>(-1);
 
@@ -273,6 +276,7 @@ private:
     Storage storage(ScalarType type) const {
         if (type.optional_depth) return Storage::Unknown;
         if (type.kind == ScalarType::Shared) return Storage::Reference;
+        if (type.kind == ScalarType::Tuple) return Storage::Value;
         const auto* descriptor = type.kind == ScalarType::Nominal ? types_.descriptor(type) : nullptr;
         if (!descriptor || !descriptor->declaration.valid()) return Storage::Unknown;
         const Item* item = resolution_.binding(descriptor->declaration).item;
@@ -331,7 +335,7 @@ private:
                 const auto* found = local(id);
                 if (!found) return {Access::Immutable, subject, binding.name.span, "bound here"};
                 if (found->decl->binding == Binding::Var) return {Access::Mutable};
-                return {Access::Immutable, subject, found->decl->name.span, "declared with 'let' here"};
+                return {Access::Immutable, subject, found->declared, "declared with 'let' here"};
             }
             case BindingKind::Pattern:
                 return {Access::Immutable, subject, binding.name.span, "pattern bindings are immutable"};
@@ -357,11 +361,12 @@ private:
         if (const auto* member = as<MemberExpr>(&expr)) return member->base;
         if (const auto* index = as<IndexExpr>(&expr)) return index->base;
         if (const auto* unwrap = as<UnwrapExpr>(&expr)) return unwrap->operand;
+        if (const auto* element = as<TupleFieldExpr>(&expr)) return element->base;
         return nullptr;
     }
 
-    // Member, index and unwrap chains are walked iteratively from their root.
-    // Array elements and unwrapped optionals keep the access of their container.
+    // Member, index, tuple element and unwrap chains are walked iteratively from
+    // their root. Elements and unwrapped optionals keep the access of their container.
     Place place(const Expr* expr) const {
         std::vector<const Expr*> chain;
         expr = unparen(expr);
@@ -400,12 +405,14 @@ private:
     void write_place(const Expr& target) {
         const Expr* inner = unparen(&target);
         const auto* member = as<MemberExpr>(inner);
+        const auto* tuple = as<TupleFieldExpr>(inner);
         const bool element = inner->kind == ExprKind::Index, unwrapped = inner->kind == ExprKind::Unwrap;
-        if (!member && !element && !unwrapped && inner->kind != ExprKind::SelfValue) return;
+        if (!member && !element && !unwrapped && !tuple && inner->kind != ExprKind::SelfValue) return;
         const Place found = place(inner);
         if (found.access == Access::Unknown || found.access == Access::Mutable) return;
-        if (element || unwrapped) {
-            const auto what = element ? "an element" : "an unwrapped optional";
+        if (element || unwrapped || tuple) {
+            const auto what = tuple ? std::format("element {}", tuple->index)
+                                    : std::string(element ? "an element" : "an unwrapped optional");
             if (found.access == Access::Temporary)
                 restricted(target.span, std::format("cannot assign to {} of a temporary value", what), found);
             else
@@ -495,8 +502,10 @@ private:
         tracked_ = 0;
         for (const auto& param : params) params_.emplace(param.name.span.lo, &param);
         each_stmt(body, [&](const Stmt& stmt) {
-            if (const auto* var = as<VarStmt>(&stmt))
-                locals_.emplace(var->name.span.lo, Local{var, var->init ? kUntracked : tracked_++});
+            if (const auto* var = as<VarStmt>(&stmt); var && var->names.empty())
+                locals_.emplace(var->name.span.lo, Local{var, var->init ? kUntracked : tracked_++, var->name.span});
+            else if (var)
+                for (const Name& name : var->names) locals_.emplace(name.span.lo, Local{var, kUntracked, name.span});
         });
         State state{Bits(tracked_, false), Bits(tracked_, false), true};
         eval(body, state);
@@ -540,7 +549,7 @@ private:
         if (!found || found->tracked == kUntracked || !state.live || state.assigned.test(found->tracked)) return;
         auto& d = diag_.error(DiagCode::UninitializedUse, name.span, "'{}' is used before it is initialized",
                               names_.str(name.name.sym));
-        d.notes.push_back({found->decl->name.span, "declared here without an initializer"});
+        d.notes.push_back({found->declared, "declared here without an initializer"});
     }
 
     void immutable(const NameExpr& name, Span declared, std::string_view note) {
@@ -562,14 +571,14 @@ private:
                 if (!found) { immutable(name, binding.name.span, "bound here; only 'var' locals can be reassigned"); return; }
                 const bool mutable_local = found->decl->binding == Binding::Var;
                 if (found->tracked == kUntracked) {
-                    if (!mutable_local) immutable(name, found->decl->name.span, "declared with 'let' here");
+                    if (!mutable_local) immutable(name, found->declared, "declared with 'let' here");
                     return;
                 }
                 if (!mutable_local && state.live && state.maybe.test(found->tracked)) {
                     auto& d = diag_.error(DiagCode::ImmutableAssignment, name.span,
                                           "'{}' may already be initialized; a 'let' binding is assigned only once",
                                           names_.str(name.name.sym));
-                    d.notes.push_back({found->decl->name.span, "declared with 'let' here"});
+                    d.notes.push_back({found->declared, "declared with 'let' here"});
                 }
                 state.assigned.set(found->tracked, true);
                 state.maybe.set(found->tracked, true);
@@ -737,7 +746,8 @@ private:
             case StmtKind::Var: {
                 const auto& var = *cast<VarStmt>(&stmt);
                 eval(var.init, state);
-                if (const auto it = locals_.find(var.name.span.lo); it != locals_.end() && it->second.tracked != kUntracked) {
+                if (const auto it = locals_.find(var.name.span.lo);
+                    var.names.empty() && it != locals_.end() && it->second.tracked != kUntracked) {
                     state.assigned.set(it->second.tracked, false);
                     state.maybe.set(it->second.tracked, false);
                 }

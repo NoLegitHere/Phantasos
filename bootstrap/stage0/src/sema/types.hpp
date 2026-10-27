@@ -79,7 +79,7 @@ public:
     std::string name(ScalarType type, const Resolution& resolution, const Interner& names, usize limit = kNameLimit) const;
 private:
     std::vector<TypeDescriptor> descriptors_;
-    std::unordered_map<TypeDescriptor, usize, TypeDescriptorHash> ids_;
+    std::unordered_multimap<usize, usize> ids_;  // descriptor hash -> index in descriptors_
 };
 
 enum class ExpansionState : u8 { Resolved, Deferred, Error };

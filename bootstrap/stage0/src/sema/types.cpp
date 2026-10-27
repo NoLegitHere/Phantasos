@@ -175,6 +175,7 @@ public:
         : resolution_(resolution), names_(names), diag_(diag) {}
 
     ScalarTypes run(const File& file) {
+        annotations_.plain.reserve(file.type_ids + 1);
         aliases_ = expand_aliases(resolution_, names_, diag_);
         if (diag_.has_errors(file.file)) {
             ScalarTypes result;
@@ -946,8 +947,8 @@ private:
         };
         const auto cached = [&](const TypeExpr* syntax, usize env) -> Type {
             if (!syntax) return Type::Unit;
-            const auto it = cache(env).find(syntax);
-            return it == cache(env).end() ? Type{} : it->second;
+            const auto* found = cache(env).find(syntax);
+            return found ? *found : Type{};
         };
         struct Frame {
             const TypeExpr* syntax;
@@ -1179,9 +1180,8 @@ private:
     }
 
     void clear_deferred_annotations() {
-        const auto deferred = [](const auto& entry) { return entry.second == Type::Deferred; };
-        std::erase_if(annotations_.types, deferred);
-        std::erase_if(speculative_annotations_.types, deferred);
+        annotations_.erase_deferred();
+        speculative_annotations_.erase_deferred();
     }
 
     void complete_hierarchy_types() {
@@ -1190,7 +1190,7 @@ private:
             for (const auto& [id, fact] : aliases_.aliases_) { (void)id; counts.first += fact.state != ExpansionState::Deferred; }
             for (const auto& b : resolution_.bindings()) if (b.kind == BindingKind::Type)
                 for (const auto& base : cast_type_decl(b.item)->supers)
-                    if (const auto it = annotations_.in(0).find(base.type); it != annotations_.types.end()) counts.second += it->second != Type::Deferred;
+                    if (const auto* found = annotations_.in(0).find(base.type)) counts.second += *found != Type::Deferred;
             return counts;
         };
         for (;;) {
@@ -3835,19 +3835,36 @@ private:
     DiagEngine& diag_;
     AliasExpansion aliases_;
     TypeTable types_;
-    // Annotation types per generic environment (0: none), keyed by environment and TypeExpr id.
+    // Annotation types per generic environment. Outside any environment (0)
+    // nearly every annotation is cached, so that table is dense by TypeExpr
+    // id; the others are keyed by environment and id.
     struct AnnotationCache {
-        std::unordered_map<u64, Type> types;
+        std::vector<std::optional<Type>> plain;
+        std::unordered_map<u64, Type> substituted;
         struct View {
-            std::unordered_map<u64, Type>& types;
+            AnnotationCache& cache;
             usize env;
             u64 key(const TypeExpr* syntax) const { return static_cast<u64>(env) << 32 | syntax->id; }
-            std::unordered_map<u64, Type>::iterator find(const TypeExpr* syntax) const { return types.find(key(syntax)); }
-            std::unordered_map<u64, Type>::iterator end() const { return types.end(); }
-            bool contains(const TypeExpr* syntax) const { return types.contains(key(syntax)); }
-            Type& operator[](const TypeExpr* syntax) const { return types[key(syntax)]; }
+            // The cached type, or null.
+            Type* find(const TypeExpr* syntax) const {
+                if (!env) return syntax->id < cache.plain.size() && cache.plain[syntax->id] ? &*cache.plain[syntax->id] : nullptr;
+                const auto it = cache.substituted.find(key(syntax));
+                return it == cache.substituted.end() ? nullptr : &it->second;
+            }
+            bool contains(const TypeExpr* syntax) const { return find(syntax); }
+            Type& operator[](const TypeExpr* syntax) const {
+                if (env) return cache.substituted[key(syntax)];
+                if (syntax->id >= cache.plain.size()) cache.plain.resize(syntax->id + 1);
+                auto& slot = cache.plain[syntax->id];
+                if (!slot) slot = Type{};
+                return *slot;
+            }
         };
-        View in(usize env) { return {types, env}; }
+        View in(usize env) { return {*this, env}; }
+        void erase_deferred() {
+            for (auto& slot : plain) if (slot == Type::Deferred) slot.reset();
+            std::erase_if(substituted, [](const auto& entry) { return entry.second == Type::Deferred; });
+        }
     };
     AnnotationCache annotations_;
     AnnotationCache speculative_annotations_;  // while probing constraints

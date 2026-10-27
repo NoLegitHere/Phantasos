@@ -32,9 +32,14 @@ usize TypeDescriptorHash::operator()(const TypeDescriptor& d) const {
 }
 
 ScalarType TypeTable::intern(TypeDescriptor descriptor) {
-    const auto [it, added] = ids_.try_emplace(descriptor, descriptors_.size());
-    if (added) descriptors_.push_back(std::move(descriptor));
-    return {descriptors_[it->second].kind, 0, it->second};
+    // Keyed by hash so each descriptor is stored once, in descriptors_.
+    const usize hash = TypeDescriptorHash{}(descriptor);
+    for (auto [it, last] = ids_.equal_range(hash); it != last; ++it)
+        if (descriptors_[it->second] == descriptor) return {descriptor.kind, 0, it->second};
+    const usize id = descriptors_.size();
+    ids_.emplace(hash, id);
+    descriptors_.push_back(std::move(descriptor));
+    return {descriptors_[id].kind, 0, id};
 }
 
 std::string TypeTable::name(ScalarType root, const Resolution& resolution, const Interner& names, usize limit) const {

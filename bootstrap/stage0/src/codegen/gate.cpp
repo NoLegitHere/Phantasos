@@ -179,6 +179,7 @@ private:
                     const auto field = types_.binding(values_.at(param.name.span.lo));
                     if (stored(param.type->span, field, "fields")) continue;
                     structs_.erase(items_.at(type).value);
+                    composites_.clear();
                     changed = true;
                     break;
                 }
@@ -228,11 +229,16 @@ private:
             for (const auto& param : type.ctor_params) {
                 // A field holds the structs inside its tuples too, and,
                 // conservatively, those its function types take or return.
+                // Composite types can share parts, so each is walked once.
                 std::vector<ScalarType> held{types_.binding(values_.at(param.name.span.lo))};
+                std::unordered_set<usize> seen;
                 while (!held.empty()) {
                     const auto field = held.back();
                     held.pop_back();
                     if (field.optional_depth) continue;
+                    if ((field.kind == ScalarType::Tuple || field.kind == ScalarType::Function) &&
+                        !seen.insert(field.detail).second)
+                        continue;
                     const auto* descriptor = types_.descriptor(field);
                     if (field.kind == ScalarType::Tuple || field.kind == ScalarType::Function)
                         held.insert(held.end(), descriptor->parameters.begin(), descriptor->parameters.end());
@@ -276,24 +282,25 @@ private:
             if (!cyclic.contains(items_.at(type).value)) continue;
             unsupported(type->name.span, "recursive structs");
             structs_.erase(items_.at(type).value);
+            composites_.clear();
         }
     }
 
     bool supported_type(ScalarType type) const {
         if (supported_scalar(type)) return true;
-        if (type.kind == ScalarType::Tuple && !type.optional_depth) {
-            // Elements hold values, so they cannot be 'Unit' or 'Never'.
-            return std::ranges::all_of(types_.descriptor(type)->parameters, [&](ScalarType element) {
-                return element.kind != ScalarType::Unit && element.kind != ScalarType::Never && supported_type(element);
-            });
-        }
-        if (type.kind == ScalarType::Function && !type.optional_depth) {
-            // Parameters hold values; the result may be 'Unit' or 'Never'.
+        if ((type.kind == ScalarType::Tuple || type.kind == ScalarType::Function) && !type.optional_depth) {
+            // Composite types can share parts, so each answer is kept.
+            if (const auto it = composites_.find(type.detail); it != composites_.end()) return it->second;
             const auto* descriptor = types_.descriptor(type);
-            return !descriptor->throws && supported_type(descriptor->result) &&
-                   std::ranges::all_of(descriptor->parameters, [&](ScalarType param) {
-                       return param.kind != ScalarType::Unit && param.kind != ScalarType::Never && supported_type(param);
-                   });
+            // Elements and parameters hold values, so they cannot be 'Unit' or
+            // 'Never'; a function's result may be either.
+            const bool supported =
+                (type.kind == ScalarType::Tuple || (!descriptor->throws && supported_type(descriptor->result))) &&
+                std::ranges::all_of(descriptor->parameters, [&](ScalarType part) {
+                    return part.kind != ScalarType::Unit && part.kind != ScalarType::Never && supported_type(part);
+                });
+            composites_.emplace(type.detail, supported);
+            return supported;
         }
         if (type.kind != ScalarType::Nominal || type.optional_depth) return false;
         const auto* descriptor = types_.descriptor(type);
@@ -728,6 +735,9 @@ private:
     std::unordered_map<const Item*, BindingId> items_;
     std::unordered_map<u32, BindingId> values_;  // locals and parameters by declaration offset
     std::unordered_set<const FunItem*> functions_;
+    // Whether each tuple and function type is supported, by descriptor; reset
+    // when a struct is rejected.
+    mutable std::unordered_map<usize, bool> composites_;
     std::unordered_set<usize> rejected_;  // locals whose declaration was reported
     std::unordered_set<usize> structs_;   // binding IDs of supported structs
     bool ok_ = true;

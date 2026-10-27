@@ -17,6 +17,7 @@
 
 #include <limits>
 #include <string>
+#include <format>
 #include <vector>
 
 #include "codegen/mir.hpp"
@@ -424,6 +425,13 @@ void function_values() {
     const auto hello = unit.run("fun hello() { print(\"hi\") }\n"
                                 "fun main(): Int {\n    let h = hello\n    h()\n    return 0\n}\n");
     CHECK(!hello.trapped && hello.output == "hi\n");
+    // Function types that share their parts are checked and lowered once
+    // per type, not once per path through them.
+    std::string shared = "fun f0(): Int = 7\n";
+    for (int i = 1; i < 64; ++i) shared += std::format("fun f{}() = (f{}, f{})\n", i, i - 1, i - 1);
+    shared += "struct S(f: fun() -> Int, deep: fun() -> (fun() -> Int, fun() -> Int))\n";
+    shared += "fun main(): Int = f2().1().0()\n";
+    CHECK(result(shared) == 7);
     CHECK(traps("fun dec(x: UInt8): UInt8 = x - 1\n"
                 "fun main(): Int {\n    let f = dec\n    return Int(f(0))\n}\n"));
 }

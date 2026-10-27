@@ -139,7 +139,15 @@ let generic = first((true, 1))
 let swapped = swap((1, true))
 let array: [(Int8, Int8)] = [(1, 2), (3, 4)]
 let inferred = [(1, 2)]
+fun same<T>(p: (T, T)): T = p.0
+let byte: Int8 = 1
+let anchoredFirst = same((byte, 2))
+let anchoredLast = same((2, byte))
+let nestedAnchor = same(((byte), 2))
+let ordered = (1, 2) < (3, 4)
 )");
+    CHECK(f.value("anchoredFirst") == Type::Int8 && f.value("anchoredLast") == Type::Int8);
+    CHECK(f.value("nestedAnchor") == Type::Int8);
     CHECK(f.value("taken") == Type::Int8 && f.value("byInt") == Type::Int8 && f.value("byBool") == Type::Bool);
     CHECK(f.value("generic") == Type::Bool && f.name(f.value("swapped")) == "(Bool, Int)");
     CHECK(f.name(f.value("array")) == "[(Int8, Int8)]" && f.name(f.value("inferred")) == "[(Int, Int)]");
@@ -154,6 +162,9 @@ void mismatches() {
         {"let x: (Int, Int) = (1, 2, 3)", DiagCode::ScalarTypeMismatch},
         {"let t = (1, 2)\nlet x: (Int8, Int8) = t", DiagCode::ScalarTypeMismatch},
         {"let x = 5\nlet y = x.0", DiagCode::InvalidMemberReceiver},
+        {"let y = (1).0", DiagCode::InvalidMemberReceiver},
+        {"let y = (1.5).0", DiagCode::InvalidMemberReceiver},
+        {"let x = (1, 2) - (3, 4)", DiagCode::InvalidScalarOperand},
         {"let t: (Int, Int)? = (1, 2)\nlet y = t.0", DiagCode::InvalidMemberReceiver},
         {"let x: Int = (1, 2)", DiagCode::ScalarTypeMismatch},
         {"fun f() { let (a, b) = 5 }", DiagCode::ScalarTypeMismatch},

@@ -1088,7 +1088,9 @@ tuple type of another arity is `E0400`; so is a tuple where some other type is
 expected. A tuple whose element type is still deferred stays deferred. Only
 literals are retyped this way: a tuple value must already have the expected
 type, apart from optional lifting of the whole tuple. Overload selection and
-generic inference look inside tuple types element by element (3.15, 3.22).
+generic inference look inside tuple types element by element (3.15, 3.22); the
+concrete elements of a tuple literal anchor inference before its literal
+elements, so `same((byte, 2))` and `same((2, byte))` both infer `Int8`.
 Contextual typing of nested literals recurses once per level, which the parser's
 nesting limit bounds.
 

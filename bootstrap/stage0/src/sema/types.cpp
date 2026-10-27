@@ -799,17 +799,35 @@ private:
         std::vector<std::pair<usize, Type>> pending_nominals;
         // Concrete arguments anchor inference before numeric literal defaults.
         // Probes later contextualize literals against the complete substitution.
-        for (bool literals : {false, true}) for (usize a = 0; a < call.args.size(); ++a) {
-            const auto actual = value(call.args[a].value);
-            const bool literal = actual.literal != Literal::None &&
-                                 (actual.literal != Literal::Array || !actual.concrete_anchor);
+        // A tuple literal against a tuple pattern splits into its elements, so
+        // its concrete elements anchor before its literal ones.
+        struct Seed { Type pattern, argument; bool literal; };
+        std::vector<Seed> seeds;
+        for (usize a = 0; a < call.args.size(); ++a) {
+            std::vector<std::pair<Type, const Expr*>> split{{patterns[mapping[a]], call.args[a].value}};
+            while (!split.empty()) {
+                const auto [pattern, expr] = split.back(); split.pop_back();
+                const auto* tuple = as<TupleExpr>(unparen(expr));
+                if (tuple && pattern.kind == Type::Tuple && !pattern.optional_depth &&
+                    types_.descriptor(pattern)->parameters.size() == tuple->elems.size()) {
+                    const auto elements = types_.descriptor(pattern)->parameters;
+                    for (usize i = elements.size(); i > 0; --i) split.push_back({elements[i - 1], tuple->elems[i - 1]});
+                    continue;
+                }
+                const auto actual = value(expr);
+                seeds.push_back({pattern, default_type(actual), actual.literal != Literal::None &&
+                                 (actual.literal != Literal::Array || !actual.concrete_anchor)});
+            }
+        }
+        for (bool literals : {false, true}) for (const auto& seed : seeds) {
+            const bool literal = seed.literal;
             if (literal != literals) continue;
-            if (!known(default_type(actual))) continue;
+            if (!known(seed.argument)) continue;
             auto hash = [](const std::pair<Type, Type>& pair) {
                 return TypeDescriptorHash{}({.element = pair.first, .result = pair.second});
             };
             std::unordered_set<std::pair<Type, Type>, decltype(hash)> seen(0, hash);
-            std::vector<std::pair<Type, Type>> work{{patterns[mapping[a]], default_type(actual)}};
+            std::vector<std::pair<Type, Type>> work{{seed.pattern, seed.argument}};
             while (!work.empty()) {
                 const auto [pattern, argument] = work.back(); work.pop_back();
                 if (!known(pattern) || !known(argument) || argument == Type::Never) continue;
@@ -2636,7 +2654,11 @@ private:
             return {Type::Bool};
         }
         const bool equality = expr.op == BinOp::Eq || expr.op == BinOp::Ne;
-        if (equality) {
+        const bool ordering = expr.op >= BinOp::Lt && expr.op <= BinOp::Ge;
+        // Tuple ordering is deferred like composite equality (3.28).
+        const auto tuple = [](Value v) { return v.type.kind == Type::Tuple && !v.type.optional_depth; };
+        const bool tuples = ordering && (tuple(lhs) || tuple(rhs));
+        if (equality || tuples) {
             // Validate independently inferred array elements before deferring
             // equality. Check both operands even when one literal fails.
             const auto composite = [](Value v) { return (v.literal == Literal::Array || v.literal == Literal::Tuple) && known(v.type); };
@@ -2645,9 +2667,8 @@ private:
         }
         if (lhs.type == Type::Error || rhs.type == Type::Error) return {Type::Error};
         if (expr.op == BinOp::Coalesce || expr.op == BinOp::Range || expr.op == BinOp::RangeExcl) return {};
-        if (equality && (lhs.type.optional_depth || rhs.type.optional_depth || lhs.type.kind >= Type::Nominal || rhs.type.kind >= Type::Nominal ||
-                         lhs.literal == Literal::Array || rhs.literal == Literal::Array)) return {};
-        const bool ordering = expr.op >= BinOp::Lt && expr.op <= BinOp::Ge;
+        if (tuples || (equality && (lhs.type.optional_depth || rhs.type.optional_depth || lhs.type.kind >= Type::Nominal ||
+                                    rhs.type.kind >= Type::Nominal || lhs.literal == Literal::Array || rhs.literal == Literal::Array))) return {};
         const bool ints = expr.op == BinOp::Rem || expr.op == BinOp::WrapAdd || expr.op == BinOp::WrapSub ||
                           expr.op == BinOp::WrapMul || expr.op == BinOp::BitOr || expr.op == BinOp::BitXor ||
                           expr.op == BinOp::BitAnd || expr.op == BinOp::Shl || expr.op == BinOp::Shr;
@@ -3393,7 +3414,7 @@ private:
             case ExprKind::TupleField: {
                 const auto& access = *cast<TupleFieldExpr>(expr);
                 auto base = value(access.base);
-                if (base.literal != Literal::None) base = materialize(expressions_.at(access.base), base.type);
+                if (base.literal != Literal::None) base = materialize(expressions_.at(access.base), default_type(base));
                 if (base.type == Type::Error || base.type == Type::Never) { nodes_[index].value = {base.type}; break; }
                 if (!known(base.type)) break;
                 const auto* tuple = base.type.kind == Type::Tuple ? types_.descriptor(base.type) : nullptr;

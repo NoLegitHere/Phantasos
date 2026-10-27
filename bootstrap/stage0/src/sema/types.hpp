@@ -221,6 +221,12 @@ public:
         const auto it = calls_.find(expr);
         return it == calls_.end() ? nullptr : &it->second;
     }
+    // The top-level function that a name used as a value refers to, once its
+    // type is known; overloads are picked by the expected function type.
+    BindingId function(const ast::Expr* expr) const {
+        const auto it = functions_.find(expr);
+        return it == functions_.end() ? BindingId{} : it->second;
+    }
     const CheckedConversion* conversion(const ast::CallExpr* expr) const {
         const auto it = conversions_.find(expr);
         return it == conversions_.end() ? nullptr : &it->second;
@@ -248,6 +254,7 @@ private:
     std::unordered_map<usize, ScalarSignature> signatures_;
     std::unordered_map<const ast::CallExpr*, CheckedCall> calls_;
     std::unordered_map<const ast::CallExpr*, CheckedConversion> conversions_;
+    std::unordered_map<const ast::Expr*, BindingId> functions_;
     std::unordered_map<const ast::Expr*, CheckedMember> members_;
     std::unordered_map<usize, CheckedHierarchy> hierarchies_;
     AliasExpansion aliases_;

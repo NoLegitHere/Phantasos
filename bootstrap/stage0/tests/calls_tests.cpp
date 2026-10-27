@@ -198,10 +198,12 @@ interface Marker {}
 fun constrained(value: Int): Int where Int: Copy = value
 let constraint = constrained(1)
 )");
-    for (std::string_view name : {"genericCandidate", "unknownArgument", "indirect", "constraint"}) {
+    for (std::string_view name : {"genericCandidate", "unknownArgument", "constraint"}) {
         CHECK(deferred.call(name).state == CallState::Deferred && !deferred.call(name).target.valid());
         CHECK(deferred.type(name) == Type::Deferred);
     }
+    // A function name used as a value has a function type, so calls through it are indirect.
+    CHECK(deferred.type("indirect") == Type::Int && deferred.call("indirect").kind == CallKind::IndirectFunction);
     CHECK(deferred.type("aliasArgument") == Type::Int && deferred.call("aliasArgument").state == CallState::Resolved);
     CHECK(deferred.type("member") == Type::Int && deferred.call("member").kind == CallKind::Method);
     CHECK(deferred.type("conversion") == Type::Int64);
@@ -354,6 +356,109 @@ void long_forward_call_chain() {
     f.check(source, {}, false);
     CHECK(f.type("first") == Type::Int && f.signature("f0").result == Type::Int);
 }
+
+// Named top-level functions used as values (3.15): single functions take their
+// signature's type, and overloads take the expected function type.
+void function_values() {
+    Frontend f;
+    f.check(R"(
+fun inc(x: Int): Int = x + 1
+fun add(x: Int, y: Int): Int = x + y
+fun add(x: Int): Int = x
+fun neg(x: Int8): Int8 = -x
+fun neg(x: Int): Int = -x
+fun twice(f: fun(Int) -> Int, x: Int): Int = f(f(x))
+fun pick(f: fun(Int8) -> Int8): Int8 = f(1)
+fun later(x: Int) = x * 2
+fun fails(): Int throws = 1
+fun gen<T>(x: T): T = x
+fun mutate(x: inout Int) {}
+let g = inc
+let h: fun(Int) -> Int = add
+let two: fun(Int, Int) -> Int = (add)
+let maybe: (fun(Int) -> Int)? = inc
+let pair: (fun(Int) -> Int, Int) = (neg, 1)
+let wide = twice(neg, 3)
+let narrow = pick(neg)
+let calls = g(2) + h(3)
+let inferred = twice(later, 1)
+let throwing = fails
+let ambiguous = add
+let generic = gen
+let convention = mutate
+let direct = inc(1)
+interface I {}
+struct S()
+fun constrained(x: Int): Int where S: I = x
+let constrainedValue = constrained
+fun one(x: Int): Int = x
+fun one(x: Bool) = one(x)
+let filtered: fun(Int) -> Int = one
+let viaOverload = twice(dbl, 1)
+fun dbl(x: Int) = x * 2
+fun dbl(x: Bool) = x
+)");
+    const auto init = [&](std::string_view name) { return ast::cast<ast::VarItem>(f.result.resolution->binding(f.binding(name)).item)->init; };
+    const auto name = [&](Type type) { return f.result.scalar_types->type_name(type, *f.result.resolution, f.session.names()); };
+    const auto target = [&](const ast::Expr* expr) { return f.result.scalar_types->function(expr); };
+    CHECK(name(f.type("g")) == "fun(Int) -> Int" && target(init("g")) == f.binding("inc", BindingKind::Function));
+    CHECK(f.type("h") == f.type("g") && target(init("h")) == f.binding("add", BindingKind::Function, 1));
+    const auto* paren = ast::cast<ast::ParenExpr>(init("two"));
+    CHECK(target(paren->inner) == f.binding("add", BindingKind::Function) && name(f.type("two")) == "fun(Int, Int) -> Int");
+    CHECK(name(f.type("maybe")) == "(fun(Int) -> Int)?" && target(init("maybe")) == target(init("g")));
+    const auto* tuple = ast::cast<ast::TupleExpr>(init("pair"));
+    CHECK(target(tuple->elems[0]) == f.binding("neg", BindingKind::Function, 1));
+    const auto* wide = ast::cast<ast::CallExpr>(init("wide"));
+    CHECK(target(wide->args[0].value) == f.binding("neg", BindingKind::Function, 1) && f.type("wide") == Type::Int);
+    const auto* narrow = ast::cast<ast::CallExpr>(init("narrow"));
+    CHECK(target(narrow->args[0].value) == f.binding("neg", BindingKind::Function) && f.type("narrow") == Type::Int8);
+    CHECK(f.type("calls") == Type::Int);
+    CHECK(f.type("inferred") == Type::Int);
+    const auto throwing = f.type("throwing");
+    CHECK(throwing.kind == Type::Function && f.result.scalar_types->descriptor(throwing)->throws);
+    // Without an expected type an overload set stays deferred, as do generic
+    // functions, functions with constraints, and functions whose parameters
+    // take a convention.
+    CHECK(target(init("filtered")) == f.binding("one", BindingKind::Function));
+    // A call waits for the inferred result of an overload passed as a value.
+    CHECK(f.type("viaOverload") == Type::Int &&
+          target(ast::cast<ast::CallExpr>(init("viaOverload"))->args[0].value) == f.binding("dbl", BindingKind::Function));
+    for (std::string_view deferred : {"ambiguous", "generic", "convention", "constrainedValue"}) {
+        CHECK(f.type(deferred) == Type::Deferred && !target(init(deferred)).valid());
+    }
+    // A direct call is still a direct call.
+    CHECK(f.call("direct").kind == CallKind::Function && !target(f.expr("direct")->callee).valid());
+
+    for (const auto& test : std::vector<std::pair<std::string_view, DiagCode>>{
+        {"fun inc(x: Int): Int = x\nlet bad: fun(Int) -> Bool = inc", DiagCode::ScalarTypeMismatch},
+        {"fun inc(x: Int): Int = x\nlet bad: fun(Int, Int) -> Int = inc", DiagCode::ScalarTypeMismatch},
+        {"fun add(x: Int): Int = x\nfun add(x: Bool): Int = 1\nlet bad: fun(Int8) -> Int = add", DiagCode::ScalarTypeMismatch},
+        {"fun add(x: Int): Int = x\nfun add(x: Bool): Int = 1\nfun take(f: fun(UInt) -> Int) {}\nlet bad = take(add)",
+         DiagCode::NoMatchingCall},
+        {"fun inc(x: Int): Int = x\nlet bad: Int = inc", DiagCode::ScalarTypeMismatch},
+        {"fun inc(x: Int): Int = x\nlet f = inc\nlet bad = f(true)", DiagCode::NoMatchingCall},
+        // Known parameter types rule out an overload whose result is still unknown.
+        {"fun f(x: Int): Int = x\nfun f(x: Bool) = f(x)\nlet bad: fun(String) -> Int = f", DiagCode::ScalarTypeMismatch},
+        {"fun f(x: Int): Int = x\nfun f(x: Bool) = f(x)\nfun take(g: fun(String) -> Int) {}\nlet bad = take(f)",
+         DiagCode::NoMatchingCall},
+        // An overload that the expected type rules out adds no inference edge, so
+        // an earlier use of the function value cannot leave its result deferred.
+        {"fun a() = use(b)\nfun b(x: Bool) = a()\nfun b(x: Int) = 1\nfun use(f: fun(Int) -> Int): Int = f(1)\n"
+         "let first = a()\nlet bad: Bool = b(true)", DiagCode::ScalarTypeMismatch},
+        // Selections wait until every possibly matching overload's result is inferred.
+        {"fun f(x: Int) = x\nfun f(x: Bool) = x\nlet bad: fun(Int) -> Bool = f", DiagCode::ScalarTypeMismatch},
+        {"fun f(x: Int): Int = x\nfun f(y: Int) = y + 1\nfun take(g: fun(Int) -> Int): Int = g(1)\nlet result = take(f)",
+         DiagCode::AmbiguousCall},
+        // A call candidate that another argument rejects schedules no results.
+        {"fun a() = use(b, 1)\nfun b(x: Bool) = a()\nfun b(x: Int) = 1\nfun use(g: fun(Bool) -> Int, n: Bool): Int = 1\n"
+         "fun use(g: fun(Int) -> Int, n: Int): Int = 1\nlet first = a()\nlet bad: Bool = b(true)", DiagCode::ScalarTypeMismatch},
+        // So do the known parameters of a single function whose result is still unknown.
+        {"fun f(x: Bool) = f(x)\nlet bad: fun(Int) -> Int = f", DiagCode::ScalarTypeMismatch},
+        {"fun f(x: Bool) = f(x)\nfun take(g: fun(Int) -> Int) {}\nlet bad = take(f)", DiagCode::NoMatchingCall},
+        // Overloads that differ only in labels have the same function type.
+        {"fun f(x: Int): Int = x\nfun f(y: Int): Int = y + 1\nlet bad: fun(Int) -> Int = f", DiagCode::AmbiguousCall},
+    }) { Frontend bad; bad.check(test.first, {test.second}); }
+}
 }  // namespace
 
 int main() {
@@ -366,4 +471,5 @@ int main() {
     recursion_and_stable_results();
     eliminated_overloads_do_not_create_return_cycles();
     long_forward_call_chain();
+    function_values();
 }

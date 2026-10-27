@@ -929,19 +929,22 @@ the subset, so that nothing half-checked reaches code generation:
   generic, `async`, `unsafe` or throwing, and cannot carry attributes. Their
   parameters use the default convention and have no defaults.
 - **Types.** `Bool`, `Int8` to `Int64`, `UInt8` to `UInt64`, `Int`, `UInt`,
-  `Unit` and `Never`, without optional wrappers. Parameters and locals need
-  one of the value types, so they cannot be `Unit` or `Never`.
+  `String`, `Unit` and `Never`, without optional wrappers. Parameters and
+  locals need one of the value types, so they cannot be `Unit` or `Never`.
+  `String` values come from literals and are only passed around whole: as
+  locals, arguments and results.
 - **Statements.** `let` and `var` locals, with or without an initializer;
   assignment and compound assignment to locals; `if`, `while`, `loop`, `break`,
   `continue` and `return`.
-- **Expressions.** Integer and Boolean literals, `()`, local and parameter
+- **Expressions.** Integer, Boolean and string literals, `()`, local and parameter
   names, parentheses, direct calls to top-level functions, integer
   conversions, unary `-`, `!` and `~`, arithmetic including the wrapping
   forms, `&`, `|`, `^`, comparisons, `&&` and `||`. Used `if` and block
   results are allowed where their type is known (3.24).
 
 Everything else reports `E0600`. That includes shifts, `for`, `defer`,
-`throw`, `match`, `unsafe` blocks, strings, `print` (3.27), floating-point values, arrays,
+`throw`, `match`, `unsafe` blocks, operators on strings, string interpolation,
+`print` (3.27), floating-point values, arrays,
 optionals, types and members, globals, and function values. A local whose
 type is still deferred also reports `E0600` and needs an annotation. One
 `E0600` is reported per construct, and uses of a rejected local are not
@@ -1010,5 +1013,5 @@ When a write to standard output fails, the program panics (3.7). Once `std`
 exists (P2), the prelude `print` forwards to `std.io` with the same signature
 and output.
 
-Stage0 does not generate code for `print` or `String` values yet; `gate`
-reports them as `E0600` (3.25).
+Stage0 generates code for `String` values (3.25) but not yet for `print`;
+`gate` reports calls to it as `E0600`.

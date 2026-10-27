@@ -15,7 +15,9 @@
 
 #include "codegen/x86_64.hpp"
 
+#include <algorithm>
 #include <format>
+#include <iterator>
 #include <limits>
 #include <vector>
 
@@ -31,6 +33,37 @@ constexpr std::string_view kDword[] = {"eax", "ecx", "edx", "ebx", "esp", "ebp",
 constexpr std::string_view kWord[] = {"ax", "cx", "dx", "bx", "sp", "bp", "si", "di", "r8w", "r9w"};
 constexpr std::string_view kByte[] = {"al", "cl", "dl", "bl", "spl", "bpl", "sil", "dil", "r8b", "r9b"};
 constexpr Reg kArgs[] = {RDI, RSI, RDX, RCX, R8, R9};
+
+// Where a value is passed: System V gives each word an integer register while
+// they last, but a two-word value takes two registers or goes on the stack
+// whole. Stack words count up from the first stack argument.
+struct Place {
+    u32 words = 1;
+    i32 reg = -1;    // first register in kArgs, or -1 on the stack
+    u32 stack = 0;   // first stack word when on the stack
+};
+
+struct Places {
+    std::vector<Place> values;
+    u32 stack_words = 0;
+};
+
+Places places(const std::vector<mir::Type>& types) {
+    Places out;
+    u32 next = 0;
+    for (const auto type : types) {
+        Place place{mir::words(type)};
+        if (next + place.words <= std::size(kArgs)) {
+            place.reg = static_cast<i32>(next);
+            next += place.words;
+        } else {
+            place.stack = out.stack_words;
+            out.stack_words += place.words;
+        }
+        out.values.push_back(place);
+    }
+    return out;
+}
 
 // Condition codes, as the low nibble of jcc and setcc opcodes.
 enum Cond : u8 { O = 0x0, B = 0x2, AE = 0x3, E = 0x4, NE = 0x5, BE = 0x6, A = 0x7, L = 0xC, GE = 0xD, LE = 0xE, G = 0xF };
@@ -56,7 +89,12 @@ std::string disp(i32 offset) { return offset < 0 ? std::format("[rbp-{}]", -offs
 // Renders data bytes as an assembler db directive.
 std::string quoted(std::string_view data) {
     std::string text = "db \"";
-    for (const char c : data) text += c == '\n' ? std::string("\\n") : std::string(1, c);
+    for (const char c : data) {
+        if (c == '"' || c == '\\') text += std::format("\\{}", c);
+        else if (c == '\n') text += "\\n";
+        else if (static_cast<u8>(c) < 0x20 || c == 0x7F) text += std::format("\\x{:02x}", static_cast<u8>(c));
+        else text += c;
+    }
     return text + '"';
 }
 
@@ -85,6 +123,16 @@ public:
     u64 here() const { return object_.text.size(); }
     void note(std::string text) {
         if (listing_) lines_.push_back({here(), 0, std::move(text), true});
+    }
+    // Lists the object's read-only data after its code.
+    void rodata() {
+        if (object_.rodata.empty()) return;
+        note(".rodata");
+        const std::string_view bytes(reinterpret_cast<const char*>(object_.rodata.data()), object_.rodata.size());
+        for (const auto& symbol : object_.symbols)
+            if (symbol.defined && symbol.section == obj::Section::Rodata)
+                note(std::format("    {:04x}  {}:  {}", symbol.offset, symbol.name,
+                                 quoted(bytes.substr(symbol.offset, symbol.size))));
     }
     std::string render() const {
         std::string out;
@@ -332,20 +380,23 @@ public:
         trap_ = static_cast<u32>(object_.symbols.size());
         object_.symbols.push_back({std::string(kTrapSymbol), false});
         for (usize i = 0; i < program_.functions.size(); ++i) function(static_cast<u32>(i));
+        as_.rodata();
     }
 
     std::string listing() const { return as_.render(); }
 
 private:
-    static i32 slot(mir::Reg r) { return -8 * static_cast<i32>(r.id + 1); }
+    // A register's first word; a String's length follows 8 bytes above it.
+    i32 slot(mir::Reg r) const { return slots_[r.id]; }
 
     void function(u32 index) {
         const auto& fun = program_.functions[index];
-        auto& symbol = object_.symbols[index];
-        // Keep functions 16-byte aligned; int3 fills the gap.
+        // Keep functions 16-byte aligned; int3 fills the gap. Literals add
+        // symbols as the body is emitted, so the function's is not held by reference.
         while (object_.text.size() % 16) object_.text.push_back(0xCC);
-        symbol.offset = as_.here();
-        as_.note(std::format("{}:  ; {}", symbol.name, fun.name));
+        const u64 offset = as_.here();
+        object_.symbols[index].offset = offset;
+        as_.note(std::format("{}:  ; {}", object_.symbols[index].name, fun.name));
         as_.reset();
         blocks_.clear();
         for (usize b = 0; b < fun.blocks.size(); ++b) blocks_.push_back(as_.label());
@@ -354,15 +405,26 @@ private:
         used_overflow_ = used_divide_ = false;
         fun_ = &fun;
 
+        slots_.clear();
+        i32 used = 0;
+        for (const auto type : fun.regs) {
+            used += 8 * static_cast<i32>(std::max(mir::words(type), 1u));
+            slots_.push_back(-used);
+        }
         as_.prologue();
-        const auto frame = static_cast<i32>((8 * fun.regs.size() + 15) / 16 * 16);
+        const auto frame = (used + 15) / 16 * 16;
         if (frame) as_.adjust_rsp(-frame);
+        const auto params = places(std::vector<Type>(fun.regs.begin(), fun.regs.begin() + fun.params));
         for (u32 p = 0; p < fun.params; ++p) {
-            if (p < 6) as_.store(slot({p}), kArgs[p]);
-            else {
-                // Stack arguments sit above the return address and saved rbp.
-                as_.load(RAX, 16 + 8 * static_cast<i32>(p - 6));
-                as_.store(slot({p}), RAX);
+            const auto& place = params.values[p];
+            for (u32 w = 0; w < place.words; ++w) {
+                const i32 at = slot({p}) + 8 * static_cast<i32>(w);
+                if (place.reg >= 0) as_.store(at, kArgs[place.reg + w]);
+                else {
+                    // Stack arguments sit above the return address and saved rbp.
+                    as_.load(RAX, 16 + 8 * static_cast<i32>(place.stack + w));
+                    as_.store(at, RAX);
+                }
             }
         }
         for (usize b = 0; b < fun.blocks.size(); ++b) {
@@ -375,7 +437,7 @@ private:
         trap_path(overflow_, used_overflow_, Trap::Overflow, "overflow");
         trap_path(divide_, used_divide_, Trap::DivideByZero, "division by zero");
         as_.patch();
-        symbol.size = as_.here() - symbol.offset;
+        object_.symbols[index].size = as_.here() - offset;
     }
 
     void trap_path(Assembler::Label label, bool used, Trap code, std::string_view what) {
@@ -407,6 +469,7 @@ private:
     void instruction(const mir::Inst& inst) {
         if (inst.op == Op::Call) return call(inst);
         const Type type = fun_->regs[inst.dst.id];
+        if (type == Type::Str) return string(inst);
         const Type operand = inst.a.valid() ? fun_->regs[inst.a.id] : type;
         const bool sign = mir::is_signed(operand);
         const bool wide = mir::bit_width(type) == 64;
@@ -453,9 +516,25 @@ private:
                 as_.setcc(compare(inst.op, sign));
                 break;
             }
-            case Op::Call: break;
+            case Op::Call: case Op::Str: break;
         }
         as_.store(slot(inst.dst), RAX);
+    }
+
+    // A literal's address and length, or a copy of both words.
+    void string(const mir::Inst& inst) {
+        if (inst.op == Op::Str) {
+            const auto& bytes = program_.strings[inst.imm];
+            as_.lea(RAX, object_.literal(bytes));
+            as_.store(slot(inst.dst), RAX);
+            as_.mov_imm(RAX, bytes.size());
+        } else {
+            PHS_ASSERT(inst.op == Op::Copy);
+            as_.load(RAX, slot(inst.a));
+            as_.store(slot(inst.dst), RAX);
+            as_.load(RAX, slot(inst.a) + 8);
+        }
+        as_.store(slot(inst.dst) + 8, RAX);
     }
 
     static Cond compare(Op op, bool sign) {
@@ -496,19 +575,30 @@ private:
     }
 
     void call(const mir::Inst& inst) {
-        const auto count = inst.args.size();
-        const auto stacked = count > 6 ? count - 6 : 0;
+        std::vector<Type> types;
+        for (const auto arg : inst.args) types.push_back(fun_->regs[arg.id]);
+        const auto args = places(types);
         // rsp stays 16-byte aligned at the call.
-        const i32 pad = stacked % 2 ? 8 : 0;
+        const i32 pad = args.stack_words % 2 ? 8 : 0;
         if (pad) as_.adjust_rsp(-pad);
-        for (usize i = count; i-- > 6;) {
-            as_.load(RAX, slot(inst.args[i]));
-            as_.push(RAX);
+        for (usize i = inst.args.size(); i-- > 0;) {
+            const auto& place = args.values[i];
+            if (place.reg >= 0) continue;
+            for (u32 w = place.words; w-- > 0;) {
+                as_.load(RAX, slot(inst.args[i]) + 8 * static_cast<i32>(w));
+                as_.push(RAX);
+            }
         }
-        for (usize i = 0; i < count && i < 6; ++i) as_.load(kArgs[i], slot(inst.args[i]));
+        for (usize i = 0; i < inst.args.size(); ++i) {
+            const auto& place = args.values[i];
+            for (u32 w = 0; place.reg >= 0 && w < place.words; ++w)
+                as_.load(kArgs[place.reg + w], slot(inst.args[i]) + 8 * static_cast<i32>(w));
+        }
         as_.call(inst.callee);
-        if (const auto cleanup = static_cast<i32>(8 * stacked) + pad) as_.adjust_rsp(cleanup);
-        if (inst.dst.valid()) as_.store(slot(inst.dst), RAX);
+        if (const auto cleanup = static_cast<i32>(8 * args.stack_words) + pad) as_.adjust_rsp(cleanup);
+        if (!inst.dst.valid()) return;
+        as_.store(slot(inst.dst), RAX);
+        if (fun_->regs[inst.dst.id] == Type::Str) as_.store(slot(inst.dst) + 8, RDX);
     }
 
     void terminator(const mir::Block& block, u32 index) {
@@ -527,7 +617,10 @@ private:
                 }
                 break;
             case Term::Ret:
-                if (block.value.valid()) as_.load(RAX, slot(block.value));
+                if (block.value.valid()) {
+                    as_.load(RAX, slot(block.value));
+                    if (fun_->regs[block.value.id] == Type::Str) as_.load(RDX, slot(block.value) + 8);
+                }
                 as_.epilogue();
                 break;
             case Term::Unreachable: as_.ud2(); break;
@@ -538,6 +631,7 @@ private:
     obj::Object& object_;
     Assembler as_;
     const mir::Function* fun_ = nullptr;
+    std::vector<i32> slots_;
     std::vector<Assembler::Label> blocks_;
     Assembler::Label overflow_ = 0, divide_ = 0;
     bool used_overflow_ = false, used_divide_ = false;
@@ -590,12 +684,7 @@ public:
         as_.patch();
         end(trap);
 
-        as_.note(".rodata");
-        for (const u32 index : {overflow, divide}) {
-            const auto& literal = object_.symbols[index];
-            const auto bytes = std::string_view(reinterpret_cast<const char*>(object_.rodata.data()), object_.rodata.size());
-            as_.note(std::format("    {:04x}  {}:  {}", literal.offset, literal.name, quoted(bytes.substr(literal.offset, literal.size))));
-        }
+        as_.rodata();
     }
 
     std::string listing() const { return as_.render(); }

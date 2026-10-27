@@ -26,7 +26,9 @@ using mir::Op;
 using mir::Term;
 using mir::Type;
 
-// A reference interpreter for MIR semantics: checked operations trap.
+// A reference interpreter for MIR semantics: checked operations trap. Stage0
+// strings are literals passed whole, so a String value is its index in
+// Program::strings.
 struct Outcome {
     bool trapped = false;
     u64 value = 0;
@@ -50,6 +52,7 @@ public:
     explicit Interpreter(const mir::Program& program) : program_(program) {}
 
     Outcome run() { return call(program_.main, {}); }
+    Outcome run(u32 function) { return call(function, {}); }
 
 private:
     Outcome call(u32 index, std::vector<u64> args) {
@@ -80,6 +83,7 @@ private:
                 switch (inst.op) {
                     case Op::Const: out = normalize(type, inst.imm); CHECK(out == inst.imm); break;
                     case Op::Copy: out = a; break;
+                    case Op::Str: out = inst.imm; CHECK(inst.imm < program_.strings.size()); break;
                     case Op::Neg: {
                         i64 r = 0;
                         trap = __builtin_sub_overflow(i64{0}, sa, &r) || !fits(type, static_cast<u64>(r));

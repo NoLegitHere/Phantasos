@@ -36,6 +36,7 @@ Type lower_type(ScalarType type) {
         case ScalarType::UInt32: return Type::U32;
         case ScalarType::UInt64: case ScalarType::UInt: return Type::U64;
         case ScalarType::Bool: return Type::Bool;
+        case ScalarType::String: return Type::Str;
         case ScalarType::Unit: return Type::Unit;
         case ScalarType::Never: return Type::Never;
         default: PHS_ASSERT(false && "type outside the code generation subset"); unreachable();
@@ -409,6 +410,16 @@ private:
                     tasks.pop_back();
                     values.push_back(constant(Type::Bool, cast<BoolExpr>(expr)->value));
                     break;
+                case ExprKind::String: {
+                    tasks.pop_back();
+                    const auto bytes = names_.str(cast<StringExpr>(expr)->value);
+                    const auto [found, added] = strings_.try_emplace(std::string(bytes), program_.strings.size());
+                    if (added) program_.strings.emplace_back(bytes);
+                    const Reg dst = reg(Type::Str);
+                    emit({.op = Op::Str, .dst = dst, .imm = found->second});
+                    values.push_back(dst);
+                    break;
+                }
                 case ExprKind::Unit:
                     tasks.pop_back();
                     values.push_back({});
@@ -555,6 +566,7 @@ private:
     std::unordered_map<const Item*, BindingId> items_;
     std::unordered_map<u32, BindingId> values_;  // locals and parameters by declaration offset
     std::unordered_map<const FunItem*, u32> functions_;
+    std::unordered_map<std::string, u64> strings_;  // literal bytes to their index in program_.strings
     Program program_;
     Function* fun_ = nullptr;
     u32 current_ = 0;

@@ -952,13 +952,14 @@ structs. The `gate` command
 runs `check` first. If `check` succeeds, `gate` reports every construct outside
 the subset, so that nothing half-checked reaches code generation:
 
-- **Declarations.** Top-level functions with a body, and plain structs. A
-  function cannot be generic, `async`, `unsafe` or throwing, and cannot carry
-  attributes. Its parameters use the default convention and have no
-  defaults. A plain struct takes all its fields, at least one, from its
-  primary constructor, without conventions or defaults. It has no generic
-  parameters, attributes, conformances or body members (methods, body
-  fields, `init` or `deinit`), and it cannot hold itself through its fields,
+- **Declarations.** Top-level functions with a body, and plain structs with
+  their methods. A function or method cannot be generic, `async`, `unsafe` or
+  throwing, and cannot carry attributes. Its parameters use the default
+  convention and have no defaults. A plain struct takes all its fields, at
+  least one, from its primary constructor, without conventions or defaults.
+  It has no generic parameters, attributes or conformances, and its body
+  holds only instance methods, `fun` or `mut fun`: no static methods, body
+  fields, `init` or `deinit`. It cannot hold itself through its fields,
   directly or through other structs.
 - **Types.** `Bool`, `Int8` to `Int64`, `UInt8` to `UInt64`, `Int`, `UInt`,
   `String`, `Unit` and `Never`, without optional wrappers. Parameters and
@@ -968,21 +969,23 @@ the subset, so that nothing half-checked reaches code generation:
   value types of the subset is a value type too; a struct with a field of
   any other type is rejected along with the field.
 - **Statements.** `let` and `var` locals, with or without an initializer;
-  assignment and compound assignment to locals and to fields of local
-  structs, at any depth; `if`, `while`, `loop`, `break`,
+  assignment and compound assignment to locals, to `self` in a `mut fun`,
+  and to fields of either at any depth; `if`, `while`, `loop`, `break`,
   `continue` and `return`.
 - **Expressions.** Integer, Boolean and string literals, `()`, local and
   parameter names, parentheses, direct calls to top-level functions, `print`
   (3.27), integer conversions, primary constructors of supported structs,
-  reads of their fields, unary `-`, `!` and `~`, arithmetic including
+  reads of their fields, calls to their methods with an explicit or implicit
+  receiver, `self` and bare field names inside methods, unary `-`, `!` and `~`, arithmetic including
   the wrapping forms, `&`, `|`, `^`, comparisons, `&&` and `||`. Used `if` and block
   results are allowed where their type is known (3.24).
 
 Everything else reports `E0600`. That includes shifts, `for`, `defer`,
 `throw`, `match`, `unsafe` blocks, operators on strings, string interpolation,
 floating-point values, arrays,
-optionals, classes, enums, interfaces, members other than struct fields,
-globals, and function values. A local whose
+optionals, classes, enums, interfaces, members other than struct fields and
+method calls, method values, globals, and function values. A `mut fun` call
+needs a receiver rooted in a local, `self` or a field of `self`. A local whose
 type is still deferred also reports `E0600` and needs an annotation. One
 `E0600` is reported per construct, and uses of a rejected local are not
 reported again.
@@ -999,7 +1002,10 @@ parameter order) and the parts of an expression are evaluated before the
 operation that uses them. Compound assignment `x op= e` reads its target
 before it evaluates `e`. Assignment to a field of a local struct, such as
 `p.a.x = e`, evaluates `e` and then stores into the struct that `p` holds at
-that point; `p.a.x op= e` reads `p.a.x` first. `&&` and `||` evaluate their right operand only when
+that point; `p.a.x op= e` reads `p.a.x` first. A method call evaluates its
+receiver before its arguments, except that a `mut fun` receiver is a place:
+it is read when the call starts, after the arguments, and the method's
+changes reach it when the call returns. `&&` and `||` evaluate their right operand only when
 the left operand does not decide the result.
 
 Integer `+`, `-`, `*` and unary `-` trap when the result does not fit the
@@ -1018,8 +1024,9 @@ argument register: 1 for overflow and 2 for division by zero. The signed
 minimum divided by `-1` is an overflow. `__phantasos_trap` does not return.
 Functions use the System V AMD64 calling convention and get the symbol
 `_P<length><name>` for their MIR name, so `fib` becomes `_P3fib` and an
-overload named `sub.1` becomes `_P5sub.1`. Struct values use the layout of
-abi.md A.2 and are passed as A.6 describes. `phantasos-stage0 asm <file>` prints the code as a
+overload named `sub.1` becomes `_P5sub.1`. A method's MIR name is its struct's
+name, a dot and its own, so `Point.sum` becomes `_P9Point.sum`. Struct values
+use the layout of abi.md A.2 and are passed as A.6 describes. `phantasos-stage0 asm <file>` prints the code as a
 listing. These names and codes are a stage0 detail, not a stable ABI.
 
 On Linux x86_64, stage0 links a program into a static ELF executable with a

@@ -79,7 +79,7 @@ foundation. Complete.
   - [x] Field and `mut fun` receiver mutability checks.
   - [x] Struct values: construction, field reads, locals, arguments and results.
   - [x] Field assignment.
-  - [ ] Methods, including `mut fun`.
+  - [x] Methods, including `mut fun`.
   - [ ] Tuples in the front end: types, literals, `.0` access and destructuring.
   - [ ] Tuple code generation.
   - [ ] Sample programs and run tests.

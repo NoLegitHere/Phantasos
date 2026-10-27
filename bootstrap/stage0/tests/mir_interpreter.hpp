@@ -37,6 +37,7 @@ struct Outcome {
     u64 value = 0;
     u32 trap = 0;  // the x86_64 trap code: 1 for overflow, 2 for division by zero
     std::string output;  // what print wrote to standard output
+    std::vector<u64> params;  // final parameter values, for inout write-back
 };
 
 inline u64 normalize(Type type, u64 bits) {
@@ -81,6 +82,9 @@ private:
                     const auto result = call(inst.callee, std::move(values));
                     if (result.trapped) return result;
                     if (inst.dst.valid()) regs[inst.dst.id] = result.value;
+                    const auto& callee = program_.functions[inst.callee];
+                    for (u32 p = 0; p < callee.params; ++p)
+                        if (mir::is_inout(callee, p)) regs[inst.args[p].id] = result.params[p];
                     continue;
                 }
                 if (inst.op == Op::Make) {
@@ -191,7 +195,8 @@ private:
                 case Term::CondBr: block = regs[b.value.id] ? b.target : b.other; break;
                 case Term::Ret:
                     --depth_;
-                    return {false, b.value.valid() ? regs[b.value.id] : 0};
+                    return {false, b.value.valid() ? regs[b.value.id] : 0, 0, {},
+                            std::vector<u64>(regs.begin(), regs.begin() + fun.params)};
                 case Term::Unreachable: CHECK(false && "reached unreachable");
             }
         }

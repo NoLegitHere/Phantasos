@@ -13,7 +13,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <algorithm>
 #include <format>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -106,23 +108,35 @@ public:
 
     Program run(const File& file) {
         std::vector<const FunItem*> funs;
-        std::unordered_map<std::string_view, u32> seen;
+        std::unordered_map<std::string, u32> seen;
         // Every struct in the file passed the gate; a struct's layout follows
         // those of the structs it holds.
         for (const Item* item : file.items)
             if (item->kind == ItemKind::Struct) (void)structure(items_.at(item));
-        for (const Item* item : file.items) {
-            const auto* fun = as<FunItem>(item);
-            if (!fun) continue;
-            functions_.emplace(fun, static_cast<u32>(funs.size()));
-            funs.push_back(fun);
-            const auto name = names_.str(fun->name.sym);
-            if (name == "main") program_.main = static_cast<u32>(funs.size() - 1);
+        const auto add = [&](const FunItem& fun, std::string name) {
+            functions_.emplace(&fun, static_cast<u32>(funs.size()));
+            funs.push_back(&fun);
             // Overloads get a numeric suffix so that every name is unique.
             const u32 index = seen[name]++;
             auto& out = program_.functions.emplace_back();
-            out.name = index ? std::format("{}.{}", name, index) : std::string(name);
-            out.span = fun->name.span;
+            out.name = index ? std::format("{}.{}", name, index) : name;
+            out.span = fun.name.span;
+        };
+        for (const Item* item : file.items) {
+            if (item->kind == ItemKind::Struct) {
+                // Methods are named after their struct and follow it.
+                const auto& type = *as_type_decl(item);
+                for (const Item* member : type.members)
+                    if (const auto* method = as<FunItem>(member)) {
+                        owners_.emplace(method, items_.at(item));
+                        add(*method, std::format("{}.{}", names_.str(type.name.sym), names_.str(method->name.sym)));
+                    }
+                continue;
+            }
+            const auto* fun = as<FunItem>(item);
+            if (!fun) continue;
+            if (names_.str(fun->name.sym) == "main") program_.main = static_cast<u32>(funs.size());
+            add(*fun, std::string(names_.str(fun->name.sym)));
         }
         for (usize i = 0; i < funs.size(); ++i) function(*funs[i], program_.functions[i]);
         return std::move(program_);
@@ -131,6 +145,12 @@ public:
 private:
     struct Loop {
         u32 head, exit;
+    };
+    // A local or the receiver, and the fields below it from the outside in.
+    struct Place {
+        Reg root;
+        std::vector<u32> fields;
+        std::vector<Type> types;  // the type of each field
     };
 
     // ------------------------------------------------------------ building
@@ -207,6 +227,18 @@ private:
         return ids.front();
     }
     Reg local(const NameExpr& name) const { return locals_.at(target(name).value); }
+    // The declaration index of the receiver's field that a bare name inside a method reads.
+    std::optional<u32> implicit_field(const NameExpr& name) const {
+        const auto& binding = resolution_.binding(target(name));
+        if (binding.kind != BindingKind::Field) return {};
+        return fields_.at(binding.name.span.lo);
+    }
+    static bool mutating(const FunItem& fun) { return has_modifier(fun.mods, Modifier::Mut); }
+    bool mutating_call(const CallExpr& call) const {
+        const CheckedCall* checked = types_.call(&call);
+        return checked && checked->kind == CallKind::Method &&
+               mutating(*cast<FunItem>(resolution_.binding(checked->target).item));
+    }
     // A used branch's type is that of its first tail with a value.
     Type branch_type(const Expr* root) {
         std::vector<const Expr*> work{root};
@@ -229,7 +261,14 @@ private:
     void function(const FunItem& item, Function& out) {
         fun_ = &out;
         locals_.clear();
+        self_ = {};
         const ScalarSignature* sig = types_.signature(items_.at(&item));
+        // A method's receiver is its hidden first parameter (abi.md A.6),
+        // inout for a `mut fun`.
+        if (const auto owner = owners_.find(&item); owner != owners_.end()) {
+            self_ = reg(structure(owner->second));
+            if (mutating(item)) out.inout = {true};
+        }
         for (const auto& param : item.sig.params)
             locals_[values_.at(param.name.span.lo).value] = reg(lower_type(types_.binding(values_.at(param.name.span.lo))));
         out.params = static_cast<u32>(out.regs.size());
@@ -299,9 +338,9 @@ private:
             }
             case StmtKind::Assign: {
                 const auto& assign = *cast<AssignStmt>(&stmt);
-                const Expr* place = unparen(assign.target);
-                if (const auto* member = as<MemberExpr>(place)) return assign_field(assign, *member);
-                const Reg dst = local(*cast<NameExpr>(place));
+                const Place assigned = place(assign.target);
+                if (!assigned.fields.empty()) return assign_field(assign, assigned);
+                const Reg dst = assigned.root;
                 if (assign.op == AssignOp::Assign) {
                     copy(dst, any(assign.value));
                     return;
@@ -356,14 +395,15 @@ private:
         }
     }
 
-    // A field of a local struct, possibly nested: the new value is built into
-    // each enclosing struct in turn, from the local's value after the assigned
-    // value was evaluated. Compound assignment reads the field first.
-    void assign_field(const AssignStmt& assign, const MemberExpr& target) {
+    // A field of a local struct or of the receiver, possibly nested: the new
+    // value is built into each enclosing struct in turn, from the root's value
+    // after the assigned value was evaluated. Compound assignment reads the
+    // field first.
+    void assign_field(const AssignStmt& assign, const Place& target) {
         Reg src;
         if (assign.op == AssignOp::Assign) src = any(assign.value);
         else {
-            const Reg old = value(&target);
+            const Reg old = value(assign.target);
             const Reg rhs = any(assign.value);
             if (rhs.valid()) {
                 src = reg(fun_->regs[old.id]);
@@ -372,21 +412,45 @@ private:
         }
         // A diverging value has already ended the block.
         if (!src.valid()) return;
-        std::vector<const MemberExpr*> path{&target};
-        while (const auto* outer = as<MemberExpr>(unparen(path.back()->base))) path.push_back(outer);
-        const Reg root = local(*cast<NameExpr>(unparen(path.back()->base)));
-        // Read each enclosing struct from the outside in, then rebuild them.
-        std::vector<Reg> owners{root};
-        for (usize i = path.size(); i-- > 1;) {
-            const Reg inner = reg(lower_type(scalar(path[i])));
-            emit({.op = Op::Field, .dst = inner, .a = owners.back(), .imm = field(*path[i])});
+        auto owners = read(target, target.fields.size() - 1);
+        owners.push_back(src);
+        rebuild(target, owners);
+    }
+
+    // ------------------------------------------------------------ places
+
+    Place place(const Expr* expr) {
+        Place out;
+        expr = unparen(expr);
+        for (const auto* member = as<MemberExpr>(expr); member; member = as<MemberExpr>(expr)) {
+            out.fields.push_back(field(*member));
+            out.types.push_back(lower_type(scalar(member)));
+            expr = unparen(member->base);
+        }
+        if (const auto* name = as<NameExpr>(expr); name && implicit_field(*name)) {
+            out.fields.push_back(implicit_field(*name).value());
+            out.types.push_back(lower_type(scalar(name)));
+            out.root = self_;
+        } else out.root = name ? local(*name) : self_;
+        std::reverse(out.fields.begin(), out.fields.end());
+        std::reverse(out.types.begin(), out.types.end());
+        return out;
+    }
+    // The root and the values of its first depth fields, each read from the previous.
+    std::vector<Reg> read(const Place& place, usize depth) {
+        std::vector<Reg> owners{place.root};
+        for (usize i = 0; i < depth; ++i) {
+            const Reg inner = reg(place.types[i]);
+            emit({.op = Op::Field, .dst = inner, .a = owners.back(), .imm = place.fields[i]});
             owners.push_back(inner);
         }
-        for (usize i = 0; i < path.size(); ++i) {
-            const Reg owner = owners[owners.size() - 1 - i];
-            emit({.op = Op::With, .dst = owner, .a = owner, .b = src, .imm = field(*path[i])});
-            src = owner;
-        }
+        return owners;
+    }
+    // Writes owners.back() into the place's last field, rebuilding every
+    // enclosing struct up to the root in place.
+    void rebuild(const Place& place, const std::vector<Reg>& owners) {
+        for (usize i = place.fields.size(); i-- > 0;)
+            emit({.op = Op::With, .dst = owners[i], .a = owners[i], .b = owners[i + 1], .imm = place.fields[i]});
     }
 
     // ------------------------------------------------------------ expressions
@@ -399,14 +463,15 @@ private:
         return dst;
     }
 
-    // Only statements inside a block or `if` can assign a local while an
-    // expression is evaluated.
-    static bool writes(const Expr* root) {
+    // Only statements inside a block or `if`, and `mut fun` calls, can
+    // assign a local or the receiver while an expression is evaluated.
+    bool writes(const Expr* root) const {
         std::vector<const Expr*> work{root};
         while (!work.empty()) {
             const Expr* expr = work.back();
             work.pop_back();
             if (expr->kind == ExprKind::If || expr->kind == ExprKind::Block) return true;
+            if (const auto* call = as<CallExpr>(expr); call && mutating_call(*call)) return true;
             if (const auto* paren = as<ParenExpr>(expr)) work.push_back(paren->inner);
             else if (const auto* unary = as<UnaryExpr>(expr)) work.push_back(unary->operand);
             else if (const auto* binary = as<BinaryExpr>(expr)) {
@@ -500,10 +565,22 @@ private:
                     break;
                 case ExprKind::Name: {
                     tasks.pop_back();
-                    const Reg local = this->local(*cast<NameExpr>(expr));
+                    const auto& name = *cast<NameExpr>(expr);
+                    if (const auto index = implicit_field(name)) {
+                        // A bare field name inside a method reads the receiver's field.
+                        const Reg dst = reg(lower_type(scalar(expr)));
+                        emit({.op = Op::Field, .dst = dst, .a = self_, .imm = *index});
+                        values.push_back(dst);
+                        break;
+                    }
+                    const Reg local = this->local(name);
                     values.push_back(snapshots ? snapshot(local) : local);
                     break;
                 }
+                case ExprKind::SelfValue:
+                    tasks.pop_back();
+                    values.push_back(snapshots ? snapshot(self_) : self_);
+                    break;
                 case ExprKind::If: case ExprKind::Block:
                     tasks.pop_back();
                     values.push_back(branch(expr, true));
@@ -573,13 +650,24 @@ private:
                 }
                 case ExprKind::Call: {
                     const auto& call = *cast<CallExpr>(expr);
-                    if (stage < call.args.size()) {
-                        tasks.push_back({call.args[stage].value});
+                    // A method's receiver value runs before the arguments; a
+                    // `mut fun` receiver is a place, read at the call.
+                    const CheckedCall* checked = types_.call(&call);
+                    const bool method = checked && checked->kind == CallKind::Method && !mutating_call(call);
+                    const usize first = method ? 1 : 0;
+                    if (stage < first) {
+                        if (checked->receiver) tasks.push_back({checked->receiver});
+                        else values.push_back(snapshots ? snapshot(self_) : self_);
+                        break;
+                    }
+                    if (stage - first < call.args.size()) {
+                        tasks.push_back({call.args[stage - first].value});
                         break;
                     }
                     tasks.pop_back();
-                    std::vector<Reg> args(values.end() - static_cast<std::ptrdiff_t>(call.args.size()), values.end());
-                    values.resize(values.size() - call.args.size());
+                    const auto count = static_cast<std::ptrdiff_t>(call.args.size() + first);
+                    std::vector<Reg> args(values.end() - count, values.end());
+                    values.resize(values.size() - static_cast<usize>(count));
                     values.push_back(this->call(call, std::move(args)));
                     break;
                 }
@@ -660,12 +748,29 @@ private:
             return dst;
         }
         const auto& callee = *cast<FunItem>(resolution_.binding(checked.target).item);
-        // Arguments run in source order and are passed in parameter order.
-        std::vector<Reg> ordered(callee.sig.params.size());
-        for (usize i = 0; i < args.size(); ++i) ordered[checked.parameters[i]] = args[i];
+        // Arguments run in source order and are passed in parameter order,
+        // after a method's receiver.
+        const bool method = checked.kind == CallKind::Method;
+        const bool inout = method && mutating(callee);
+        const usize first = method && !inout ? 1 : 0;
+        std::vector<Reg> ordered(callee.sig.params.size() + (method ? 1 : 0));
+        if (first) ordered.front() = args.front();
+        for (usize i = first; i < args.size(); ++i) ordered[checked.parameters[i - first] + (method ? 1 : 0)] = args[i];
+        // A diverging operand has already ended the block.
+        for (const Reg arg : args)
+            if (!arg.valid()) return {};
+        Place receiver;
+        std::vector<Reg> owners;
+        if (inout) {
+            // The receiver's place is read now and written back after the call.
+            receiver = checked.receiver ? place(checked.receiver) : Place{self_, {}, {}};
+            owners = read(receiver, receiver.fields.size());
+            ordered.front() = owners.back();
+        }
         const Reg dst = has_value(type) ? reg(type) : Reg{};
         emit({.op = Op::Call, .dst = dst, .callee = functions_.at(&callee), .args = std::move(ordered)});
         if (type == Type::Never) end(Term::Unreachable);
+        else if (inout) rebuild(receiver, owners);
         return dst;
     }
 
@@ -678,6 +783,8 @@ private:
     std::unordered_map<std::string, u64> strings_;  // literal bytes to their index in program_.strings
     std::unordered_map<usize, u32> layouts_;  // struct declaration binding to its index in program_.layouts
     std::unordered_map<u32, u32> fields_;     // field declaration offset to its declaration index
+    std::unordered_map<const FunItem*, BindingId> owners_;  // a method's struct
+    Reg self_;  // the current method's receiver
     Program program_;
     Function* fun_ = nullptr;
     u32 current_ = 0;

@@ -34,7 +34,7 @@ struct Holder(real: Real)
 
 struct Counter(count: Int) {
     var extra: Int = 0
-    fun next(): Int = count + 1
+    static fun zero(): Int = 0
 }
 
 struct Point(x: Int, y: Int)

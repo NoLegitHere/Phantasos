@@ -283,6 +283,71 @@ fun main(): Int {
     CHECK(traps("struct P(x: Int8)\nfun main(): Int {\n    let p = P(x: 127)\n    return Int(P(x: p.x + 1).x)\n}\n"));
 }
 
+void methods() {
+    Frontend f;
+    const auto text = f.dump(R"(
+struct P(var x: Int) {
+    fun get(): Int = x
+    fun get(plus: Int): Int = x + plus
+    mut fun set(to: Int) { x = to }
+    mut fun bump(): Int {
+        set(to: get() + 1)
+        return self.x
+    }
+}
+fun main(): Int {
+    var p = P(x: 1)
+    return p.bump() + p.get(plus: 10)
+}
+)");
+    // Methods follow their struct, named after it, with the receiver first.
+    CHECK(text.contains("fun @P.get(%0: @P) -> i64 {"));
+    CHECK(text.contains("fun @P.get.1(%0: @P, %1: i64) -> i64 {"));
+    CHECK(text.contains("fun @P.set(inout %0: @P, %1: i64) -> unit {"));
+    CHECK(text.contains("fun @P.get(%0: @P) -> i64 {\nbb0:\n    %1: i64 = field %0, x\n"));
+    CHECK(text.contains("    call @P.set(%0, %4)\n    %5: i64 = field %0, x\n"));
+    CHECK(Interpreter(*f.program).run().value == 2 + 12);
+    // A receiver read before a `mut fun` argument changes it keeps its value.
+    CHECK(result(R"(
+struct P(var x: Int) {
+    fun plus(n: Int): Int = x * 100 + n
+    mut fun bump(): Int {
+        x += 1
+        return x
+    }
+}
+fun pair(a: P, n: Int): Int = a.x * 10 + n
+fun main(): Int {
+    var p = P(x: 1)
+    let a = p.plus(p.bump())
+    let b = pair(p, p.bump())
+    return a * 1000 + b
+}
+)") == 102 * 1000 + 23);
+    // Nested receivers are written back through every enclosing struct.
+    CHECK(result(R"(
+struct In(var n: Int8) {
+    mut fun inc() { n += 1 }
+}
+struct Mid(var inner: In, var tag: Bool)
+struct Out(var mid: Mid, var other: In) {
+    mut fun both() {
+        mid.inner.inc()
+        other.inc()
+        self.other.inc()
+    }
+}
+fun main(): Int {
+    var o = Out(mid: Mid(inner: In(n: 1), tag: true), other: In(n: 5))
+    o.both()
+    o.mid.inner.inc()
+    return Int(o.mid.inner.n) * 10 + Int(o.other.n)
+}
+)") == 37);
+    CHECK(traps("struct In(var n: Int8) {\n    mut fun inc() { n += 1 }\n}\n"
+                "fun main(): Int {\n    var i = In(n: 127)\n    i.inc()\n    return 0\n}\n"));
+}
+
 void rejected_files() {
     FrontendSession session;
     const auto id = session.sources().add("mir.phs", "fun main(): Float64 = 1.0\n");
@@ -319,6 +384,7 @@ int main() {
     calls_and_order();
     writes_during_evaluation();
     structs();
+    methods();
     rejected_files();
     long_trees();
     std::println("mir tests passed");

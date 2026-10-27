@@ -25,9 +25,9 @@ gate_structs.phs:33:21: error[E0600]: stage0 code generation does not support va
 gate_structs.phs:36:9: error[E0600]: stage0 code generation does not support fields declared in a struct body yet
    36 |     var extra: Int = 0
       |         ^^^^^
-gate_structs.phs:37:9: error[E0600]: stage0 code generation does not support methods yet
-   37 |     fun next(): Int = count + 1
-      |         ^^^^
+gate_structs.phs:37:16: error[E0600]: stage0 code generation does not support static methods yet
+   37 |     static fun zero(): Int = 0
+      |                ^^^^
 gate_structs.phs:44:9: error[E0600]: stage0 code generation does not support values of type 'Holder' yet
    44 |     let h = Holder(real: Real(x: 1.0))
       |         ^

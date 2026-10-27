@@ -307,6 +307,33 @@ fun main(): Int {
     return total
 }
 )");
+    // Methods: receivers in registers, on the stack and by address, and inout
+    // receivers written back through nested fields.
+    agrees(R"(
+struct Small(var a: Int8, var b: Bool) {
+    fun value(): Int = if b { Int(a) } else { -Int(a) }
+    mut fun flip() { b = !b }
+}
+struct Wide(var x: Int, var y: Int, var z: Int, var small: Small) {
+    fun total(k: Int): Int = x + y + z + small.value() + k
+    mut fun spin(times: Int): Int {
+        var i = 0
+        while i < times {
+            small.flip()
+            x += i
+            i += 1
+        }
+        return total(0)
+    }
+}
+fun late(a: Int, b: Int, c: Int, d: Int, e: Int, f: Int, w: Wide): Int = w.total(a + b + c + d + e + f)
+fun main(): Int {
+    var w = Wide(x: 1, y: 2, z: 3, small: Small(a: 7, b: true))
+    let first = w.spin(times: 3)
+    w.small.flip()
+    return first * 1000 + late(1, 2, 3, 4, 5, 6, w) + w.small.value()
+}
+)");
     agrees("struct P(x: Int8, y: Int8)\nfun main(): Int {\n    let p = P(x: 100, y: 27)\n    let q = P(x: p.x + p.y, y: p.x + 28)\n    return Int(q.x)\n}\n");
     agrees("fun boom(): Bool = 1 / 0 == 1\nfun main(): Int {\n    let a = false && boom()\n    let b = true || boom()\n    if a || !b { return 1 }\n    return 0\n}\n");
 }
@@ -382,7 +409,11 @@ struct Generator {
         };
         std::string source = "struct S(";
         for (usize i = 0; i < fields; ++i) source += std::format("{}var f{}: {}", i ? ", " : "", i, kinds[i]->name);
-        source += ")\nstruct T(var s: S, var n: Int)\nfun step(";
+        source += ") {\n    mut fun adjust(by: Int) {\n";
+        for (usize i = 0; i < fields; ++i)
+            if (pick(1)) source += std::format("        f{} = f{} &+ {}\n", i, i, literal(*kinds[i]));
+        source += "        if by > 0 { self.adjust(by: by - 1) }\n    }\n    fun sum(): Int = mix(self)\n}\n";
+        source += "struct T(var s: S, var n: Int)\nfun step(";
         for (usize i = 0; i < pad; ++i) source += std::format("w{}: Int, ", i);
         source += "s: S, last: Int): S = ";
         source += make([&](usize i) { return std::format("s.f{} &+ {}", i, literal(*kinds[i])); });
@@ -401,7 +432,8 @@ struct Generator {
             const auto* op = pick(2) == 0 ? "+=" : pick(1) ? "&=" : "=";
             source += std::format("\n    {}.f{} {} {}", pick(1) ? "s" : "t.s", f, op, literal(*kinds[f]));
         }
-        return source + "\n    return mix(s) &+ mix(t.s)\n}\n";
+        if (pick(1)) source += std::format("\n    t.s.adjust(by: {})\n    s.adjust(by: {})", pick(3), pick(3));
+        return source + "\n    return s.sum() &+ mix(t.s)\n}\n";
     }
 };
 

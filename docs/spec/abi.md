@@ -32,6 +32,10 @@ ABI**.
 - A tuple is laid out like a struct whose fields are its elements, in
   order, so `(Bool, Int, Int8)` puts element 1 at 0, element 0 at 8 and
   element 2 at 9, and takes 16 bytes. It is passed like that struct too.
+- A function value is two words, like a struct of a code pointer at 0 and
+  an environment pointer at 8, and is passed like that struct. The code
+  takes the environment as a hidden parameter (A.6). Stage0's values of named
+  functions point at a thunk and have a null environment.
 
 ## A.3 Class objects
 ```
@@ -75,7 +79,8 @@ parameters in this order:
 1. `ret*`: an indirect return slot, when the platform C ABI would use sret
    or the function throws.
 2. `err*`: an error slot (only for throwing functions).
-3. `self`: the receiver.
+3. `self`: the receiver, or `env`: the environment of a call through a
+   function value.
 4. The explicit parameters in source order.
 
 - **Throwing functions** return a status `Bool` in `al` (0 = success,
@@ -95,6 +100,12 @@ parameters in this order:
   A larger result is written through `ret*` in `rdi`, and the callee returns
   that address in `rax`. Stage0 has no floating-point fields yet, so every
   eightbyte is of the INTEGER class.
+- Stage0 calls a function value by loading its code into `r11`, which no
+  argument uses, and its environment as the first parameter after `ret*`,
+  then `call r11`. A named function used as a value gets a thunk,
+  `_P$5thunk` followed by its length-prefixed stage0 name (so `twice` gets
+  `_P$5thunk5twice`), which takes the environment and the function's
+  parameters, drops the environment and calls the function.
 - Stage0 passes a method's receiver as its first parameter after `ret*`, like
   any other struct argument. A `mut fun` receiver is `inout`: it is passed by
   address whatever its size. The callee copies it in, and it writes the final

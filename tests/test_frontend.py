@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
+import platform
 import subprocess
 import tempfile
 import unittest
@@ -125,16 +126,13 @@ class FrontendTests(unittest.TestCase):
         self.assertIn(b"error[E0600]", result.stderr)
         self.assertFalse(rejected.exists())
 
-        # Function values pass the gate and lower to MIR, but asm and build
-        # report that x86_64 cannot compile them yet.
-        self.source.write_text("fun one(): Int = 1\nfun main(): Int {\n    let f = one\n    return f()\n}\n", encoding="utf-8")
-        result = build(str(self.source), "-o", str(rejected))
-        self.assertEqual(result.returncode, 1)
-        self.assertIn(b"does not support function values yet", result.stderr)
-        self.assertFalse(rejected.exists())
-        listing = subprocess.run([str(self.exe), "asm", str(self.source)], capture_output=True, timeout=30)
-        self.assertEqual((listing.returncode, listing.stdout), (1, b""))
-        self.assertIn(b"does not support function values yet", listing.stderr)
+        # Function values build into a program that calls them.
+        self.source.write_text("fun one(): Int = 1\nfun main(): Int {\n    let f = one\n    return f() + 41\n}\n", encoding="utf-8")
+        called = Path(self.directory.name) / "called"
+        result = build(str(self.source), "-o", str(called))
+        self.assertEqual((result.returncode, result.stderr), (0, b""))
+        if platform.system() == "Linux" and platform.machine() in ("x86_64", "AMD64"):
+            self.assertEqual(subprocess.run([str(called)], timeout=30).returncode, 42)
 
     def test_nesting_limit(self) -> None:
         n = 2000

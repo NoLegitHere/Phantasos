@@ -34,7 +34,10 @@
 // a String; a larger one is passed by address and copied in by the callee,
 // and a larger result is written through a hidden pointer in rdi. An inout
 // parameter, such as a `mut fun` receiver, is passed by address and written
-// back before the callee returns.
+// back before the callee returns. A function value travels like a two-word
+// struct of code and environment; a call through it passes the environment
+// first after ret* and calls the code through r11. A function used as a
+// value has a thunk that drops the environment and calls it.
 //
 // A failed check calls the runtime's trap entry with a Trap code in edi; the
 // entry does not return.
@@ -57,14 +60,13 @@ inline constexpr std::string_view kPrintBool = "_P$print_bool";
 
 // "_P" followed by the length-prefixed MIR name (abi.md A.7, without a package).
 [[nodiscard]] std::string symbol_name(const mir::Function& function);
-
-// Whether emit can compile the program: not yet when it makes or calls
-// function values.
-[[nodiscard]] bool supports(const mir::Program& program);
+// "_P$5thunk" followed by the length-prefixed MIR name: the code of a function's
+// value, which takes the environment first and drops it.
+[[nodiscard]] std::string thunk_name(const mir::Function& function);
 
 // Symbols 0..n-1 are the program's functions in order; the trap entry follows,
-// then, as they are first used, print entries and string literals (local
-// .rodata symbols).
+// then the thunks of functions used as values, in function order, and, as they
+// are first used, print entries and string literals (local .rodata symbols).
 // When listing is non-null it receives a readable assembly listing.
 [[nodiscard]] obj::Object emit(const mir::Program& program, std::string* listing = nullptr);
 

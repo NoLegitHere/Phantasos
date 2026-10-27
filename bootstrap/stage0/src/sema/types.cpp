@@ -174,12 +174,12 @@ public:
             const auto& b = resolution_.bindings()[i];
             if (b.kind == BindingKind::GenericParameter) generic_bindings_[b.name.span.lo] = BindingId{i};
             if (b.members.valid()) member_owners_.emplace(b.members.value, BindingId{i});
-            if (resolution_.scopes()[b.scope.value].kind == ScopeKind::Members &&
-                b.kind != BindingKind::Type && b.kind != BindingKind::TypeAlias)
-                member_values_[b.scope.value][b.name.sym.id].push_back(BindingId{i});
         }
-        for (usize i = 0; i < resolution_.scopes().size(); ++i)
-            for (const auto id : resolution_.scopes()[i].bindings) scope_names_[i][resolution_.binding(id).name.sym.id].push_back(id);
+        for (usize i = 0; i < resolution_.scopes().size(); ++i) {
+            const auto& bindings = resolution_.scopes()[i].bindings;
+            if (bindings.size() < kIndexedScope) continue;
+            for (const auto id : bindings) large_scope_names_[scope_name_key(ScopeId{i}, resolution_.binding(id).name.sym)].push_back(id);
+        }
         normalize_aliases();
         build_hierarchies();
         hierarchy_ready_ = true;
@@ -1352,11 +1352,31 @@ private:
         std::vector<BindingId> declarations;
         std::vector<BindingId> ids;
     };
+    static u64 scope_name_key(ScopeId scope, Symbol name) { return u64(scope.value) << 32 | name.id; }
+    // The bindings named `name` in `scope`, in the scope's order. Most scopes
+    // are small enough to scan; large ones are indexed by name up front.
+    std::vector<BindingId> scope_bindings(ScopeId scope, Symbol name) const {
+        const auto& bindings = resolution_.scopes()[scope.value].bindings;
+        if (bindings.size() >= kIndexedScope) {
+            const auto it = large_scope_names_.find(scope_name_key(scope, name));
+            return it == large_scope_names_.end() ? std::vector<BindingId>{} : it->second;
+        }
+        std::vector<BindingId> result;
+        for (const auto id : bindings)
+            if (resolution_.binding(id).name.sym == name) result.push_back(id);
+        return result;
+    }
     std::vector<BindingId> direct_members(BindingId owner, Symbol name, bool types_only) const {
         const auto scope = resolution_.binding(owner).members;
         if (!scope.valid()) return {};
-        if (!types_only) if (const auto table = member_values_.find(scope.value); table != member_values_.end())
-            if (const auto it = table->second.find(name.id); it != table->second.end()) return it->second;
+        if (!types_only) {
+            auto values = scope_bindings(scope, name);
+            std::erase_if(values, [&](BindingId id) {
+                const auto kind = resolution_.binding(id).kind;
+                return kind == BindingKind::Type || kind == BindingKind::TypeAlias;
+            });
+            if (!values.empty()) return values;
+        }
         const auto& types = aliases_.member_types_.at(scope.value);
         if (const auto it = types.find(name.id); it != types.end()) return {it->second};
         return {};
@@ -1957,11 +1977,7 @@ private:
             } else {
                 MemberLookup result;
                 std::vector<BindingId> types;
-                const auto table = scope_names_.find(scope.value);
-                if (table == scope_names_.end()) continue;
-                const auto named = table->second.find(name.id);
-                if (named == table->second.end()) continue;
-                for (const auto id : named->second) {
+                for (const auto id : scope_bindings(scope, name)) {
                     const auto& b = resolution_.binding(id);
                     if (b.kind == BindingKind::Type || b.kind == BindingKind::TypeAlias || b.kind == BindingKind::GenericParameter || b.kind == BindingKind::BuiltinType) types.push_back(id);
                     else if (!types_only) result.ids.push_back(id);
@@ -3800,8 +3816,8 @@ private:
     std::unordered_map<const CallExpr*, usize> call_contexts_;
     std::unordered_map<const Expr*, ExpandedType> entities_;
     std::unordered_map<usize, BindingId> member_owners_;
-    std::unordered_map<usize, std::unordered_map<u32, std::vector<BindingId>>> member_values_;
-    std::unordered_map<usize, std::unordered_map<u32, std::vector<BindingId>>> scope_names_;  // each scope's bindings by name
+    static constexpr usize kIndexedScope = 32;  // scopes with at least this many bindings are indexed by name
+    std::unordered_map<u64, std::vector<BindingId>> large_scope_names_;  // scope_name_key -> bindings
     std::unordered_map<usize, CheckedHierarchy> hierarchies_;
     std::vector<BindingId> hierarchy_order_;
     bool hierarchy_ready_ = false;

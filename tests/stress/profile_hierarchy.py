@@ -18,11 +18,13 @@
 For each shape and size, generates a file with gen_hierarchy.py, runs `check`
 on it, and prints wall time and peak memory. With --perf, also records a
 `perf` profile and prints the functions with the most self and inclusive
-time. Build stage0 with -DCMAKE_BUILD_TYPE=RelWithDebInfo and
+time. With --massif, also runs valgrind massif and prints which source lines
+hold the most heap at the peak. --max-kib-per-class fails runs whose peak
+memory divided by the class count is over budget. Build stage0 with -DCMAKE_BUILD_TYPE=RelWithDebInfo and
 -fno-omit-frame-pointer for readable call stacks.
 
 Usage: python tests/stress/profile_hierarchy.py --stage0 <exe> [--shapes chain,wide]
-           [--classes 1000,10000,200000] [--perf] [--top 15] [--out DIR]
+           [--classes 1000,10000,200000] [--perf] [--massif] [--max-kib-per-class K] [--top 15] [--out DIR]
 """
 
 from __future__ import annotations
@@ -91,6 +93,55 @@ def perf_top(perf: str, data: Path, children: bool, top: int) -> list[tuple[floa
     return rows[:top]
 
 
+def massif_sites(ms_print: str, report: Path) -> tuple[int, int, list[tuple[int, str]]]:
+    """Returns the peak heap and its malloc overhead in bytes, and the bytes held at the peak by each stage0 source line.
+
+    Each leaf of the peak snapshot's allocation tree is charged to its innermost
+    frame in bootstrap/stage0/src, so inlined container code is charged to the
+    line that owns the container.
+    """
+    lines = subprocess.run([ms_print, "--threshold=0.1", str(report)], capture_output=True, text=True).stdout.splitlines()
+    peak = next((int(m.group(1)) for l in lines if (m := re.search(r"Detailed snapshots: \[.*?(\d+) \(peak\)", l))), None)
+    if peak is None:
+        return 0, 0, []
+    start = next(i for i, l in enumerate(lines) if re.match(rf"\s+{peak}\s+[\d,]+\s+[\d,]+", l))
+    total, _useful, overhead = (int(c.replace(",", "")) for c in lines[start].split()[2:5])
+    entries = []
+    for l in lines[start + 1:]:
+        if re.match(r"\s+\d+\s+[\d,]+\s+[\d,]+\s+[\d,]+", l):
+            break  # the next snapshot
+        if m := re.match(r"^([| ]*)->[\d.]+% \(([\d,]+)B\) (.*)", l):
+            entries.append((len(m.group(1)), int(m.group(2).replace(",", "")), m.group(3)))
+    sites: dict[str, int] = {}
+    stack: list[tuple[int, str]] = []
+    for i, (depth, size, frame) in enumerate(entries):
+        while stack and stack[-1][0] >= depth:
+            stack.pop()
+        stack.append((depth, frame))
+        if i + 1 < len(entries) and entries[i + 1][0] > depth:
+            continue  # not a leaf
+        site = "(no stage0 frame)"
+        for _, f in stack:
+            if m := re.search(r"\((?:.*/)?(bootstrap/stage0/src/[^)]*)\)", f):
+                site = m.group(1)
+                break
+        sites[site] = sites.get(site, 0) + size
+    return total, overhead, sorted(((b, s) for s, b in sites.items()), reverse=True)
+
+
+def print_massif(total: int, overhead: int, sites: list[tuple[int, str]], top: int) -> None:
+    owners: dict[str, int] = {}
+    for size, site in sites:
+        owner = site.split(":")[0].removeprefix("bootstrap/stage0/src/")
+        owners[owner] = owners.get(owner, 0) + size
+    print(f"  peak heap {total / 2**20:.1f} MiB, of which malloc overhead {overhead / 2**20:.1f} MiB; by file:")
+    for owner, size in sorted(owners.items(), key=lambda kv: -kv[1])[:top]:
+        print(f"    {size / 2**20:8.2f} MiB  {size / total * 100:5.1f}%  {owner}")
+    print("  by line:")
+    for size, site in sites[:top]:
+        print(f"    {size / 2**20:8.2f} MiB  {size / total * 100:5.1f}%  {site.removeprefix('bootstrap/stage0/src/')}")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--stage0", required=True)
@@ -103,6 +154,8 @@ def main() -> int:
     ap.add_argument("--perf-exe", default=shutil.which("perf") or "perf")
     ap.add_argument("--frequency", type=int, default=999)
     ap.add_argument("--top", type=int, default=15)
+    ap.add_argument("--massif", action="store_true", help="also run valgrind massif and print peak heap by source line")
+    ap.add_argument("--max-kib-per-class", type=float, help="fail when peak memory per class exceeds this")
     ap.add_argument("--out", help="keep generated sources and perf data here")
     args = ap.parse_args()
 
@@ -122,6 +175,8 @@ def main() -> int:
                 cmd = [args.perf_exe, "record", "-q", "-g", "-F", str(args.frequency), "-o", str(data), "--", *cmd]
             elapsed, rss, rc = run(cmd, args.timeout)
             result = "timeout" if rc is None else ("ok" if rc == 0 else f"exit {rc}")
+            if rc == 0 and rss and args.max_kib_per_class and rss / n > args.max_kib_per_class:
+                result = f"over budget: {rss / n:.1f} KiB per class > {args.max_kib_per_class}"
             failed |= result != "ok"
             peak = f"{rss / 1024:.0f}" if rss else "-"
             print(f"{shape:<8} {n:>8} {elapsed:>9.2f} {peak:>9}  {result}", flush=True)
@@ -130,6 +185,12 @@ def main() -> int:
                     print(f"  top {title} time:")
                     for pct, name in perf_top(args.perf_exe, data, children, args.top):
                         print(f"    {pct:6.2f}%  {name}")
+                print(flush=True)
+            if args.massif:
+                report = out / f"{shape}-{n}.massif"
+                subprocess.run(["valgrind", "--tool=massif", "--depth=40", "--threshold=0.1", f"--massif-out-file={report}",
+                                args.stage0, "check", str(source)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                print_massif(*massif_sites("ms_print", report), args.top)
                 print(flush=True)
             if not args.out:
                 source.unlink()

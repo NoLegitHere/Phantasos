@@ -968,7 +968,8 @@ the subset, so that nothing half-checked reaches code generation:
   value types of the subset is a value type too; a struct with a field of
   any other type is rejected along with the field.
 - **Statements.** `let` and `var` locals, with or without an initializer;
-  assignment and compound assignment to locals; `if`, `while`, `loop`, `break`,
+  assignment and compound assignment to locals and to fields of local
+  structs, at any depth; `if`, `while`, `loop`, `break`,
   `continue` and `return`.
 - **Expressions.** Integer, Boolean and string literals, `()`, local and
   parameter names, parentheses, direct calls to top-level functions, `print`
@@ -981,7 +982,7 @@ Everything else reports `E0600`. That includes shifts, `for`, `defer`,
 `throw`, `match`, `unsafe` blocks, operators on strings, string interpolation,
 floating-point values, arrays,
 optionals, classes, enums, interfaces, members other than struct fields,
-assignment to fields, globals, and function values. A local whose
+globals, and function values. A local whose
 type is still deferred also reports `E0600` and needs an annotation. One
 `E0600` is reported per construct, and uses of a rejected local are not
 reported again.
@@ -996,7 +997,9 @@ Evaluation is strictly left to right. Operands of a binary operator, the
 arguments of a call (in source order, even when labels pass them in another
 parameter order) and the parts of an expression are evaluated before the
 operation that uses them. Compound assignment `x op= e` reads its target
-before it evaluates `e`. `&&` and `||` evaluate their right operand only when
+before it evaluates `e`. Assignment to a field of a local struct, such as
+`p.a.x = e`, evaluates `e` and then stores into the struct that `p` holds at
+that point; `p.a.x op= e` reads `p.a.x` first. `&&` and `||` evaluate their right operand only when
 the left operand does not decide the result.
 
 Integer `+`, `-`, `*` and unary `-` trap when the result does not fit the

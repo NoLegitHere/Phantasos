@@ -78,7 +78,7 @@ foundation. Complete.
   (A.6), field assignment and methods.
   - [x] Field and `mut fun` receiver mutability checks.
   - [x] Struct values: construction, field reads, locals, arguments and results.
-  - [ ] Field assignment.
+  - [x] Field assignment.
   - [ ] Methods, including `mut fun`.
   - [ ] Tuples in the front end: types, literals, `.0` access and destructuring.
   - [ ] Tuple code generation.

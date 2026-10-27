@@ -76,6 +76,11 @@ bool supported_binary(BinOp op) {
 
 bool supported_unary(UnOp op) { return op == UnOp::Neg || op == UnOp::Not || op == UnOp::BitNot; }
 
+const Expr* unparen(const Expr* expr) {
+    while (const auto* paren = as<ParenExpr>(expr)) expr = paren->inner;
+    return expr;
+}
+
 bool supported_scalar(ScalarType type) {
     if (type.optional_depth != 0) return false;
     switch (type.kind) {
@@ -381,10 +386,14 @@ private:
                     unsupported(stmt.span, "shifts");
                     return;
                 }
-                const auto* name = as<NameExpr>(assign.target);
+                // A local, or a field of a local struct at any depth; the
+                // target's member reads check the fields themselves.
+                const Expr* root = unparen(assign.target);
+                while (const auto* member = as<MemberExpr>(root)) root = unparen(member->base);
+                const auto* name = as<NameExpr>(root);
                 const auto id = name ? target(*name) : BindingId{};
                 if (!id.valid() || resolution_.binding(id).kind != BindingKind::Local) {
-                    unsupported(assign.target->span, "assignment to anything but a local variable");
+                    unsupported(assign.target->span, "assignment to anything but a local variable or its fields");
                     return;
                 }
                 work.push_back({assign.value, true});

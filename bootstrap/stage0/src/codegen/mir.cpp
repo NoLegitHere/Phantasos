@@ -122,6 +122,7 @@ std::string_view op_name(Op op) {
         case Op::Print: return "print";
         case Op::Make: return "make";
         case Op::Field: return "field";
+        case Op::With: return "with";
     }
     unreachable();
 }
@@ -188,6 +189,11 @@ std::string dump(const Program& program) {
                     case Op::Field: {
                         const auto& layout = program.layouts[layout_index(fun.regs[inst.a.id])];
                         out += std::format(" {}, {}", reg(inst.a), layout.names[inst.imm]);
+                        break;
+                    }
+                    case Op::With: {
+                        const auto& layout = program.layouts[layout_index(fun.regs[inst.a.id])];
+                        out += std::format(" {}, {}, {}", reg(inst.a), layout.names[inst.imm], reg(inst.b));
                         break;
                     }
                     default:

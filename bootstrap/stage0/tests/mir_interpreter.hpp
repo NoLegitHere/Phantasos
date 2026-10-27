@@ -104,6 +104,16 @@ private:
                     regs[inst.dst.id] = aggregates_[regs[inst.a.id]][inst.imm];
                     continue;
                 }
+                if (inst.op == Op::With) {
+                    const Type type = fun.regs[inst.a.id];
+                    CHECK(mir::is_aggregate(type) && fun.regs[inst.dst.id] == type);
+                    CHECK(fun.regs[inst.b.id] == program_.layouts[mir::layout_index(type)].fields[inst.imm]);
+                    auto fields = aggregates_[regs[inst.a.id]];
+                    fields[inst.imm] = regs[inst.b.id];
+                    aggregates_.push_back(std::move(fields));
+                    regs[inst.dst.id] = aggregates_.size() - 1;
+                    continue;
+                }
                 if (inst.op == Op::Print) {
                     const Type type = fun.regs[inst.a.id];
                     const u64 value = regs[inst.a.id];
@@ -171,7 +181,7 @@ private:
                     case Op::Ge: out = sign ? sa >= sb : a >= b2; break;
                     case Op::Widen: out = a; CHECK(fits(type, a)); break;
                     case Op::Truncate: out = normalize(type, a); break;
-                    case Op::Call: case Op::Print: case Op::Make: case Op::Field: break;
+                    case Op::Call: case Op::Print: case Op::Make: case Op::Field: case Op::With: break;
                 }
                 if (trap) return {true, 0, trap};
                 regs[inst.dst.id] = out;

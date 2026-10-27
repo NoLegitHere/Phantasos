@@ -1,0 +1,33 @@
+// Copyright 2026 The Phantasos Authors
+// SPDX-License-Identifier: Apache-2.0
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// Narrow fields are stored at their size and loaded back sign- or
+// zero-extended. A two-word struct returns in rax:rdx; a larger one is passed
+// by address and returned through the hidden pointer in rdi.
+
+struct Flags(on: Bool, level: Int8, mask: UInt16)
+struct Point(x: Int, y: Int)
+struct Box(min: Point, max: Point)
+
+fun level(f: Flags): Int = Int(f.level) + Int(f.mask)
+
+fun corner(b: Box): Point = b.max
+
+fun widen(b: Box): Box = Box(min: b.max, max: b.min)
+
+fun main(): Int {
+    let b = widen(Box(min: Point(x: 1, y: 2), max: Point(x: 3, y: 4)))
+    return corner(b).y + level(Flags(on: true, level: -2, mask: 3))
+}

@@ -24,7 +24,7 @@ namespace phs::mir {
 namespace {
 using namespace ast;
 
-Type lower_type(ScalarType type) {
+Type scalar_type(ScalarType type) {
     PHS_ASSERT(type.optional_depth == 0);
     switch (type.kind) {
         case ScalarType::Int8: return Type::I8;
@@ -107,8 +107,13 @@ public:
     Program run(const File& file) {
         std::vector<const FunItem*> funs;
         std::unordered_map<std::string_view, u32> seen;
+        // Every struct in the file passed the gate; a struct's layout follows
+        // those of the structs it holds.
+        for (const Item* item : file.items)
+            if (item->kind == ItemKind::Struct) (void)structure(items_.at(item));
         for (const Item* item : file.items) {
-            const auto* fun = cast<FunItem>(item);
+            const auto* fun = as<FunItem>(item);
+            if (!fun) continue;
             functions_.emplace(fun, static_cast<u32>(funs.size()));
             funs.push_back(fun);
             const auto name = names_.str(fun->name.sym);
@@ -161,6 +166,38 @@ private:
 
     // ------------------------------------------------------------ facts
 
+    Type lower_type(ScalarType type) {
+        if (type.kind != ScalarType::Nominal) return scalar_type(type);
+        PHS_ASSERT(type.optional_depth == 0);
+        return structure(types_.descriptor(type)->declaration);
+    }
+
+    // A struct's layout, built once; the gate rejects recursive structs.
+    Type structure(BindingId declaration) {
+        if (const auto it = layouts_.find(declaration.value); it != layouts_.end()) return aggregate(it->second);
+        const auto& item = *as_type_decl(resolution_.binding(declaration).item);
+        Layout layout;
+        layout.name = names_.str(item.name.sym);
+        for (usize i = 0; i < item.ctor_params.size(); ++i) {
+            const auto& param = item.ctor_params[i];
+            layout.fields.push_back(lower_type(types_.binding(values_.at(param.name.span.lo))));
+            layout.names.emplace_back(names_.str(param.name.sym));
+            fields_.emplace(param.name.span.lo, static_cast<u32>(i));
+        }
+        place_fields(program_, layout);
+        const auto index = static_cast<u32>(program_.layouts.size());
+        program_.layouts.push_back(std::move(layout));
+        layouts_.emplace(declaration.value, index);
+        return aggregate(index);
+    }
+    // The declaration index of the field a member expression reads.
+    u32 field(const MemberExpr& member) {
+        (void)lower_type(scalar(member.base));
+        const auto* record = types_.member(&member);
+        PHS_ASSERT(record && record->candidates.size() == 1);
+        return fields_.at(resolution_.binding(record->candidates.front()).name.span.lo);
+    }
+
     ScalarType scalar(const Expr* expr) const { return types_.expression(expr); }
     BindingId target(const NameExpr& name) const {
         const auto* ref = resolution_.reference(name.name.span);
@@ -171,7 +208,7 @@ private:
     }
     Reg local(const NameExpr& name) const { return locals_.at(target(name).value); }
     // A used branch's type is that of its first tail with a value.
-    Type branch_type(const Expr* root) const {
+    Type branch_type(const Expr* root) {
         std::vector<const Expr*> work{root};
         while (!work.empty()) {
             const Expr* expr = unparen(work.back());
@@ -342,6 +379,8 @@ private:
                 work.push_back(binary->rhs);
             } else if (const auto* call = as<CallExpr>(expr)) {
                 for (const auto& arg : call->args) work.push_back(arg.value);
+            } else if (const auto* member = as<MemberExpr>(expr)) {
+                work.push_back(member->base);
             }
         }
         return false;
@@ -477,6 +516,26 @@ private:
                     }
                     break;
                 }
+                case ExprKind::Member: {
+                    const auto& member = *cast<MemberExpr>(expr);
+                    if (stage == 0) {
+                        tasks.push_back({member.base});
+                        break;
+                    }
+                    tasks.pop_back();
+                    const Reg base = values.back();
+                    values.pop_back();
+                    // A diverging base has already ended the block.
+                    if (!base.valid()) {
+                        values.push_back({});
+                        break;
+                    }
+                    const u32 index = field(member);
+                    const Reg dst = reg(lower_type(scalar(expr)));
+                    emit({.op = Op::Field, .dst = dst, .a = base, .imm = index});
+                    values.push_back(dst);
+                    break;
+                }
                 case ExprKind::Call: {
                     const auto& call = *cast<CallExpr>(expr);
                     if (stage < call.args.size()) {
@@ -555,6 +614,16 @@ private:
             if (args.front().valid()) emit({.op = Op::Print, .a = args.front()});
             return {};
         }
+        if (checked.kind == CallKind::NominalConstructor) {
+            // A diverging argument has already ended the block.
+            for (const Reg arg : args)
+                if (!arg.valid()) return {};
+            std::vector<Reg> fields(args.size());
+            for (usize i = 0; i < args.size(); ++i) fields[checked.parameters[i]] = args[i];
+            const Reg dst = reg(type);
+            emit({.op = Op::Make, .dst = dst, .args = std::move(fields)});
+            return dst;
+        }
         const auto& callee = *cast<FunItem>(resolution_.binding(checked.target).item);
         // Arguments run in source order and are passed in parameter order.
         std::vector<Reg> ordered(callee.sig.params.size());
@@ -572,6 +641,8 @@ private:
     std::unordered_map<u32, BindingId> values_;  // locals and parameters by declaration offset
     std::unordered_map<const FunItem*, u32> functions_;
     std::unordered_map<std::string, u64> strings_;  // literal bytes to their index in program_.strings
+    std::unordered_map<usize, u32> layouts_;  // struct declaration binding to its index in program_.layouts
+    std::unordered_map<u32, u32> fields_;     // field declaration offset to its declaration index
     Program program_;
     Function* fun_ = nullptr;
     u32 current_ = 0;

@@ -76,7 +76,7 @@ bool supported_binary(BinOp op) {
 
 bool supported_unary(UnOp op) { return op == UnOp::Neg || op == UnOp::Not || op == UnOp::BitNot; }
 
-bool supported_type(ScalarType type) {
+bool supported_scalar(ScalarType type) {
     if (type.optional_depth != 0) return false;
     switch (type.kind) {
         case ScalarType::Int8: case ScalarType::Int16: case ScalarType::Int32: case ScalarType::Int64:
@@ -104,8 +104,10 @@ public:
 
     bool run(const File& file) {
         for (const auto& import : file.imports) unsupported(import.span, "imports");
+        structs(file);
         std::vector<const FunItem*> mains;
         for (const Item* item : file.items) {
+            if (item->kind == ItemKind::Struct) continue;
             const auto* fun = as<FunItem>(item);
             if (!fun) {
                 unsupported(item->kind == ItemKind::Extern ? item->span : item->name.span, item_name(item->kind));
@@ -138,6 +140,121 @@ private:
             case ItemKind::TypeAlias: return "type aliases";
             default: return "this declaration";
         }
+    }
+
+    // ------------------------------------------------------------ structs
+
+    // A struct is supported when it is a plain, non-generic value type whose
+    // fields all come from its primary constructor and have supported types.
+    // Structs that contain themselves, directly or not, have no finite layout.
+    void structs(const File& file) {
+        std::vector<const TypeDeclItem*> candidates;
+        for (const Item* item : file.items) {
+            const auto* type = item->kind == ItemKind::Struct ? as_type_decl(item) : nullptr;
+            if (type && plain(*type)) candidates.push_back(type);
+        }
+        for (const auto* type : candidates) structs_.insert(items_.at(type).value);
+        recursive(candidates);
+        // A field of a rejected struct's type rejects its owner too.
+        for (bool changed = true; changed;) {
+            changed = false;
+            for (const auto* type : candidates) {
+                if (!structs_.contains(items_.at(type).value)) continue;
+                for (const auto& param : type->ctor_params) {
+                    const auto field = types_.binding(values_.at(param.name.span.lo));
+                    if (stored(param.type->span, field, "fields")) continue;
+                    structs_.erase(items_.at(type).value);
+                    changed = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    bool plain(const TypeDeclItem& type) {
+        const bool before = ok_;
+        ok_ = true;
+        if (!type.attrs.empty()) unsupported(type.attrs.front().span, "attributes");
+        if (!type.generics.empty()) unsupported(type.name.span, "generic structs");
+        if (!type.supers.empty()) unsupported(type.supers.front().type->span, "structs that implement interfaces");
+        if (type.ctor_params.empty()) unsupported(type.name.span, "structs without fields");
+        for (const auto& param : type.ctor_params) {
+            if (param.conv != Convention::Default) unsupported(param.name.span, "parameter conventions");
+            if (param.default_value) unsupported(param.default_value->span, "parameter defaults");
+        }
+        for (const Item* member : type.members)
+            unsupported(member->name.sym.empty() ? member->span : member->name.span, member_name(member->kind));
+        const bool result = ok_;
+        ok_ = ok_ && before;
+        return result;
+    }
+
+    static std::string_view member_name(ItemKind kind) {
+        switch (kind) {
+            case ItemKind::Fun: return "methods";
+            case ItemKind::Var: return "fields declared in a struct body";
+            case ItemKind::Init: return "initializers";
+            case ItemKind::Deinit: return "deinitializers";
+            default: return item_name(kind);
+        }
+    }
+
+    // Rejects every struct on a cycle of fields, depth first and without recursion.
+    void recursive(const std::vector<const TypeDeclItem*>& candidates) {
+        std::unordered_map<usize, const TypeDeclItem*> by_id;
+        for (const auto* type : candidates) by_id.emplace(items_.at(type).value, type);
+        const auto children = [&](const TypeDeclItem& type) {
+            std::vector<usize> out;
+            for (const auto& param : type.ctor_params) {
+                const auto field = types_.binding(values_.at(param.name.span.lo));
+                const auto* descriptor = field.kind == ScalarType::Nominal && !field.optional_depth
+                                             ? types_.descriptor(field) : nullptr;
+                if (descriptor && by_id.contains(descriptor->declaration.value))
+                    out.push_back(descriptor->declaration.value);
+            }
+            return out;
+        };
+        enum class Mark : u8 { New, Active, Done };
+        std::unordered_map<usize, Mark> marks;
+        std::unordered_set<usize> cyclic;
+        for (const auto* root : candidates) {
+            const usize start = items_.at(root).value;
+            if (marks[start] != Mark::New) continue;
+            struct Frame { usize id; std::vector<usize> next; usize at = 0; };
+            std::vector<Frame> stack{{start, children(*root)}};
+            marks[start] = Mark::Active;
+            while (!stack.empty()) {
+                auto& frame = stack.back();
+                if (frame.at == frame.next.size()) {
+                    marks[frame.id] = Mark::Done;
+                    stack.pop_back();
+                    continue;
+                }
+                const usize next = frame.next[frame.at++];
+                if (marks[next] == Mark::Active) {
+                    // Everything from next up to the top of the stack is on the cycle.
+                    for (auto it = stack.rbegin(); it != stack.rend(); ++it) {
+                        cyclic.insert(it->id);
+                        if (it->id == next) break;
+                    }
+                } else if (marks[next] == Mark::New) {
+                    marks[next] = Mark::Active;
+                    stack.push_back({next, children(*by_id.at(next))});
+                }
+            }
+        }
+        for (const auto* type : candidates) {
+            if (!cyclic.contains(items_.at(type).value)) continue;
+            unsupported(type->name.span, "recursive structs");
+            structs_.erase(items_.at(type).value);
+        }
+    }
+
+    bool supported_type(ScalarType type) const {
+        if (supported_scalar(type)) return true;
+        if (type.kind != ScalarType::Nominal || type.optional_depth) return false;
+        const auto* descriptor = types_.descriptor(type);
+        return descriptor && descriptor->arguments.empty() && structs_.contains(descriptor->declaration.value);
     }
 
     void unsupported(Span span, std::string_view what) {
@@ -309,6 +426,21 @@ private:
                 return;
             }
             case ExprKind::Call: call(*cast<CallExpr>(&expr), work); return;
+            case ExprKind::Member: {
+                // Field reads of supported structs.
+                const auto& member = *cast<MemberExpr>(&expr);
+                const auto* record = types_.member(&member);
+                const bool field = record && record->state == ResolutionState::Resolved && !record->type_receiver &&
+                                   record->candidates.size() == 1 &&
+                                   resolution_.binding(record->candidates.front()).kind == BindingKind::Field;
+                if (!field) {
+                    unsupported(expr.span, "member access other than struct fields");
+                    return;
+                }
+                if (!type(member.base->span, types_.expression(member.base))) return;
+                work.push_back({member.base, true});
+                return;
+            }
             case ExprKind::Block: {
                 const auto& block = *cast<BlockExpr>(&expr);
                 for (usize i = block.stmts.size(); i-- > 0;) {
@@ -341,7 +473,7 @@ private:
         switch (expr.kind) {
             case ExprKind::Int: case ExprKind::Bool: case ExprKind::String: case ExprKind::Unit: case ExprKind::Name:
             case ExprKind::Paren: case ExprKind::Unary: case ExprKind::Binary: case ExprKind::Call: case ExprKind::Block:
-            case ExprKind::If:
+            case ExprKind::If: case ExprKind::Member:
                 return true;
             default:
                 unsupported(expr.span, expr_name(expr.kind));
@@ -364,6 +496,8 @@ private:
                 work.push_back(binary->rhs);
             } else if (const auto* call = as<CallExpr>(expr)) {
                 for (const auto& arg : call->args) work.push_back(arg.value);
+            } else if (const auto* member = as<MemberExpr>(expr)) {
+                work.push_back(member->base);
             }
         }
         return false;
@@ -392,6 +526,16 @@ private:
             // print: its argument is a String, Int, UInt or Bool (3.27).
             if (checked->state != CallState::Resolved) unsupported_type(call.span, ScalarType{});
             else work.push_back({call.args.front().value, true});
+            return;
+        }
+        if (checked && checked->kind == CallKind::NominalConstructor) {
+            // Primary constructors of supported structs.
+            if (checked->state != CallState::Resolved || !checked->type_arguments.empty() ||
+                !supported_type(types_.expression(&call))) {
+                unsupported(call.callee->span, "constructors other than those of supported structs");
+                return;
+            }
+            for (usize i = call.args.size(); i-- > 0;) work.push_back({call.args[i].value, true});
             return;
         }
         const auto* callee = as<NameExpr>(call.callee);
@@ -442,6 +586,7 @@ private:
     std::unordered_map<u32, BindingId> values_;  // locals and parameters by declaration offset
     std::unordered_set<const FunItem*> functions_;
     std::unordered_set<usize> rejected_;  // locals whose declaration was reported
+    std::unordered_set<usize> structs_;   // binding IDs of supported structs
     bool ok_ = true;
 };
 

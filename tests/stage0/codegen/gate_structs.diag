@@ -1,0 +1,36 @@
+gate_structs.phs:20:8: error[E0600]: stage0 code generation does not support structs without fields yet
+   20 | struct Empty()
+      |        ^^^^^
+gate_structs.phs:22:8: error[E0600]: stage0 code generation does not support generic structs yet
+   22 | struct Wrapper<T>(value: T)
+      |        ^^^^^^^
+gate_structs.phs:24:8: error[E0600]: stage0 code generation does not support recursive structs yet
+   24 | struct Node(value: Int, next: Link)
+      |        ^^^^
+gate_structs.phs:25:8: error[E0600]: stage0 code generation does not support recursive structs yet
+   25 | struct Link(node: Node)
+      |        ^^^^
+gate_structs.phs:27:27: error[E0600]: stage0 code generation does not support parameter defaults yet
+   27 | struct Defaulted(x: Int = 1)
+      |                           ^
+gate_structs.phs:29:16: error[E0600]: stage0 code generation does not support values of type 'Float64' yet
+   29 | struct Real(x: Float64)
+      |                ^^^^^^^
+gate_structs.phs:31:19: error[E0600]: stage0 code generation does not support fields of type 'Unit' yet
+   31 | struct Nothing(x: ())
+      |                   ^^
+gate_structs.phs:33:21: error[E0600]: stage0 code generation does not support values of type 'Real' yet
+   33 | struct Holder(real: Real)
+      |                     ^^^^
+gate_structs.phs:36:9: error[E0600]: stage0 code generation does not support fields declared in a struct body yet
+   36 |     var extra: Int = 0
+      |         ^^^^^
+gate_structs.phs:37:9: error[E0600]: stage0 code generation does not support methods yet
+   37 |     fun next(): Int = count + 1
+      |         ^^^^
+gate_structs.phs:44:9: error[E0600]: stage0 code generation does not support values of type 'Holder' yet
+   44 |     let h = Holder(real: Real(x: 1.0))
+      |         ^
+gate_structs.phs:45:18: error[E0600]: stage0 code generation does not support values of type 'Counter' yet
+   45 |     return p.x + Counter(count: 1).count
+      |                  ^^^^^^^^^^^^^^^^^

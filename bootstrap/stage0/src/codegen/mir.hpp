@@ -27,16 +27,21 @@
 // assignment writes. Arithmetic is checked by default; a checked operation
 // traps on overflow, and division and remainder also trap on a zero divisor.
 // A String is two words, a pointer to its UTF-8 bytes and their length; stage0
-// strings are literals, passed around whole.
+// strings are literals, passed around whole. A struct is an aggregate value
+// with a Layout (abi.md A.2); aggregates are built whole and read one field at
+// a time.
 
 namespace phs::mir {
 
-enum class Type : u8 { Unit, Never, Bool, I8, I16, I32, I64, U8, U16, U32, U64, Str };
+// Values from Aggregate up name Program::layouts[type - Aggregate].
+enum class Type : u32 { Unit, Never, Bool, I8, I16, I32, I64, U8, U16, U32, U64, Str, Aggregate = 16 };
 
-std::string_view type_name(Type type);
+constexpr bool is_aggregate(Type type) { return type >= Type::Aggregate; }
+constexpr Type aggregate(u32 layout) { return static_cast<Type>(static_cast<u32>(Type::Aggregate) + layout); }
+constexpr u32 layout_index(Type type) { return static_cast<u32>(type) - static_cast<u32>(Type::Aggregate); }
+
 bool is_signed(Type type);
-u32 bit_width(Type type);  // 0 for Unit and Never, 1 for Bool, 128 for Str
-u32 words(Type type);      // machine words: 0 for Unit and Never, 2 for Str, 1 otherwise
+u32 bit_width(Type type);  // 0 for Unit, Never and aggregates, 1 for Bool, 128 for Str
 
 struct Reg {
     u32 id = std::numeric_limits<u32>::max();
@@ -52,15 +57,18 @@ enum class Op : u8 {
     Widen, Truncate,
     Call,
     Print,  // writes a's value and a newline to standard output
+    Make,   // an aggregate from args, its fields in declaration order
+    Field,  // field imm of the aggregate a
 };
 
 struct Inst {
     Op op;
     Reg dst;              // invalid for a call without a value and for print
     Reg a, b;             // operands; comparisons use the operand type
-    u64 imm = 0;          // Const: the value, sign-extended for signed types; Str: index into Program::strings
+    u64 imm = 0;          // Const: the value, sign-extended for signed types; Str: index into Program::strings;
+                          // Field: the field's declaration index
     u32 callee = 0;       // Call: function index
-    std::vector<Reg> args;  // Call: arguments in parameter order
+    std::vector<Reg> args;  // Call: arguments in parameter order; Make: field values
 };
 
 enum class Term : u8 { Br, CondBr, Ret, Unreachable };
@@ -81,11 +89,29 @@ struct Function {
     std::vector<Block> blocks;  // blocks[0] is the entry; every block is reachable
 };
 
+// Fields keep declaration order; offsets place them by decreasing alignment,
+// stable among equal alignments, and the size is a multiple of the alignment.
+struct Layout {
+    std::string name;
+    std::vector<Type> fields;
+    std::vector<std::string> names;
+    std::vector<u32> offsets;
+    u32 size = 0, align = 1;
+};
+
 struct Program {
     std::vector<Function> functions;
     u32 main = 0;
     std::vector<std::string> strings;  // literal bytes, each distinct value once
+    std::vector<Layout> layouts;       // each struct type once
 };
+
+std::string type_name(const Program& program, Type type);
+u32 size_of(const Program& program, Type type);   // bytes: 0 for Unit and Never, 1 for Bool
+u32 align_of(const Program& program, Type type);
+u32 words(const Program& program, Type type);     // 8-byte words: 0 for Unit and Never
+// Fills in a layout's offsets, size and alignment from its field types.
+void place_fields(const Program& program, Layout& layout);
 
 // Lowers a file that passed check_codegen_subset. Evaluation is strictly left
 // to right: operands, call arguments in source order, then compound

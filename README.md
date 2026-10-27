@@ -93,8 +93,9 @@ produces `none` where an optional is expected. Imports explicitly report that
 package loading is unavailable.
 
 `gate <file.phs>` runs `check`, then reports every construct that stage0's
-first native backend cannot compile yet. That backend covers Bool and integer
-functions, locals, loops, calls and integer arithmetic, and needs a
+first native backend cannot compile yet. That backend covers Bool, integer and
+String values, plain struct values with field reads, functions, locals, loops,
+calls, integer arithmetic and `print`, and needs a
 `fun main()` that returns `Int` or nothing. See
 [spec 3.25](docs/spec/03-types-and-semantics.md) for the full subset.
 `mir <file.phs>` prints the typed MIR for a file that passes `gate`. The MIR

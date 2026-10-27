@@ -1,0 +1,166 @@
+_P5level:  ; level
+    0000  55                     push rbp
+    0001  4889e5                 mov rbp, rsp
+    0004  4881ec30000000         sub rsp, 48
+    000b  4889bdf8ffffff         mov qword [rbp-8], rdi
+  bb0:  ; .L0
+    0012  480fbe85fbffffff       movsx rax, byte [rbp-5]
+    001a  488985f0ffffff         mov qword [rbp-16], rax
+    0021  488b85f0ffffff         mov rax, qword [rbp-16]
+    0028  488985e8ffffff         mov qword [rbp-24], rax
+    002f  0fb785f8ffffff         movzx eax, word [rbp-8]
+    0036  488985e0ffffff         mov qword [rbp-32], rax
+    003d  488b85e0ffffff         mov rax, qword [rbp-32]
+    0044  488985d8ffffff         mov qword [rbp-40], rax
+    004b  488b85e8ffffff         mov rax, qword [rbp-24]
+    0052  488b8dd8ffffff         mov rcx, qword [rbp-40]
+    0059  4801c8                 add rax, rcx
+    005c  0f8010000000           jo .L1
+    0062  488985d0ffffff         mov qword [rbp-48], rax
+    0069  488b85d0ffffff         mov rax, qword [rbp-48]
+    0070  c9                     leave
+    0071  c3                     ret
+  .L1:  ; trap: overflow
+    0072  bf01000000             mov edi, 1
+    0077  e800000000             call __phantasos_trap
+    007c  0f0b                   ud2
+_P6corner:  ; corner
+    0080  55                     push rbp
+    0081  4889e5                 mov rbp, rsp
+    0084  4881ec30000000         sub rsp, 48
+    008b  4889bde0ffffff         mov qword [rbp-32], rdi
+    0092  488bb5e0ffffff         mov rsi, qword [rbp-32]
+    0099  488b8600000000         mov rax, qword [rsi]
+    00a0  488985e0ffffff         mov qword [rbp-32], rax
+    00a7  488b8608000000         mov rax, qword [rsi+8]
+    00ae  488985e8ffffff         mov qword [rbp-24], rax
+    00b5  488b8610000000         mov rax, qword [rsi+16]
+    00bc  488985f0ffffff         mov qword [rbp-16], rax
+    00c3  488b8618000000         mov rax, qword [rsi+24]
+    00ca  488985f8ffffff         mov qword [rbp-8], rax
+  bb0:  ; .L0
+    00d1  488b85f0ffffff         mov rax, qword [rbp-16]
+    00d8  488985d0ffffff         mov qword [rbp-48], rax
+    00df  488b85f8ffffff         mov rax, qword [rbp-8]
+    00e6  488985d8ffffff         mov qword [rbp-40], rax
+    00ed  488b85d0ffffff         mov rax, qword [rbp-48]
+    00f4  488b95d8ffffff         mov rdx, qword [rbp-40]
+    00fb  c9                     leave
+    00fc  c3                     ret
+_P5widen:  ; widen
+    0100  55                     push rbp
+    0101  4889e5                 mov rbp, rsp
+    0104  4881ec70000000         sub rsp, 112
+    010b  4889bd98ffffff         mov qword [rbp-104], rdi
+    0112  4889b5e0ffffff         mov qword [rbp-32], rsi
+    0119  488bb5e0ffffff         mov rsi, qword [rbp-32]
+    0120  488b8600000000         mov rax, qword [rsi]
+    0127  488985e0ffffff         mov qword [rbp-32], rax
+    012e  488b8608000000         mov rax, qword [rsi+8]
+    0135  488985e8ffffff         mov qword [rbp-24], rax
+    013c  488b8610000000         mov rax, qword [rsi+16]
+    0143  488985f0ffffff         mov qword [rbp-16], rax
+    014a  488b8618000000         mov rax, qword [rsi+24]
+    0151  488985f8ffffff         mov qword [rbp-8], rax
+  bb0:  ; .L0
+    0158  488b85f0ffffff         mov rax, qword [rbp-16]
+    015f  488985d0ffffff         mov qword [rbp-48], rax
+    0166  488b85f8ffffff         mov rax, qword [rbp-8]
+    016d  488985d8ffffff         mov qword [rbp-40], rax
+    0174  488b85e0ffffff         mov rax, qword [rbp-32]
+    017b  488985c0ffffff         mov qword [rbp-64], rax
+    0182  488b85e8ffffff         mov rax, qword [rbp-24]
+    0189  488985c8ffffff         mov qword [rbp-56], rax
+    0190  488b85d0ffffff         mov rax, qword [rbp-48]
+    0197  488985a0ffffff         mov qword [rbp-96], rax
+    019e  488b85d8ffffff         mov rax, qword [rbp-40]
+    01a5  488985a8ffffff         mov qword [rbp-88], rax
+    01ac  488b85c0ffffff         mov rax, qword [rbp-64]
+    01b3  488985b0ffffff         mov qword [rbp-80], rax
+    01ba  488b85c8ffffff         mov rax, qword [rbp-56]
+    01c1  488985b8ffffff         mov qword [rbp-72], rax
+    01c8  488b9598ffffff         mov rdx, qword [rbp-104]
+    01cf  488b85a0ffffff         mov rax, qword [rbp-96]
+    01d6  48898200000000         mov qword [rdx], rax
+    01dd  488b85a8ffffff         mov rax, qword [rbp-88]
+    01e4  48898208000000         mov qword [rdx+8], rax
+    01eb  488b85b0ffffff         mov rax, qword [rbp-80]
+    01f2  48898210000000         mov qword [rdx+16], rax
+    01f9  488b85b8ffffff         mov rax, qword [rbp-72]
+    0200  48898218000000         mov qword [rdx+24], rax
+    0207  4889d0                 mov rax, rdx
+    020a  c9                     leave
+    020b  c3                     ret
+_P4main:  ; main
+    0210  55                     push rbp
+    0211  4889e5                 mov rbp, rsp
+    0214  4881ecf0000000         sub rsp, 240
+  bb0:  ; .L0
+    021b  48c7c001000000         mov rax, 1
+    0222  488985f8ffffff         mov qword [rbp-8], rax
+    0229  48c7c002000000         mov rax, 2
+    0230  488985f0ffffff         mov qword [rbp-16], rax
+    0237  488b85f8ffffff         mov rax, qword [rbp-8]
+    023e  488985e0ffffff         mov qword [rbp-32], rax
+    0245  488b85f0ffffff         mov rax, qword [rbp-16]
+    024c  488985e8ffffff         mov qword [rbp-24], rax
+    0253  48c7c003000000         mov rax, 3
+    025a  488985d8ffffff         mov qword [rbp-40], rax
+    0261  48c7c004000000         mov rax, 4
+    0268  488985d0ffffff         mov qword [rbp-48], rax
+    026f  488b85d8ffffff         mov rax, qword [rbp-40]
+    0276  488985c0ffffff         mov qword [rbp-64], rax
+    027d  488b85d0ffffff         mov rax, qword [rbp-48]
+    0284  488985c8ffffff         mov qword [rbp-56], rax
+    028b  488b85e0ffffff         mov rax, qword [rbp-32]
+    0292  488985a0ffffff         mov qword [rbp-96], rax
+    0299  488b85e8ffffff         mov rax, qword [rbp-24]
+    02a0  488985a8ffffff         mov qword [rbp-88], rax
+    02a7  488b85c0ffffff         mov rax, qword [rbp-64]
+    02ae  488985b0ffffff         mov qword [rbp-80], rax
+    02b5  488b85c8ffffff         mov rax, qword [rbp-56]
+    02bc  488985b8ffffff         mov qword [rbp-72], rax
+    02c3  488db5a0ffffff         lea rsi, [rbp-96]
+    02ca  488dbd80ffffff         lea rdi, [rbp-128]
+    02d1  e800000000             call _P5widen
+    02d6  488b8580ffffff         mov rax, qword [rbp-128]
+    02dd  48898560ffffff         mov qword [rbp-160], rax
+    02e4  488b8588ffffff         mov rax, qword [rbp-120]
+    02eb  48898568ffffff         mov qword [rbp-152], rax
+    02f2  488b8590ffffff         mov rax, qword [rbp-112]
+    02f9  48898570ffffff         mov qword [rbp-144], rax
+    0300  488b8598ffffff         mov rax, qword [rbp-104]
+    0307  48898578ffffff         mov qword [rbp-136], rax
+    030e  488dbd60ffffff         lea rdi, [rbp-160]
+    0315  e800000000             call _P6corner
+    031a  48898550ffffff         mov qword [rbp-176], rax
+    0321  48899558ffffff         mov qword [rbp-168], rdx
+    0328  488b8558ffffff         mov rax, qword [rbp-168]
+    032f  48898548ffffff         mov qword [rbp-184], rax
+    0336  48c7c001000000         mov rax, 1
+    033d  48898540ffffff         mov qword [rbp-192], rax
+    0344  48c7c0feffffff         mov rax, -2
+    034b  48898538ffffff         mov qword [rbp-200], rax
+    0352  48c7c003000000         mov rax, 3
+    0359  48898530ffffff         mov qword [rbp-208], rax
+    0360  488b8540ffffff         mov rax, qword [rbp-192]
+    0367  88852affffff           mov byte [rbp-214], al
+    036d  488b8538ffffff         mov rax, qword [rbp-200]
+    0374  88852bffffff           mov byte [rbp-213], al
+    037a  488b8530ffffff         mov rax, qword [rbp-208]
+    0381  66898528ffffff         mov word [rbp-216], ax
+    0388  488bbd28ffffff         mov rdi, qword [rbp-216]
+    038f  e800000000             call _P5level
+    0394  48898520ffffff         mov qword [rbp-224], rax
+    039b  488b8548ffffff         mov rax, qword [rbp-184]
+    03a2  488b8d20ffffff         mov rcx, qword [rbp-224]
+    03a9  4801c8                 add rax, rcx
+    03ac  0f8010000000           jo .L1
+    03b2  48898518ffffff         mov qword [rbp-232], rax
+    03b9  488b8518ffffff         mov rax, qword [rbp-232]
+    03c0  c9                     leave
+    03c1  c3                     ret
+  .L1:  ; trap: overflow
+    03c2  bf01000000             mov edi, 1
+    03c7  e800000000             call __phantasos_trap
+    03cc  0f0b                   ud2

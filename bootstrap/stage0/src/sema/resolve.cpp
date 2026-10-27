@@ -15,7 +15,9 @@
 
 #include "sema/resolve.hpp"
 
+#include <algorithm>
 #include <ranges>
+#include <unordered_map>
 #include <variant>
 
 namespace phs {
@@ -83,13 +85,41 @@ public:
                 else visit(node, next.context);
             }, next.node);
         }
+        finish();
         return std::move(result_);
     }
 
 private:
+    // Packs scope bindings and overload sets into flat storage and sorts
+    // references for binary search.
+    void finish() {
+        const auto pack = [](const std::vector<std::vector<BindingId>>& groups, std::vector<BindingId>& items) {
+            usize total = 0;
+            for (const auto& group : groups) total += group.size();
+            items.reserve(total);  // no reallocation: the spans below point into it
+            std::vector<std::span<const BindingId>> spans;
+            spans.reserve(groups.size());
+            for (const auto& group : groups) {
+                spans.emplace_back(items.data() + items.size(), group.size());
+                items.insert(items.end(), group.begin(), group.end());
+            }
+            return spans;
+        };
+        const auto scopes = pack(scope_bindings_, result_.scope_items_);
+        for (usize i = 0; i < scopes.size(); ++i) result_.scopes_[i].bindings = scopes[i];
+        result_.sets_ = pack(sets_, result_.set_items_);
+        auto& refs = result_.references_;
+        std::ranges::sort(refs, {}, [](const NameReference& r) { return r.span.lo; });
+        for (usize i = 1; i < refs.size(); ++i) PHS_ASSERT(refs[i - 1].span.lo != refs[i].span.lo);
+        refs.shrink_to_fit();
+        result_.bindings_.shrink_to_fit();
+        result_.scopes_.shrink_to_fit();
+    }
+
     ScopeId scope(ScopeId parent, ScopeKind kind) {
         const ScopeId id{result_.scopes_.size()};
         result_.scopes_.push_back({parent, kind, {}});
+        scope_bindings_.emplace_back();
         scope_names_.emplace_back();
         return id;
     }
@@ -98,11 +128,11 @@ private:
         PHS_ASSERT(!name.sym.empty());
         const BindingId id{result_.bindings_.size()};
         result_.bindings_.push_back({name, kind, into, item, {}});
-        result_.scopes_[into.value].bindings.push_back(id);
+        scope_bindings_[into.value].push_back(id);
         Names& table = space == NameSpace::Type ? scope_names_[into.value].types : scope_names_[into.value].values;
-        const auto [entry, inserted] = table.try_emplace(name.sym.id, BindingSetId{result_.sets_.size()});
-        if (inserted) result_.sets_.emplace_back();
-        auto& group = result_.sets_[entry->second.value];
+        const auto [entry, inserted] = table.try_emplace(name.sym.id, BindingSetId{sets_.size()});
+        if (inserted) sets_.emplace_back();
+        auto& group = sets_[entry->second.value];
         if (!group.empty() && (kind != BindingKind::Function ||
                              result_.binding(group.front()).kind != BindingKind::Function)) {
             auto& d = diag_.error(DiagCode::ConflictingDeclaration, name.span,
@@ -143,8 +173,6 @@ private:
     }
 
     Target record(Span span, Context context, NameSpace space, Target target) {
-        const usize index = result_.references_.size();
-        PHS_ASSERT(result_.references_by_offset_.emplace(span.lo, index).second);
         result_.references_.push_back({span, context.scope, space, target.state, target.set,
                                       context.receiver || context.implicit_receiver ? context.owner : BindingId{}});
         return target;
@@ -161,7 +189,7 @@ private:
     Target qualified(Name name, Context context, NameSpace space, Target base) {
         if (base.state == ResolutionState::Unresolved)
             return record(name.span, context, space, {ResolutionState::Unresolved, {}});
-        const auto candidates = result_.candidates(base.set);
+        const auto candidates = base.set.valid() ? std::span<const BindingId>(sets_[base.set.value]) : std::span<const BindingId>{};
         if (base.state == ResolutionState::Resolved && candidates.size() == 1) {
             const auto& binding = result_.binding(candidates.front());
             if (binding.members.valid()) {
@@ -267,7 +295,7 @@ private:
     void visit(ExposeParameter expose, Context context) {
         const auto& binding = result_.binding(expose.binding);
         scope_names_[context.scope.value].values.emplace(binding.name.sym.id, binding_sets_[expose.binding.value]);
-        result_.scopes_[context.scope.value].bindings.push_back(expose.binding);
+        scope_bindings_[context.scope.value].push_back(expose.binding);
     }
 
     void visit(const Item& item, Context context) {
@@ -570,6 +598,7 @@ private:
     Resolution result_;
     std::vector<ScopeNames> scope_names_;
     std::vector<BindingSetId> binding_sets_;
+    std::vector<std::vector<BindingId>> scope_bindings_, sets_;  // packed into result_ by finish()
     std::unordered_map<const TypeDeclItem*, TypeScopes> type_scopes_;
     std::unordered_map<const Param*, BindingId> constructor_params_;
     std::unordered_map<const Expr*, Target> expression_targets_;
@@ -578,10 +607,9 @@ private:
 
 const NameReference* Resolution::reference(Span span) const {
     if (span.file != file_) return nullptr;
-    const auto it = references_by_offset_.find(span.lo);
-    if (it == references_by_offset_.end()) return nullptr;
-    const auto& ref = references_[it->second];
-    return ref.span.hi == span.hi ? &ref : nullptr;
+    const auto it = std::ranges::lower_bound(references_, span.lo, {}, [](const NameReference& r) { return r.span.lo; });
+    if (it == references_.end() || it->span.lo != span.lo) return nullptr;
+    return it->span.hi == span.hi ? &*it : nullptr;
 }
 
 Resolution resolve_file(const ast::File& file, Interner& names, DiagEngine& diag) {

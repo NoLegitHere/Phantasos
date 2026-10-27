@@ -16,7 +16,7 @@
 #pragma once
 
 #include <limits>
-#include <unordered_map>
+#include <span>
 #include <vector>
 
 #include "support/diag.hpp"
@@ -54,7 +54,7 @@ struct ResolvedBinding {
 struct LexicalScope {
     ScopeId parent;
     ScopeKind kind;
-    std::vector<BindingId> bindings;
+    std::span<const BindingId> bindings;  // owned by the Resolution
 };
 
 struct NameReference {
@@ -79,7 +79,7 @@ public:
     std::span<const NameReference> references() const { return references_; }
     const ResolvedBinding& binding(BindingId id) const { return bindings_.at(id.value); }
     std::span<const BindingId> candidates(BindingSetId id) const {
-        return id.valid() ? std::span<const BindingId>(sets_.at(id.value)) : std::span<const BindingId>{};
+        return id.valid() ? sets_.at(id.value) : std::span<const BindingId>{};
     }
     const NameReference* reference(Span span) const;
 
@@ -88,9 +88,9 @@ private:
     FileId file_;
     std::vector<ResolvedBinding> bindings_;
     std::vector<LexicalScope> scopes_;
-    std::vector<std::vector<BindingId>> sets_;
-    std::vector<NameReference> references_;
-    std::unordered_map<u32, usize> references_by_offset_;
+    std::vector<std::span<const BindingId>> sets_;
+    std::vector<BindingId> scope_items_, set_items_;  // storage behind scopes_ and sets_
+    std::vector<NameReference> references_;  // sorted by span.lo
 };
 
 // Run after parsing and validate_file succeed. Resolves one file; imports

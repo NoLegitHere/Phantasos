@@ -2278,8 +2278,20 @@ private:
         diag_.error(DiagCode::InvalidScalarOperand, span, "operator requires {} operands", domain);
         return {Type::Error};
     }
+    // `none` stays deferred until optional contexts are checked, but it can
+    // never fit a concrete non-optional type.
+    bool none_mismatch(usize index, Type expected) const {
+        const Expr* expr = nodes_[index].expr;
+        while (const auto* paren = as<ParenExpr>(expr)) expr = paren->inner;
+        return expr->kind == ExprKind::None && known(expected) && !expected.optional_depth &&
+               expected.kind != Type::TypeParameter && expected.kind != Type::Projection;
+    }
     Value compatible(usize index, Type expected, Span span) {
         Value actual = nodes_[index].value;
+        if (none_mismatch(index, expected)) {
+            diag_.error(DiagCode::ScalarTypeMismatch, span, "expected '{}', found 'none'", scalar_type_name(expected));
+            return {Type::Error};
+        }
         if (!known(expected) || unavailable(actual)) return actual;
         if (actual.literal == Literal::Array && expected.kind == Type::Array) {
             const auto array = materialize(index, expected.scalar());
@@ -2638,6 +2650,7 @@ private:
                 }
                 continue;
             }
+            if (none_mismatch(index, target)) { result.matches = false; continue; }
             if (!known(target) || unavailable(actual)) { result.deferred = true; continue; }
             if (actual.type == Type::Never) continue;
             if (actual.literal == Literal::Array) {

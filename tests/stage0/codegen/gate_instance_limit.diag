@@ -1,6 +1,0 @@
-gate_instance_limit.phs:21:12: error[E0602]: this call needs more generic instances than stage0 code generation allows
-   21 |     return grow((x, x), n - 1)
-      |            ^^^^
-gate_instance_limit.phs:21:12: note: instances nest more than 64 levels deep here
-   21 |     return grow((x, x), n - 1)
-      |            ^^^^

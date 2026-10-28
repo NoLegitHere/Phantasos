@@ -16,7 +16,8 @@
 // Interfaces as bounds: calls on a bounded value go straight to the
 // conforming struct's method, or to the interface's default instantiated
 // for that struct, including mutating ones, defaults that call other
-// requirements, generic structs that conform, and several bounds at once.
+// requirements, generic structs that conform, and several bounds at once. A
+// plain `fun` can implement a `mut fun` requirement.
 
 interface Shape {
     fun area(): Int
@@ -57,6 +58,18 @@ struct Tally(var n: Int): Counter, Shape {
     fun name(): String = "tally"
 }
 
+struct Fixed(n: Int): Counter {
+    fun bump() {}
+    fun count(): Int = n
+}
+
+fun bumped<T: Counter>(c: T, by: Int): Int {
+    var x = c
+    x.bumpTwice()
+    x.bump()
+    return x.count() + by
+}
+
 fun largest<T: Shape>(a: T, b: T): T {
     if a.larger(b) { return a }
     return b
@@ -82,6 +95,8 @@ fun main(): Int {
     print(p.describe())
     print(largest(p, Pair(first: Square(side: 1), second: Square(side: 1))).area())
     print(tick(Tally(n: 1)))
+    print(bumped(Fixed(n: 4), 1))
+    print(bumped(Tally(n: 4), 1))
     var t = Tally(n: 0)
     t.bumpTwice()
     return t.count()

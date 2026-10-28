@@ -1106,9 +1106,11 @@ private:
         // struct's own method, or the interface's default (static dispatch).
         const auto& callee = method && interface(*owners_.at(&target)) ? witness(target, self) : target;
         // Arguments run in source order and are passed in parameter order,
-        // after a method's receiver.
+        // after a method's receiver. A `mut fun` requirement's receiver is a
+        // place even when its witness is a plain `fun`, which takes its value.
+        const bool at_place = method && mutating(target);
         const bool inout = method && mutating(callee);
-        const usize first = method && !inout ? 1 : 0;
+        const usize first = method && !at_place ? 1 : 0;
         std::vector<Reg> ordered(callee.sig.params.size() + (method ? 1 : 0));
         if (first) ordered.front() = args.front();
         for (usize i = first; i < args.size(); ++i) ordered[checked.parameters[i - first] + (method ? 1 : 0)] = args[i];
@@ -1117,8 +1119,9 @@ private:
             if (!arg.valid()) return {};
         Place receiver;
         std::vector<Reg> owners;
-        if (inout) {
-            // The receiver's place is read now and written back after the call.
+        if (at_place) {
+            // The receiver's place is read now, and written back after the
+            // call when the callee mutates it.
             receiver = checked.receiver ? place(checked.receiver) : Place{self_, {}, {}};
             owners = read(receiver, receiver.fields.size());
             ordered.front() = owners.back();

@@ -32,7 +32,9 @@ using mir::Type;
 // strings are literals passed whole, so a String value is its index in
 // Program::strings. An aggregate value is an index into a pool of immutable
 // field lists, which Copy and Call share freely. A function value's code word
-// is the function's index.
+// is the function's index, and its environment word is 0 or one more than
+// the index of its environment's field list; a call through it passes that
+// word first when the code is a closure.
 struct Outcome {
     bool trapped = false;
     u64 value = 0;
@@ -88,12 +90,16 @@ private:
                         const auto& layout = program_.layouts[mir::layout_index(type)];
                         CHECK(layout.kind == mir::Layout::Function);
                         const auto& code = aggregates_[regs[inst.a.id]];
-                        CHECK(code[1] == 0);
                         target = static_cast<u32>(code[0]);
                         const auto& callee = program_.functions[target];
-                        CHECK(callee.params == layout.params.size() && callee.inout.empty());
+                        const u32 env = callee.closure ? 1 : 0;
+                        CHECK(env || code[1] == 0);
+                        CHECK(code[1] == 0 || code[1] <= aggregates_.size());
+                        CHECK(!env || (callee.regs[0] == Type::U64 && (code[1] != 0) == callee.environment.has_value()));
+                        CHECK(callee.params == layout.params.size() + env && callee.inout.empty());
                         CHECK(callee.result == layout.result);
-                        for (u32 p = 0; p < callee.params; ++p) CHECK(callee.regs[p] == layout.params[p]);
+                        for (u32 p = env; p < callee.params; ++p) CHECK(callee.regs[p] == layout.params[p - env]);
+                        if (env) values.insert(values.begin(), code[1]);
                         CHECK(inst.args.size() == layout.params.size());
                         for (usize p = 0; p < inst.args.size(); ++p) CHECK(fun.regs[inst.args[p].id] == layout.params[p]);
                         if (inst.dst.valid()) CHECK(fun.regs[inst.dst.id] == layout.result);
@@ -110,9 +116,42 @@ private:
                     const Type type = fun.regs[inst.dst.id];
                     CHECK(mir::is_aggregate(type));
                     CHECK(program_.layouts[mir::layout_index(type)].kind == mir::Layout::Function);
-                    CHECK(inst.callee < program_.functions.size());
+                    CHECK(inst.callee < program_.functions.size() && !program_.functions[inst.callee].closure);
                     aggregates_.push_back({inst.callee, 0});
                     regs[inst.dst.id] = aggregates_.size() - 1;
+                    continue;
+                }
+                if (inst.op == Op::Closure) {
+                    // The environment holds the captured values, in its layout's field order.
+                    const Type type = fun.regs[inst.dst.id];
+                    CHECK(mir::is_aggregate(type));
+                    CHECK(program_.layouts[mir::layout_index(type)].kind == mir::Layout::Function);
+                    CHECK(inst.callee < program_.functions.size());
+                    const auto& callee = program_.functions[inst.callee];
+                    CHECK(callee.closure && callee.params >= 1);
+                    u64 env = 0;
+                    if (callee.environment) {
+                        const auto& layout = program_.layouts[*callee.environment];
+                        CHECK(layout.kind == mir::Layout::Environment && inst.args.size() == layout.fields.size());
+                        std::vector<u64> fields;
+                        for (usize i = 0; i < inst.args.size(); ++i) {
+                            CHECK(fun.regs[inst.args[i].id] == layout.fields[i]);
+                            fields.push_back(regs[inst.args[i].id]);
+                        }
+                        aggregates_.push_back(std::move(fields));
+                        env = aggregates_.size();
+                    } else CHECK(inst.args.empty());
+                    aggregates_.push_back({inst.callee, env});
+                    regs[inst.dst.id] = aggregates_.size() - 1;
+                    continue;
+                }
+                if (inst.op == Op::Env) {
+                    CHECK(fun.closure && fun.environment && inst.a.id == 0);
+                    const auto& layout = program_.layouts[*fun.environment];
+                    CHECK(inst.imm < layout.fields.size() && fun.regs[inst.dst.id] == layout.fields[inst.imm]);
+                    const u64 env = regs[inst.a.id];
+                    CHECK(env != 0 && env <= aggregates_.size());
+                    regs[inst.dst.id] = aggregates_[env - 1][inst.imm];
                     continue;
                 }
                 if (inst.op == Op::Make) {
@@ -214,7 +253,7 @@ private:
                     case Op::Widen: out = a; CHECK(fits(type, a)); break;
                     case Op::Truncate: out = normalize(type, a); break;
                     case Op::Call: case Op::Print: case Op::Make: case Op::Field: case Op::With:
-                    case Op::FnRef: case Op::CallIndirect: break;
+                    case Op::FnRef: case Op::CallIndirect: case Op::Closure: case Op::Env: break;
                 }
                 if (trap) return {true, 0, trap};
                 regs[inst.dst.id] = out;

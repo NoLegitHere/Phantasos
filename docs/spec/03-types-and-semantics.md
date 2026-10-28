@@ -1010,8 +1010,8 @@ the subset, so that nothing half-checked reaches code generation:
   (3.27), integer conversions, primary constructors of supported structs,
   reads of their fields, calls to their methods with an explicit or implicit
   receiver, `self` and bare field names inside methods, tuple literals and
-  `.0` element reads, top-level functions named as values (3.14) and calls
-  of function values, unary `-`, `!` and `~`, arithmetic including
+  `.0` element reads, top-level functions named as values (3.14), closures
+  (3.29) and calls of function values, unary `-`, `!` and `~`, arithmetic including
   the wrapping forms, `&`, `|`, `^`, comparisons, `&&` and `||`. Used `if` and block
   results are allowed where their type is known (3.24).
 
@@ -1020,7 +1020,8 @@ Everything else reports `E0600`. That includes shifts, `for`, `defer`,
 floating-point values, arrays, comparisons of tuples,
 optionals, classes, enums, interfaces, members other than struct fields and
 method calls, method values, globals, operators on function values,
-values of generic or `where`-constrained functions, and closures (3.29). A `mut fun` call
+and values of generic or `where`-constrained functions. A closure's body is
+checked like a function body. A `mut fun` call
 needs a receiver rooted in a local, `self` or a field of `self`. A local whose
 type is still deferred also reports `E0600` and needs an annotation. One
 `E0600` is reported per construct, and uses of a rejected local are not
@@ -1056,7 +1057,14 @@ explicit. `phantasos-stage0 mir <file>` prints it for a file that passes
 `gate` (3.25). A function value in MIR is two words, the code to call and an
 environment that the code receives as a hidden first argument; a top-level
 function's value has a null environment. The x86_64 backend calls it through a
-thunk (abi.md A.6).
+thunk (abi.md A.6). A closure becomes a MIR function of its own, named after
+the function that creates it, a `$closure` suffix and its number there, so
+the first closure in `main` is `main$closure0`. It takes its environment
+first. Creating the closure allocates the environment and copies each
+captured value into it, `self` included when the closure uses the receiver,
+laid out like a struct; the closure's function reads them back on entry. A
+closure that captures nothing has a null environment. Environments are never
+freed in stage0.
 
 Stage0's first x86_64 backend checks every trapping operation inline. A
 failed check calls `__phantasos_trap` with the trap code in the first
@@ -1074,9 +1082,10 @@ small runtime of its own and no C library (abi.md A.8). The process exits
 with the value `main` returns, which the kernel truncates to its low 8 bits,
 or with 0 when `main` returns nothing. A trap writes `panic: arithmetic
 overflow` or `panic: division by zero` to standard error and exits with
-status 101. Stage0 does not print a backtrace yet, and it does not detect
-stack overflow, so recursion that runs out of stack ends the process with a
-signal.
+status 101. When mapping memory for closure environments fails, the program
+panics with `panic: out of memory`, trap code 4. Stage0 does not print a
+backtrace yet, and it does not detect stack overflow, so recursion that runs
+out of stack ends the process with a signal.
 
 ## 3.27 Output with `print` [Core]
 
@@ -1258,4 +1267,5 @@ parameters and enums with payloads are not. Locals and `own` parameters of
 other types are moved into the closure; moves are checked with ownership.
 
 Closures cannot be generic, and are compared like other function values:
-not at all yet. Stage0 checks closures, but `gate` rejects them (3.25).
+not at all yet. Stage0 compiles closures (3.25, 3.26): their environments
+are allocated when they are created and never freed.

@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <cstring>
 #include <format>
+#include <memory>
 #include <random>
 #include <string>
 #include <vector>
@@ -58,12 +59,21 @@ struct Compiled {
 
 #ifdef PHS_JIT
 // Loads the object into executable memory, links its relocations and calls
-// main. The trap entry long-jumps back here.
+// main. The trap entry long-jumps back here, and the allocator is the host's.
 std::jmp_buf trap_target;
 u32 trap_code = 0;
 extern "C" [[noreturn]] void on_trap(u32 code) {
     trap_code = code;
     std::longjmp(trap_target, 1);
+}
+
+// The runtime's allocator, for closure environments: zeroed, 16-byte aligned
+// blocks that live until the tests end.
+std::vector<std::unique_ptr<std::byte[]>> blocks;
+extern "C" void* on_alloc(u64 size) {
+    blocks.push_back(std::make_unique<std::byte[]>(size));
+    CHECK(reinterpret_cast<uintptr_t>(blocks.back().get()) % 16 == 0);
+    return blocks.back().get();
 }
 
 // rax and rdx on return: a String's address and length, or a scalar in rax.
@@ -79,7 +89,8 @@ struct Native {
 Native run_native(const Compiled& compiled, u32 function) {
     const auto& object = compiled.object;
     const usize trampoline = (object.text.size() + 15) / 16 * 16;
-    const usize rodata = trampoline + 16;
+    const usize allocator = trampoline + 16;
+    const usize rodata = allocator + 16;
     const usize size = rodata + object.rodata.size();
     // UBSan's function check reads the 8 bytes before a called function, so
     // the code does not start at the mapping's first byte.
@@ -88,17 +99,20 @@ Native run_native(const Compiled& compiled, u32 function) {
     CHECK(memory != MAP_FAILED);
     auto* base = static_cast<u8*>(memory) + lead;
     std::memcpy(base, object.text.data(), object.text.size());
-    // movabs rax, on_trap; jmp rax
-    const auto handler = reinterpret_cast<u64>(&on_trap);
-    base[trampoline] = 0x48;
-    base[trampoline + 1] = 0xB8;
-    std::memcpy(base + trampoline + 2, &handler, 8);
-    base[trampoline + 10] = 0xFF;
-    base[trampoline + 11] = 0xE0;
+    // movabs rax, target; jmp rax
+    const auto jump = [&](usize at, u64 target) {
+        base[at] = 0x48;
+        base[at + 1] = 0xB8;
+        std::memcpy(base + at + 2, &target, 8);
+        base[at + 10] = 0xFF;
+        base[at + 11] = 0xE0;
+    };
+    jump(trampoline, reinterpret_cast<u64>(&on_trap));
+    jump(allocator, reinterpret_cast<u64>(&on_alloc));
     if (!object.rodata.empty()) std::memcpy(base + rodata, object.rodata.data(), object.rodata.size());
     for (const auto& reloc : object.relocations) {
         const auto& symbol = object.symbols[reloc.symbol];
-        const usize at = !symbol.defined ? trampoline
+        const usize at = !symbol.defined ? (symbol.name == x86_64::kAlloc ? allocator : trampoline)
                        : symbol.section == obj::Section::Rodata ? rodata + symbol.offset
                                                                 : symbol.offset;
         const auto target = reinterpret_cast<i64>(base) + static_cast<i64>(at);
@@ -477,6 +491,38 @@ struct Generator {
         for (usize i = 0; i < count; ++i) source += std::format(" &+ Int.truncating(a{})", i);
         return source + "\n}\n";
     }
+
+    // A closure over random parameters and captured locals, returned from the
+    // function that creates it so that its environment outlives that frame,
+    // sometimes nested so that the inner closure captures through the outer.
+    std::string closure_program() {
+        const auto& kind = kKinds[pick(std::size(kKinds) - 1)];
+        const usize params = 1 + pick(3), captures = pick(5);
+        const bool nested = params > 1 && pick(1);
+        const auto names = [&](usize from, usize to) {
+            std::string text;
+            for (usize i = from; i < to; ++i) text += std::format("{}p{}", i > from ? ", " : "", i);
+            return text;
+        };
+        const auto types = [&](usize count) {
+            std::string text;
+            for (usize i = 0; i < count; ++i) text += std::format("{}{}", i ? ", " : "", kind.name);
+            return text;
+        };
+        const std::string inner = std::format("fun({}) -> {}", types(params - (nested ? 1 : 0)), kind.name);
+        std::string source = std::format("fun make(): {} {{\n", nested ? std::format("fun({}) -> {}", kind.name, inner) : inner);
+        for (usize i = params; i < params + captures; ++i) source += std::format("    let p{}: {} = {}\n", i, kind.name, literal(kind));
+        const std::string body = typed(kind, 3, params + captures);
+        if (nested) source += std::format("    return {{ p0 -> {{ {} -> {} }} }}\n}}\n", names(1, params), body);
+        else source += std::format("    return {{ {} -> {} }}\n}}\n", names(0, params), body);
+        source += "fun main(): Int {\n    let f = make()\n    let r = f(";
+        for (usize i = 0; i < params; ++i) {
+            if (nested && i == 1) source += ")(";
+            else if (i) source += ", ";
+            source += literal(kind);
+        }
+        return source + ")\n    return Int.truncating(r)\n}\n";
+    }
 };
 
 void function_values() {
@@ -548,11 +594,90 @@ fun main() {}
 )", "HELLO");
 }
 
+void closures() {
+    // A closure's code is its own function, which takes the environment
+    // first; a capturing closure allocates its environment from the runtime.
+    Compiled c("fun makeAdder(n: Int): fun(Int) -> Int = { x -> x + n }\nfun main(): Int = makeAdder(40)(2)\n");
+    CHECK(c.object.symbols[2].name == "_P18makeAdder$closure0" && c.object.symbols[2].defined);
+    CHECK(c.listing.contains("call _P$alloc") && c.listing.contains("lea rax, [rip+_P18makeAdder$closure0]"));
+    CHECK(std::ranges::any_of(c.object.symbols, [](const obj::Symbol& s) { return s.name == x86_64::kAlloc && !s.defined; }));
+    agrees("fun makeAdder(n: Int): fun(Int) -> Int = { x -> x + n }\nfun main(): Int = makeAdder(40)(2)\n");
+    Compiled plain("fun main(): Int {\n    let f = { x: Int -> x * 2 }\n    return f(21)\n}\n");
+    CHECK(!plain.listing.contains("_P$alloc"));
+    agrees("fun main(): Int {\n    let f = { x: Int -> x * 2 }\n    return f(21)\n}\n");
+    // Captures of every size and kind: narrow integers, Bools, Strings, small
+    // and large structs, tuples and function values; nested closures and a
+    // method's receiver.
+    agrees(R"(
+struct Small(a: Int8, b: Bool)
+struct Big(a: Int, b: Int, c: Int)
+struct Counter(start: Int, step: Int) {
+    fun next(): fun(Int) -> Int = { n -> start + n * step }
+}
+fun keep(b: Big): fun() -> Big = { -> Big(a: b.c, b: b.b, c: b.a) }
+fun main(): Int {
+    let n8: Int8 = -5
+    let u16: UInt16 = 65000
+    let flag = true
+    let text = "abc"
+    let small = Small(a: 3, b: true)
+    let big = Big(a: 1, b: 2, c: 3)
+    let pair = (7, false)
+    let twice = { x: Int -> x * 2 }
+    let all = { x: Int ->
+        var total = x + Int(n8) + Int(u16) + Int(small.a) + twice(big.c) + pair.0
+        if flag && small.b && !pair.1 { total += 1 }
+        let s = text
+        total
+    }
+    let nest = { a: Int -> { b: Int -> { -> a * 100 + b * 10 + big.b } } }
+    let swapped = keep(big)()
+    let c = Counter(start: 10, step: 3)
+    return all(1) + nest(1)(2)() + swapped.a * 1000 + c.next()(2)
+}
+)");
+    // Many environments, beyond what fits in one block, stay intact.
+    agrees(R"(
+struct Big(a: Int, b: Int, c: Int)
+fun hold(b: Big): fun() -> Int = { -> b.a + b.b * 2 + b.c * 3 }
+fun main(): Int {
+    var total = 0
+    var i = 0
+    while i < 2000 {
+        total += hold(Big(a: i, b: i + 1, c: i + 2))()
+        i += 1
+    }
+    return total
+}
+)");
+    // Stack arguments, ret* and a trap inside a closure body.
+    agrees(R"(
+struct Big(a: Int, b: Int, c: Int)
+fun main(): Int {
+    let k = 9
+    let f = { a: Int, b: Int, c: Int, d: Int, e: Int, g: Int, h: Int -> Big(a: a + b + c, b: d + e + g, c: h + k) }
+    let r = f(1, 2, 3, 4, 5, 6, 7)
+    return r.a * 10000 + r.b * 100 + r.c
+}
+)");
+    agrees("fun main(): Int {\n    let limit: UInt8 = 255\n    let f = { x: UInt8 -> limit + x }\n    return Int(f(1))\n}\n");
+    strings_agree(R"(
+fun f(): String {
+    let a = "first"
+    let b = "second"
+    let g = { pick: Bool -> if pick { a } else { b } }
+    return g(false)
+}
+fun main() {}
+)", "second");
+}
+
 void random_expressions() {
     Generator generator;
     for (int i = 0; i < 400; ++i) agrees(generator.program());
     for (int i = 0; i < 200; ++i) agrees(generator.struct_program());
     for (int i = 0; i < 200; ++i) agrees(generator.tuple_program());
+    for (int i = 0; i < 200; ++i) agrees(generator.closure_program());
 }
 }  // namespace
 
@@ -561,6 +686,7 @@ int main() {
     programs();
     strings();
     function_values();
+    closures();
     random_expressions();
     std::println("x86_64 tests passed");
 }

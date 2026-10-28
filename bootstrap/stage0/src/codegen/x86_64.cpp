@@ -258,6 +258,12 @@ public:
         byte(static_cast<u8>(0x50 + (r & 7)));
         end(start, std::format("push {}", name(r)));
     }
+    void pop(Reg r) {
+        const auto start = begin();
+        if (r >= R8) byte(0x41);
+        byte(static_cast<u8>(0x58 + (r & 7)));
+        end(start, std::format("pop {}", name(r)));
+    }
     void adjust_rsp(i32 amount) {
         const auto start = begin();
         byte(0x48);
@@ -323,6 +329,9 @@ public:
         put(0u);
         end(start, std::format("lea {}, [rip+{}]", name(dst), object_.symbols[symbol].name));
     }
+    // mov dst, qword [rip + symbol + extra] and mov qword [rip + symbol + extra], src
+    void load(Reg dst, u32 symbol, i32 extra) { rip(0x8B, dst, symbol, extra, "mov {}, qword {}"); }
+    void store(u32 symbol, i32 extra, Reg src) { rip(0x89, src, symbol, extra, "mov qword {1}, {0}"); }
     void syscall() { raw({0x0F, 0x05}, "syscall"); }
     void ret() { raw({0xC3}, "ret"); }
     // op r64, imm8 forms of the 83 group: add /0, sub /5, cmp /7.
@@ -452,6 +461,18 @@ private:
         byte(static_cast<u8>(0x80 | (reg & 7) << 3 | (base & 7)));
         put(static_cast<u32>(offset));
         end(start, std::move(text));
+    }
+    void rip(u8 opcode, Reg reg, u32 symbol, i32 extra, std::string_view text) {
+        const auto start = begin();
+        rex(true, reg, 0);
+        byte(opcode);
+        byte(static_cast<u8>((reg & 7) << 3 | 5));
+        object_.relocations.push_back({here(), symbol, i64{extra} - 4});
+        put(0u);
+        const auto at = extra ? std::format("[rip+{}+{}]", object_.symbols[symbol].name, extra)
+                              : std::format("[rip+{}]", object_.symbols[symbol].name);
+        const auto reg_name = name(reg);
+        end(start, std::vformat(text, std::make_format_args(reg_name, at)));
     }
     void branch(std::initializer_list<u8> opcode, Label target, std::string mnemonic) {
         const auto start = begin();
@@ -687,6 +708,8 @@ private:
         if (inst.op == Op::Call) return call(inst);
         if (inst.op == Op::FnRef) return function_value(inst);
         if (inst.op == Op::CallIndirect) return call_indirect(inst);
+        if (inst.op == Op::Closure) return closure(inst);
+        if (inst.op == Op::Env) return env(inst);
         if (inst.op == Op::Print) return print(inst);
         if (inst.op == Op::Make) return make(inst);
         if (inst.op == Op::Field) return field(inst);
@@ -744,7 +767,7 @@ private:
                 break;
             }
             case Op::Call: case Op::Str: case Op::Print: case Op::Make: case Op::Field: case Op::With:
-            case Op::FnRef: case Op::CallIndirect: break;
+            case Op::FnRef: case Op::CallIndirect: case Op::Closure: case Op::Env: break;
         }
         as_.store(slot(inst.dst), RAX);
     }
@@ -810,11 +833,54 @@ private:
                          : mir::is_signed(type) ? kPrintInt
                                                 : kPrintUInt;
         PHS_ASSERT(type == Type::Str || type == Type::Bool || type == Type::I64 || type == Type::U64);
-        auto [found, added] = runtime_.try_emplace(entry, static_cast<u32>(object_.symbols.size()));
-        if (added) object_.symbols.push_back({std::string(entry), false});
         as_.load(RDI, slot(inst.a));
         if (type == Type::Str) as_.load(RSI, slot(inst.a) + 8);
-        as_.call(found->second);
+        as_.call(runtime(entry));
+    }
+
+    // The symbol of a runtime entry, added when it is first used.
+    u32 runtime(std::string_view entry) {
+        auto [found, added] = runtime_.try_emplace(entry, static_cast<u32>(object_.symbols.size()));
+        if (added) object_.symbols.push_back({std::string(entry), false});
+        return found->second;
+    }
+
+    // A closure's value: its function's code and an environment allocated
+    // from the runtime and filled with the captured values, or a null one.
+    void closure(const mir::Inst& inst) {
+        const auto& callee = program_.functions[inst.callee];
+        if (callee.environment) {
+            const auto& layout = program_.layouts[*callee.environment];
+            as_.mov_imm(RDI, layout.size);
+            as_.call(runtime(kAlloc));
+            as_.store(slot(inst.dst) + 8, RAX);
+            as_.mov(RDX, RAX);
+            for (usize i = 0; i < inst.args.size(); ++i) {
+                const auto at = static_cast<i32>(layout.offsets[i]);
+                const Type type = layout.fields[i];
+                if (scalar(type)) {
+                    as_.load(RAX, slot(inst.args[i]));
+                    as_.store_bytes(RDX, at, RAX, size(type));
+                } else copy(RDX, at, RBP, slot(inst.args[i]), size(type));
+            }
+        } else {
+            as_.zero32(RAX);
+            as_.store(slot(inst.dst) + 8, RAX);
+        }
+        as_.lea(RAX, inst.callee);
+        as_.store(slot(inst.dst), RAX);
+    }
+
+    // A captured value, read from the environment that a points to.
+    void env(const mir::Inst& inst) {
+        const auto& layout = program_.layouts[*fun_->environment];
+        const auto at = static_cast<i32>(layout.offsets[inst.imm]);
+        const Type type = layout.fields[inst.imm];
+        as_.load(RDX, slot(inst.a));
+        if (scalar(type)) {
+            as_.load_field(RAX, RDX, at, type);
+            as_.store(slot(inst.dst), RAX);
+        } else copy(RBP, slot(inst.dst), RDX, at, size(type));
     }
 
     // The value of a function used as a value: its thunk and a null environment.
@@ -940,7 +1006,9 @@ private:
 
 // Linux x86_64 system call numbers.
 constexpr u32 kSysWrite = 1;
+constexpr u32 kSysMmap = 9;
 constexpr u32 kSysExitGroup = 231;
+constexpr u32 kChunk = 1 << 20;  // the allocator's smallest mmap request
 constexpr std::int8_t kEintr = 4;
 
 class Runtime {
@@ -962,12 +1030,22 @@ public:
         static constexpr std::string_view kOverflow = "panic: arithmetic overflow\n";
         static constexpr std::string_view kDivide = "panic: division by zero\n";
         static constexpr std::string_view kWrite = "panic: cannot write to standard output\n";
+        static constexpr std::string_view kMemory = "panic: out of memory\n";
         const u32 overflow = object_.literal(kOverflow);
         const u32 divide = object_.literal(kDivide);
         const u32 write_failed = object_.literal(kWrite);
         const u32 newline = object_.literal("\n");
         const u32 yes = object_.literal("true\n");
         const u32 no = object_.literal("false\n");
+        const bool allocates = std::ranges::any_of(program_.functions, [&](const mir::Function& fun) {
+            return std::ranges::any_of(fun.blocks, [&](const mir::Block& block) {
+                return std::ranges::any_of(block.insts, [&](const mir::Inst& inst) {
+                    return inst.op == Op::Closure && program_.functions[inst.callee].environment.has_value();
+                });
+            });
+        });
+        const u32 alloc = allocates ? symbol(std::string(kAlloc), true) : 0;
+        const u32 memory = allocates ? object_.literal(kMemory) : 0;
 
         // The kernel enters with rsp 16-byte aligned, so the call leaves main
         // with the alignment System V expects.
@@ -989,9 +1067,21 @@ public:
         as_.mov32_imm(RDX, static_cast<u32>(kDivide.size()));
         as_.place(not_divide);
         as_.cmp32_imm8(RDI, static_cast<u8>(Trap::WriteFailed));
-        as_.jcc(NE, report);
-        as_.lea(RSI, write_failed);
-        as_.mov32_imm(RDX, static_cast<u32>(kWrite.size()));
+        if (allocates) {
+            const auto not_write = as_.label();
+            as_.jcc(NE, not_write);
+            as_.lea(RSI, write_failed);
+            as_.mov32_imm(RDX, static_cast<u32>(kWrite.size()));
+            as_.place(not_write);
+            as_.cmp32_imm8(RDI, static_cast<u8>(Trap::OutOfMemory));
+            as_.jcc(NE, report);
+            as_.lea(RSI, memory);
+            as_.mov32_imm(RDX, static_cast<u32>(kMemory.size()));
+        } else {
+            as_.jcc(NE, report);
+            as_.lea(RSI, write_failed);
+            as_.mov32_imm(RDX, static_cast<u32>(kWrite.size()));
+        }
         as_.place(report);
         as_.mov32_imm(RDI, 2);  // stderr
         as_.mov32_imm(RAX, kSysWrite);
@@ -1106,12 +1196,62 @@ public:
         as_.patch();
         end(print_bool);
 
+        if (allocates) allocator(alloc, trap);
+
         as_.rodata();
     }
 
     std::string listing() const { return as_.render(); }
 
 private:
+    // Bumps a pointer through the current chunk, and maps a new chunk of the
+    // request plus kChunk bytes when it does not fit; the rest of the old one
+    // is left unused. mmap returns zeroed memory, and an error as -4095..-1.
+    void allocator(u32 alloc, u32 trap) {
+        const u32 heap = object_.reserve("_P$heap", 16);  // the next free byte and the chunk's end
+        begin(alloc, "rdi: size; returns a zeroed, 16-byte aligned block in rax");
+        const auto refill = as_.label(), failed = as_.label();
+        as_.alu_imm8(0, "add", RDI, 15);
+        as_.alu_imm8(4, "and", RDI, -16);
+        as_.load(RAX, heap, 0);
+        as_.load(RCX, heap, 8);
+        as_.mov(RDX, RAX);
+        as_.alu(0x01, "add", RDX, RDI);
+        as_.alu(0x39, "cmp", RDX, RCX);
+        as_.jcc(A, refill);
+        as_.store(heap, 0, RDX);
+        as_.ret();
+        as_.place(refill);
+        as_.push(RDI);
+        as_.mov(RSI, RDI);
+        as_.mov_imm(RCX, kChunk);
+        as_.alu(0x01, "add", RSI, RCX);
+        as_.zero32(RDI);
+        as_.mov32_imm(RDX, 3);     // PROT_READ | PROT_WRITE
+        as_.mov32_imm(R10, 0x22);  // MAP_PRIVATE | MAP_ANONYMOUS
+        as_.mov_imm(R8, ~u64{0});  // no file
+        as_.zero32(R9);
+        as_.mov32_imm(RAX, kSysMmap);
+        as_.syscall();
+        as_.pop(RDI);
+        as_.mov_imm(RCX, ~u64{0} << 12);
+        as_.alu(0x39, "cmp", RAX, RCX);
+        as_.jcc(A, failed);
+        as_.mov(RCX, RAX);
+        as_.alu(0x01, "add", RCX, RSI);
+        as_.store(heap, 8, RCX);
+        as_.mov(RDX, RAX);
+        as_.alu(0x01, "add", RDX, RDI);
+        as_.store(heap, 0, RDX);
+        as_.ret();
+        as_.place(failed);
+        as_.mov32_imm(RDI, static_cast<u32>(Trap::OutOfMemory));
+        as_.call(trap);
+        as_.ud2();
+        as_.patch();
+        end(alloc);
+    }
+
     u32 symbol(std::string name, bool defined) {
         object_.symbols.push_back({std::move(name), defined});
         return static_cast<u32>(object_.symbols.size() - 1);

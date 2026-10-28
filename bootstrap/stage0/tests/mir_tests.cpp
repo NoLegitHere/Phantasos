@@ -436,6 +436,75 @@ void function_values() {
                 "fun main(): Int {\n    let f = dec\n    return Int(f(0))\n}\n"));
 }
 
+void closures() {
+    Frontend f;
+    const auto text = f.dump("fun makeAdder(n: Int): fun(Int) -> Int = { x -> x + n }\n"
+                             "fun main(): Int = makeAdder(40)(2)\n");
+    // A closure is a function taking its environment first; the environment
+    // holds a copy of each captured value, read on entry.
+    CHECK(text.contains("environment @makeAdder$closure0 { n: i64 +0 } size 8 align 8\n"));
+    CHECK(text.contains("= closure @makeAdder$closure0(%0)\n"));
+    CHECK(text.contains("fun @makeAdder$closure0(env %0: u64, %1: i64) -> i64 {\nbb0:\n    %2: i64 = env %0, n\n"));
+    // Without captures there is no environment.
+    Frontend none;
+    const auto plain = none.dump("fun main(): Int {\n    let f = { x: Int -> x * 2 }\n    return f(21)\n}\n");
+    CHECK(plain.contains("= closure @main$closure0()\n") && !plain.contains("environment @"));
+    CHECK(result("fun main(): Int {\n    let f = { x: Int -> x * 2 }\n    return f(21)\n}\n") == 42);
+    // Captures are copies taken when the closure is created; nested closures
+    // capture through the closures around them, and names number per creator.
+    Frontend nested;
+    const auto run = nested.run(R"(
+fun main(): Int {
+    var k = 1
+    let label = "seen"
+    let add = { x: Int -> { y: Int -> print(label); x + y + k } }
+    k = 100
+    let inner = add(10)
+    k = 1000
+    let t = (2, true)
+    let pick = { -> if t.1 { t.0 } else { 0 } }
+    return inner(20) + pick()
+}
+)");
+    CHECK(!run.trapped && run.value == 33 && run.output == "seen\n");
+    const auto names = nested.dump(R"(
+fun main(): Int {
+    let k = 1
+    let add = { x: Int -> { y: Int -> x + y + k } }
+    let other = { -> k }
+    return add(1)(2) + other()
+}
+)");
+    CHECK(names.contains("environment @main$closure0$closure0 { x: i64 +0, k: i64 +8 }"));
+    CHECK(names.contains("fun @main$closure1(env %0: u64) -> i64"));
+    // A method's closures capture the receiver when they use it, through
+    // self, a bare field or a method call.
+    CHECK(result(R"(
+struct Counter(start: Int, step: Int) {
+    fun at(n: Int): Int = start + n * step
+    fun next(): fun(Int) -> Int = { n -> at(n) }
+    fun first(): fun() -> Int = { -> self.start + step }
+    fun constant(): fun() -> Int = { -> 7 }
+}
+fun main(): Int {
+    let c = Counter(start: 10, step: 3)
+    return c.next()(2) * 100 + c.first()() + c.constant()()
+}
+)") == 1620);
+    Frontend method;
+    const auto receiver = method.dump("struct P(x: Int) {\n    fun get(): fun() -> Int = { -> x }\n    fun no(): fun() -> Int = { -> 1 }\n}\n"
+                                     "fun main(): Int = P(x: 1).get()() + P(x: 2).no()()\n");
+    CHECK(receiver.contains("environment @P.get$closure0 { self: @P +0 }"));
+    CHECK(!receiver.contains("environment @P.no$closure0"));
+    // Unit and Never results, an explicit return, and a trap inside the body.
+    Frontend unit;
+    const auto hello = unit.run("fun main(): Int {\n    let s = \"hi\"\n    let h: fun() -> Unit = { -> print(s) }\n    h()\n    h()\n"
+                                "    let r = { x: Int -> if x > 0 { return 1 }; 2 }\n    return r(5) + r(-5)\n}\n");
+    CHECK(!hello.trapped && hello.value == 3 && hello.output == "hi\nhi\n");
+    CHECK(traps("fun main(): Int {\n    let z = 0\n    let f = { x: Int -> x / z }\n    return f(1)\n}\n"));
+    CHECK(result("fun stop(): Never {\n    loop {}\n}\nfun main(): Int {\n    let s: fun() -> Never = { -> stop() }\n    return 4\n}\n") == 4);
+}
+
 void rejected_files() {
     FrontendSession session;
     const auto id = session.sources().add("mir.phs", "fun main(): Float64 = 1.0\n");
@@ -475,6 +544,7 @@ int main() {
     methods();
     tuples();
     function_values();
+    closures();
     rejected_files();
     long_trees();
     std::println("mir tests passed");

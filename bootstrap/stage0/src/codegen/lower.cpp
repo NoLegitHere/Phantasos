@@ -18,6 +18,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <variant>
 #include <vector>
 
 #include "codegen/mir.hpp"
@@ -138,13 +139,26 @@ public:
             if (names_.str(fun->name.sym) == "main") program_.main = static_cast<u32>(funs.size());
             add(*fun, std::string(names_.str(fun->name.sym)));
         }
-        for (usize i = 0; i < funs.size(); ++i) function(*funs[i], program_.functions[i]);
+        for (usize i = 0; i < funs.size(); ++i) function(*funs[i], static_cast<u32>(i));
+        // Closures become functions of their own, after the functions that
+        // create them; a closure's body can add more.
+        for (usize i = 0; i < closures_.size(); ++i) {
+            const auto pending = closures_[i];
+            closure_function(pending);
+        }
         return std::move(program_);
     }
 
 private:
     struct Loop {
         u32 head, exit;
+    };
+    // A closure whose function is yet to be lowered.
+    struct PendingClosure {
+        const ClosureExpr* closure;
+        u32 function;
+        std::vector<BindingId> captures;
+        std::optional<Type> self;  // the receiver's type, when the closure uses it
     };
     // A local or the receiver, and the fields below it from the outside in.
     struct Place {
@@ -303,8 +317,8 @@ private:
 
     // ------------------------------------------------------------ items
 
-    void function(const FunItem& item, Function& out) {
-        fun_ = &out;
+    void function(const FunItem& item, u32 index) {
+        fun_ = &program_.functions[index];
         locals_.clear();
         self_ = {};
         const ScalarSignature* sig = types_.signature(items_.at(&item));
@@ -312,20 +326,54 @@ private:
         // inout for a `mut fun`.
         if (const auto owner = owners_.find(&item); owner != owners_.end()) {
             self_ = reg(structure(owner->second));
-            if (mutating(item)) out.inout = {true};
+            if (mutating(item)) fun_->inout = {true};
         }
         for (const auto& param : item.sig.params)
             locals_[values_.at(param.name.span.lo).value] = reg(lower_type(types_.binding(values_.at(param.name.span.lo))));
-        out.params = static_cast<u32>(out.regs.size());
-        out.result = lower_type(sig->result);
+        fun_->params = static_cast<u32>(fun_->regs.size());
+        fun_->result = lower_type(sig->result);
         current_ = block();
         if (item.expr_body) {
             const Reg result = any(item.body);
-            end(Term::Ret, has_value(out.result) ? result : Reg{});
+            end(Term::Ret, has_value(fun_->result) ? result : Reg{});
         } else {
             (void)branch(item.body, false);
             // Flow checks guarantee that a value-returning body cannot fall off its end.
-            end(out.result == Type::Unit ? Term::Ret : Term::Unreachable);
+            end(fun_->result == Type::Unit ? Term::Ret : Term::Unreachable);
+        }
+        prune();
+    }
+
+    // A closure's function takes its environment first, then its parameters.
+    // Captured values are read from the environment on entry, so the body
+    // sees them as locals, and the receiver as `self`.
+    void closure_function(const PendingClosure& pending) {
+        fun_ = &program_.functions[pending.function];
+        locals_.clear();
+        self_ = {};
+        const auto& closure = *pending.closure;
+        const Reg env = reg(Type::U64);
+        for (const auto& param : closure.params)
+            locals_[values_.at(param.name.span.lo).value] = reg(lower_type(types_.binding(values_.at(param.name.span.lo))));
+        fun_->params = static_cast<u32>(fun_->regs.size());
+        fun_->closure = true;
+        fun_->result = lower_type(types_.descriptor(scalar(&closure))->result);
+        current_ = block();
+        if (fun_->environment) {
+            const auto& layout = program_.layouts[*fun_->environment];
+            for (u32 i = 0; i < layout.fields.size(); ++i) {
+                const Reg value = reg(layout.fields[i]);
+                emit({.op = Op::Env, .dst = value, .a = env, .imm = i});
+                if (i < pending.captures.size()) locals_[pending.captures[i].value] = value;
+                else self_ = value;
+            }
+        }
+        if (has_value(fun_->result)) {
+            const Reg result = any(closure.body);
+            end(Term::Ret, result);
+        } else {
+            (void)branch(closure.body, false);
+            end(fun_->result == Type::Unit ? Term::Ret : Term::Unreachable);
         }
         prune();
     }
@@ -791,11 +839,113 @@ private:
                     values.push_back(this->call(call, std::move(args)));
                     break;
                 }
+                case ExprKind::Closure:
+                    tasks.pop_back();
+                    values.push_back(make_closure(*cast<ClosureExpr>(expr)));
+                    break;
                 default: PHS_ASSERT(false && "expression outside the code generation subset");
             }
         }
         PHS_ASSERT(values.size() == 1);
         return values.back();
+    }
+
+    // A closure value: its function, named after the function that creates it,
+    // and a new environment holding a copy of each captured value.
+    Reg make_closure(const ClosureExpr& closure) {
+        PendingClosure pending{&closure, static_cast<u32>(program_.functions.size()), {}, {}};
+        Layout layout;
+        std::vector<Reg> captured;
+        for (const auto& capture : resolution_.captures(&closure)) {
+            pending.captures.push_back(capture.binding);
+            layout.fields.push_back(lower_type(types_.binding(capture.binding)));
+            layout.names.emplace_back(names_.str(resolution_.binding(capture.binding).name.sym));
+            captured.push_back(locals_.at(capture.binding.value));
+        }
+        if (self_.valid() && uses_self(closure)) {
+            pending.self = fun_->regs[self_.id];
+            layout.fields.push_back(*pending.self);
+            layout.names.emplace_back("self");
+            captured.push_back(self_);
+        }
+        const auto creator = static_cast<usize>(fun_ - program_.functions.data());
+        auto& out = program_.functions.emplace_back();
+        fun_ = &program_.functions[creator];
+        out.name = std::format("{}$closure{}", fun_->name, closure_counts_[creator]++);
+        out.span = closure.span;
+        if (!layout.fields.empty()) {
+            layout.name = out.name;
+            layout.kind = Layout::Environment;
+            place_fields(program_, layout);
+            out.environment = static_cast<u32>(program_.layouts.size());
+            program_.layouts.push_back(std::move(layout));
+        }
+        const Reg dst = reg(lower_type(scalar(&closure)));
+        emit({.op = Op::Closure, .dst = dst, .callee = pending.function, .args = std::move(captured)});
+        closures_.push_back(std::move(pending));
+        return dst;
+    }
+
+    // Whether a closure, or one inside it, uses the receiver: explicitly, or
+    // through a bare field name or a method call without a receiver.
+    bool uses_self(const ClosureExpr& closure) const {
+        std::vector<std::variant<const Expr*, const Stmt*>> work{closure.body};
+        while (!work.empty()) {
+            const auto next = work.back();
+            work.pop_back();
+            if (const auto* stmt_ptr = std::get_if<const Stmt*>(&next)) {
+                const Stmt& stmt = **stmt_ptr;
+                switch (stmt.kind) {
+                    case StmtKind::Var: if (const Expr* init = cast<VarStmt>(&stmt)->init) work.push_back(init); break;
+                    case StmtKind::Return: if (const Expr* value = cast<ReturnStmt>(&stmt)->value) work.push_back(value); break;
+                    case StmtKind::While:
+                        work.push_back(cast<WhileStmt>(&stmt)->cond.expr);
+                        work.push_back(cast<WhileStmt>(&stmt)->body);
+                        break;
+                    case StmtKind::Loop: work.push_back(cast<LoopStmt>(&stmt)->body); break;
+                    case StmtKind::Expr: work.push_back(cast<ExprStmt>(&stmt)->expr); break;
+                    case StmtKind::Assign:
+                        work.push_back(cast<AssignStmt>(&stmt)->target);
+                        work.push_back(cast<AssignStmt>(&stmt)->value);
+                        break;
+                    default: break;
+                }
+                continue;
+            }
+            const Expr* expr = std::get<const Expr*>(next);
+            if (expr->kind == ExprKind::SelfValue) return true;
+            if (const auto* name = as<NameExpr>(expr)) {
+                if (!types_.function(expr).valid() && implicit_field(*name)) return true;
+            } else if (const auto* block = as<BlockExpr>(expr)) {
+                for (const Stmt* stmt : block->stmts) work.push_back(stmt);
+            } else if (const auto* inner = as<ClosureExpr>(expr)) {
+                work.push_back(inner->body);
+            } else if (const auto* paren = as<ParenExpr>(expr)) {
+                work.push_back(paren->inner);
+            } else if (const auto* unary = as<UnaryExpr>(expr)) {
+                work.push_back(unary->operand);
+            } else if (const auto* binary = as<BinaryExpr>(expr)) {
+                work.push_back(binary->lhs);
+                work.push_back(binary->rhs);
+            } else if (const auto* call = as<CallExpr>(expr)) {
+                const CheckedCall* checked = types_.call(call);
+                if (checked && checked->kind == CallKind::Method && !checked->receiver) return true;
+                for (const auto& arg : call->args) work.push_back(arg.value);
+                if (checked && checked->receiver) work.push_back(checked->receiver);
+                if (indirect(*call)) work.push_back(call->callee);
+            } else if (const auto* member = as<MemberExpr>(expr)) {
+                work.push_back(member->base);
+            } else if (const auto* element = as<TupleFieldExpr>(expr)) {
+                work.push_back(element->base);
+            } else if (const auto* tuple = as<TupleExpr>(expr)) {
+                for (const Expr* e : tuple->elems) work.push_back(e);
+            } else if (const auto* branch = as<IfExpr>(expr)) {
+                work.push_back(branch->cond.expr);
+                work.push_back(branch->then_block);
+                if (branch->else_branch) work.push_back(branch->else_branch);
+            }
+        }
+        return false;
     }
 
     // Short-circuit `&&` and `||`: the right operand runs only when needed.
@@ -921,6 +1071,8 @@ private:
     u32 current_ = 0;
     std::unordered_map<usize, Reg> locals_;  // by binding ID
     std::vector<Loop> loops_;
+    std::vector<PendingClosure> closures_;
+    std::unordered_map<usize, u32> closure_counts_;  // closures created so far, by creating function
 };
 
 }  // namespace

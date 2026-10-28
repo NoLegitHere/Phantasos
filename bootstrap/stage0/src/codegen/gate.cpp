@@ -553,6 +553,13 @@ private:
                 condition(branch.cond, work);
                 return;
             }
+            case ExprKind::Closure: {
+                // Its supported function type covers its parameters. The body's
+                // tail is its result unless that is 'Unit' or 'Never'.
+                const auto result = types_.descriptor(actual)->result.kind;
+                work.push_back({cast<ClosureExpr>(&expr)->body, result != ScalarType::Unit && result != ScalarType::Never});
+                return;
+            }
             default: unsupported(expr.span, expr_name(expr.kind)); return;
         }
     }
@@ -570,7 +577,7 @@ private:
             case ExprKind::Int: case ExprKind::Bool: case ExprKind::String: case ExprKind::Unit: case ExprKind::Name:
             case ExprKind::Paren: case ExprKind::Unary: case ExprKind::Binary: case ExprKind::Call: case ExprKind::Block:
             case ExprKind::If: case ExprKind::Member: case ExprKind::SelfValue: case ExprKind::Tuple:
-            case ExprKind::TupleField:
+            case ExprKind::TupleField: case ExprKind::Closure:
                 return true;
             default:
                 unsupported(expr.span, expr_name(expr.kind));

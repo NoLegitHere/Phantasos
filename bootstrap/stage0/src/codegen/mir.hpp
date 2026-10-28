@@ -16,6 +16,7 @@
 #pragma once
 
 #include <limits>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -32,7 +33,10 @@
 // aggregates are built whole, read one field at a time, and updated by copying
 // them with one field replaced. A function value is an aggregate of two words:
 // the code to call and an environment, passed to that code as a hidden first
-// argument; a top-level function's value has a null environment.
+// argument; a top-level function's value has a null environment. A closure
+// is a function whose first parameter is that environment: a pointer to its
+// captured values, laid out like a struct and never freed, or null when it
+// captures nothing.
 
 namespace phs::mir {
 
@@ -65,6 +69,8 @@ enum class Op : u8 {
     With,   // the aggregate a with field imm replaced by b
     FnRef,  // the function value of function callee, with a null environment
     CallIndirect,  // a call of the function value a with args
+    Closure,  // the function value of closure function callee, its environment holding args
+    Env,      // captured value imm of the environment that a points to
 };
 
 struct Inst {
@@ -72,10 +78,11 @@ struct Inst {
     Reg dst;              // invalid for a call without a value and for print
     Reg a, b;             // operands; comparisons use the operand type
     u64 imm = 0;          // Const: the value, sign-extended for signed types; Str: index into Program::strings;
-                          // Field, With: the field's declaration index
-    u32 callee = 0;       // Call, FnRef: function index
+                          // Field, With, Env: the field's declaration index
+    u32 callee = 0;       // Call, FnRef, Closure: function index
     // Call: arguments in parameter order, a method's receiver first;
-    // CallIndirect: arguments in parameter order; Make: field values
+    // CallIndirect: arguments in parameter order; Make: field values;
+    // Closure: the captured values, in environment order
     std::vector<Reg> args;
 };
 
@@ -99,6 +106,10 @@ struct Function {
     std::vector<bool> inout;
     Type result = Type::Unit;
     std::vector<Block> blocks;  // blocks[0] is the entry; every block is reachable
+    // A closure's parameter 0 is its environment pointer, a U64; environment
+    // is the layout of what it captures, if anything.
+    bool closure = false;
+    std::optional<u32> environment;
 };
 
 inline bool is_inout(const Function& fun, u32 param) { return param < fun.inout.size() && fun.inout[param]; }
@@ -106,10 +117,11 @@ inline bool is_inout(const Function& fun, u32 param) { return param < fun.inout.
 // Fields keep declaration order; offsets place them by decreasing alignment,
 // stable among equal alignments, and the size is a multiple of the alignment.
 // A function type's layout has two U64 fields, code and env, and records the
-// signature that indirect calls through it follow.
+// signature that indirect calls through it follow. A closure's environment
+// has a field for each captured value, named after it.
 struct Layout {
-    enum Kind : u8 { Struct, Tuple, Function };
-    std::string name;  // a struct's name, or a tuple or function type's spelling
+    enum Kind : u8 { Struct, Tuple, Function, Environment };
+    std::string name;  // a struct's or closure's name, or a tuple or function type's spelling
     Kind kind = Struct;  // a tuple's fields are named 0, 1, ...
     std::vector<Type> fields;
     std::vector<std::string> names;
@@ -123,7 +135,7 @@ struct Program {
     std::vector<Function> functions;
     u32 main = 0;
     std::vector<std::string> strings;  // literal bytes, each distinct value once
-    std::vector<Layout> layouts;       // each struct, tuple and function type once
+    std::vector<Layout> layouts;       // each struct, tuple and function type once, and each environment
 };
 
 std::string type_name(const Program& program, Type type);

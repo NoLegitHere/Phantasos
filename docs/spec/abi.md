@@ -105,7 +105,11 @@ parameters in this order:
   then `call r11`. A named function used as a value gets a thunk,
   `_P$5thunk` followed by its length-prefixed stage0 name (so `twice` gets
   `_P$5thunk5twice`), which takes the environment and the function's
-  parameters, drops the environment and calls the function.
+  parameters, drops the environment and calls the function. A closure's
+  code is its own function, which takes the environment as that first
+  parameter. Its environment points to a copy of each captured value, laid
+  out like a struct (A.2) in capture order, with the receiver last when the
+  closure uses it; a closure that captures nothing has a null environment.
 - Stage0 passes a method's receiver as its first parameter after `ret*`, like
   any other struct argument. A `mut fun` receiver is `inout`: it is passed by
   address whatever its size. The callee copies it in, and it writes the final
@@ -149,3 +153,10 @@ type     = 'i1'|'i2'|'i4'|'i8'|'u1'|'u2'|'u4'|'u8'|'f4'|'f8'|'b'|'c'|'s'
   `_P$print_bool` (`rdi`). Each writes its value and a newline to standard
   output through `_P$write`, which retries partial writes and `EINTR` and
   otherwise panics with `panic: cannot write to standard output`.
+- When the program creates a closure that captures anything, the stage0
+  runtime also provides `_P$alloc`, which takes a size in `rdi` and returns a
+  zeroed, 16-byte aligned block in `rax`. It bumps a pointer through chunks of
+  at least 1 MiB that it maps with `mmap`, never frees, and panics with
+  `panic: out of memory` (trap code 4) when `mmap` fails. Its state lives in
+  `.bss`, which gets a page-aligned, writable, non-executable `PT_LOAD`
+  segment with no file bytes.

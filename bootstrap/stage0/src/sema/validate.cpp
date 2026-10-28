@@ -33,6 +33,7 @@ struct Context {
     bool loop = false;
     bool can_throw = false;
     bool async = false;
+    bool closure = false;  // innermost callable is a closure, which cannot throw or await
     bool deferred = false;
 };
 
@@ -215,6 +216,9 @@ private:
                     if (context.deferred)
                         diag_.error(DiagCode::InvalidControlFlow, stmt.span,
                                     "'{}' cannot leave a defer block; it requires a loop inside the block", keyword);
+                    else if (context.closure)
+                        diag_.error(DiagCode::InvalidControlFlow, stmt.span,
+                                    "'{}' cannot leave a closure; it requires a loop inside the closure", keyword);
                     else
                         diag_.error(DiagCode::InvalidControlFlow, stmt.span,
                                     "'{}' requires an enclosing loop body", keyword);
@@ -225,6 +229,9 @@ private:
                     if (context.deferred)
                         diag_.error(DiagCode::ThrowOutsideThrows, stmt.span,
                                     "'throw' cannot escape a defer block; handle it with 'try?' inside the block");
+                    else if (context.closure)
+                        diag_.error(DiagCode::ThrowOutsideThrows, stmt.span,
+                                    "'throw' cannot escape a closure, since closures cannot throw; handle it with 'try?' inside the closure");
                     else
                         diag_.error(DiagCode::ThrowOutsideThrows, stmt.span,
                                     "'throw' requires a throwing function/init or a 'try?' expression");
@@ -362,6 +369,8 @@ private:
                 if (unary.op == UnOp::Await && !context.async) {
                     if (context.deferred)
                         diag_.error(DiagCode::AwaitOutsideAsync, unary.span, "'await' is not allowed in a defer block");
+                    else if (context.closure)
+                        diag_.error(DiagCode::AwaitOutsideAsync, unary.span, "'await' is not allowed in a closure");
                     else
                         diag_.error(DiagCode::AwaitOutsideAsync, unary.span, "'await' requires an async function body");
                 }
@@ -404,10 +413,14 @@ private:
             case ExprKind::TupleField: push(cast<TupleFieldExpr>(&expr)->base, context); break;
             case ExprKind::GenericInst: push(cast<GenericInstExpr>(&expr)->base, context); break;
             case ExprKind::Unsafe: push(cast<UnsafeExpr>(&expr)->block, context); break;
-            case ExprKind::Closure:
-                // Closures parse, but their checking comes with their semantics.
-                diag_.error(DiagCode::UncheckedClosure, expr.span, "closures are not checked yet");
+            case ExprKind::Closure: {
+                // A closure body is its own callable: `return` leaves the closure,
+                // and loops outside it are not targets for `break` or `continue`.
+                const auto& closure = *cast<ClosureExpr>(&expr);
+                unique_names(closure.params);
+                push(closure.body, {.owner = context.owner, .callable = true, .closure = true});
                 break;
+            }
             case ExprKind::Int:
             case ExprKind::Float:
             case ExprKind::Char:

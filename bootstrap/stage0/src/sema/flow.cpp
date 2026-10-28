@@ -16,7 +16,9 @@
 #include "sema/flow.hpp"
 
 #include <format>
+#include <algorithm>
 #include <initializer_list>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -128,9 +130,10 @@ void operands(const Expr& expr, ExprList& out) {
     }
 }
 
-// Visits every statement nested anywhere inside root, without the C++ stack.
-template <typename F>
-void each_stmt(const Expr* root, F&& visit) {
+// Visits every statement and expression nested anywhere inside root, without
+// the C++ stack. Closure bodies are separate callables, entered only on request.
+template <typename S, typename E>
+void each_node(const Expr* root, bool closures, S&& visit, E&& visit_expr) {
     SmallVec<std::variant<const Expr*, const Stmt*>, 16> work{root};
     ExprList exprs;
     while (!work.empty()) {
@@ -162,15 +165,22 @@ void each_stmt(const Expr* root, F&& visit) {
                 case StmtKind::Break: case StmtKind::Continue: break;
             }
         } else if (const Expr* expr = std::get<const Expr*>(next)) {
+            visit_expr(*expr);
             if (const auto* block = as<BlockExpr>(expr)) {
                 for (const Stmt* stmt : block->stmts) work.push_back(stmt);
                 continue;
             }
+            if (const auto* closure = as<ClosureExpr>(expr); closure && closures) exprs.push_back(closure->body);
             operands(*expr, exprs);
         }
         for (const Expr* e : exprs)
             if (e) work.push_back(e);
     }
+}
+
+template <typename F>
+void each_stmt(const Expr* root, F&& visit) {
+    each_node(root, false, visit, [](const Expr&) {});
 }
 
 // Analyzes one callable at a time. Statement and control-expression recursion
@@ -207,13 +217,23 @@ public:
                     receiver(nullptr, nullptr);
                 }
             } else if (const auto* var = as<VarItem>(item)) {
-                // Field initializers see the owner's primary-constructor parameters.
-                if (var->init) callable(owner ? owner->ctor_params : List<Param>{}, var->init, nullptr);
+                // Field initializers see the owner's primary-constructor parameters,
+                // and a closure in an instance field's initializer captures `self`.
+                if (var->init) {
+                    if (!has_modifier(var->mods, Modifier::Static)) capturing_receiver(owner);
+                    callable(owner ? owner->ctor_params : List<Param>{}, var->init, nullptr);
+                    receiver(nullptr, nullptr);
+                }
             } else if (const auto* init = as<InitItem>(item)) {
                 defaults(init->params);
+                // Construction rules for `self` are separate, but closures still capture it.
+                capturing_receiver(owner);
                 if (init->body) callable(init->has_params || !owner ? init->params : owner->ctor_params, init->body, nullptr);
+                receiver(nullptr, nullptr);
             } else if (const auto* deinit = as<DeinitItem>(item)) {
+                capturing_receiver(owner);
                 if (deinit->body) callable({}, deinit->body, nullptr);
+                receiver(nullptr, nullptr);
             }
         }
     }
@@ -292,10 +312,21 @@ private:
     void receiver(const TypeDeclItem* owner, const FunItem* fun) {
         self_ = {};
         self_storage_ = Storage::Unknown;
+        self_owner_ = nullptr;
         if (!owner || !fun || has_modifier(fun->mods, Modifier::Static)) return;
         self_storage_ = storage(owner->kind);
+        self_owner_ = owner;
         if (has_modifier(fun->mods, Modifier::Mut)) self_ = {Access::Mutable, "'self'", {}, {}};
         else self_ = {Access::ReadOnly, "'self'", fun->name.span, "'self' is read-only in a method without 'mut'"};
+    }
+
+    // In an `init` or `deinit`, `self` stays unchecked for assignments, but a
+    // closure that uses it captures it.
+    void capturing_receiver(const TypeDeclItem* owner) {
+        receiver(nullptr, nullptr);
+        if (!owner) return;
+        self_storage_ = storage(owner->kind);
+        self_owner_ = owner;
     }
 
     Place field_place(const ResolvedBinding& binding, const Place& base, Storage storage) const {
@@ -335,6 +366,8 @@ private:
         }
         const auto& binding = resolution_.binding(id);
         const auto subject = "'" + std::string(names_.str(name.name.sym)) + "'";
+        if (captured_.contains(id.value))
+            return {Access::Immutable, "captured " + subject, binding.name.span, "a closure captures a read-only copy of it"};
         switch (binding.kind) {
             case BindingKind::Local: {
                 const auto* found = local(id);
@@ -345,6 +378,8 @@ private:
             case BindingKind::Pattern:
                 return {Access::Immutable, subject, binding.name.span, "pattern bindings are immutable"};
             case BindingKind::Parameter: {
+                if (closure_params_.contains(binding.name.span.lo))
+                    return {Access::ReadOnly, subject, binding.name.span, "closure parameters are read-only"};
                 const auto it = params_.find(binding.name.span.lo);
                 if (it == params_.end() || it->second->binding != Binding::None) return {};
                 if (it->second->conv == Convention::Inout) return {Access::Mutable};
@@ -502,16 +537,8 @@ private:
     }
 
     void callable(List<Param> params, const Expr* body, const FunItem* fun) {
-        params_.clear();
-        locals_.clear();
-        tracked_ = 0;
+        start(body);
         for (const auto& param : params) params_.emplace(param.name.span.lo, &param);
-        each_stmt(body, [&](const Stmt& stmt) {
-            if (const auto* var = as<VarStmt>(&stmt); var && var->names.empty())
-                locals_.emplace(var->name.span.lo, Local{var, var->init ? kUntracked : tracked_++, var->name.span});
-            else if (var)
-                for (const Name& name : var->names) locals_.emplace(name.span.lo, Local{var, kUntracked, name.span});
-        });
         State state{Bits(tracked_, false), Bits(tracked_, false), true};
         eval(body, state);
         if (fun && !fun->expr_body && state.live && returns_value(*fun)) {
@@ -520,6 +547,35 @@ private:
                                   names_.str(fun->name.sym), result_name(*fun));
             d.notes.push_back({fun->name.span, "the end of the body is reachable without a 'return'"});
         }
+        // Each closure body is its own callable, checked after the body that
+        // creates it. Its captures are read-only copies.
+        while (!closures_.empty()) {
+            const auto next = closures_.back();
+            closures_.pop_back();
+            start(next.closure->body);
+            for (const auto& param : next.closure->params) closure_params_.emplace(param.name.span.lo, &param);
+            for (const auto& capture : resolution_.captures(next.closure)) captured_.insert(capture.binding.value);
+            self_ = next.self;
+            self_storage_ = next.storage;
+            self_owner_ = next.owner;
+            State closure_state{Bits(tracked_, false), Bits(tracked_, false), true};
+            eval(next.closure->body, closure_state);
+        }
+    }
+
+    // Resets the per-callable tables and registers the locals of body.
+    void start(const Expr* body) {
+        params_.clear();
+        closure_params_.clear();
+        captured_.clear();
+        locals_.clear();
+        tracked_ = 0;
+        each_stmt(body, [&](const Stmt& stmt) {
+            if (const auto* var = as<VarStmt>(&stmt); var && var->names.empty())
+                locals_.emplace(var->name.span.lo, Local{var, var->init ? kUntracked : tracked_++, var->name.span});
+            else if (var)
+                for (const Name& name : var->names) locals_.emplace(name.span.lo, Local{var, kUntracked, name.span});
+        });
     }
 
     ScalarType result(const FunItem& fun) const {
@@ -557,6 +613,185 @@ private:
         d.notes.push_back({found->declared, "declared here without an initializer"});
     }
 
+    // Creating a closure reads what it captures and copies it (3.29). Its body
+    // is checked once the enclosing body is done.
+    void create(const ClosureExpr& closure, const State& state) {
+        for (const auto& capture : resolution_.captures(&closure)) {
+            const auto& binding = resolution_.binding(capture.binding);
+            const auto name = names_.str(binding.name.sym);
+            if (const auto* found = local(capture.binding)) {
+                if (found->tracked != kUntracked && state.live && !state.assigned.test(found->tracked)) {
+                    auto& d = diag_.error(DiagCode::UninitializedUse, capture.use, "'{}' is captured before it is initialized", name);
+                    d.notes.push_back({found->declared, "declared here without an initializer"});
+                }
+                continue;
+            }
+            if (binding.kind != BindingKind::Parameter) continue;
+            // Parameters of an enclosing callable were checked where that callable's closures captured them.
+            Convention convention = Convention::Default;
+            // A promoted constructor parameter is still the parameter wherever it resolves
+            // as one: in defaults, field initializers and the primary `init`.
+            if (const auto it = params_.find(binding.name.span.lo); it != params_.end()) convention = it->second->conv; else if (!closure_params_.contains(binding.name.span.lo)) continue;
+            if (convention == Convention::Inout) {
+                auto& d = diag_.error(DiagCode::InvalidCapture, capture.use,
+                                      "a closure cannot capture 'inout' parameter '{}', which is only borrowed for the call", name);
+                d.notes.push_back({binding.name.span, "declared 'inout' here"});
+            } else if (convention != Convention::Own && !copyable(types_.binding(capture.binding))) {
+                auto& d = diag_.error(DiagCode::InvalidCapture, capture.use,
+                                      "a closure cannot capture borrowed parameter '{}' of type '{}', which is not Copy; declare it 'own' to move it into the closure",
+                                      name, type_name(types_.binding(capture.binding)));
+                d.notes.push_back({binding.name.span, "parameters are borrowed unless declared 'own'"});
+            }
+        }
+        PendingClosure pending{&closure, self_, self_storage_, self_owner_};
+        if (self_storage_ != Storage::Unknown && self_owner_) {
+            if (const auto use = uses_self(closure)) {
+                // `self` is a parameter too: borrowed, or `inout` in a `mut fun`.
+                const auto type = names_.str(self_owner_->name.sym);
+                if (self_.access == Access::Mutable) {
+                    diag_.error(DiagCode::InvalidCapture, *use,
+                                "a closure cannot capture 'self' in a 'mut fun', where it is only borrowed for the call");
+                } else if (!copyable(*self_owner_)) {
+                    auto& d = diag_.error(DiagCode::InvalidCapture, *use,
+                                          "a closure cannot capture 'self' of type '{}', which is borrowed and not Copy", type);
+                    d.notes.push_back({self_owner_->name.span, "declared here"});
+                }
+                if (self_.access == Access::Mutable || !copyable(*self_owner_)) {
+                    // Nested closures do not report it again.
+                    pending.self = {};
+                    pending.storage = Storage::Unknown;
+                } else if (pending.self.access == Access::Unknown) {
+                    // In an `init` or `deinit` too, the closure holds a read-only copy.
+                    pending.self = {Access::Immutable, "the captured 'self'", {}, {}};
+                }
+            }
+        }
+        closures_.push_back(pending);
+    }
+
+    // Where a closure, or a closure inside it, uses `self`: explicitly, or
+    // through a bare instance field or method name.
+    // A direct call is decided by the overload it selected, not by any candidate.
+    std::optional<Span> uses_self(const ClosureExpr& closure) const {
+        std::optional<Span> found;
+        SmallVec<const Expr*, 8> selected;  // callees already decided by their call
+        each_node(closure.body, true, [](const Stmt&) {}, [&](const Expr& expr) {
+            if (found) return;
+            if (expr.kind == ExprKind::SelfValue || expr.kind == ExprKind::Super) {
+                found = expr.span;
+            } else if (const auto* call = as<CallExpr>(&expr); call && as<NameExpr>(call->callee)) {
+                const auto* checked = types_.call(call);
+                if (!checked || checked->state != CallState::Resolved || !checked->target.valid()) return;
+                selected.push_back(call->callee);
+                if (instance_member(checked->target)) found = call->callee->span;
+            } else if (const auto* name = as<NameExpr>(&expr);
+                       name && std::ranges::find(selected, &expr) == selected.end() && instance_member(*name)) {
+                found = expr.span;
+            }
+        });
+        return found;
+    }
+    bool instance_member(BindingId id) const {
+        const auto& binding = resolution_.binding(id);
+        if (binding.kind != BindingKind::Field && binding.kind != BindingKind::Function) return false;
+        if (resolution_.scopes()[binding.scope.value].kind != ScopeKind::Members) return false;
+        return !binding.item || !has_modifier(binding.item->mods, Modifier::Static);
+    }
+    bool instance_member(const NameExpr& name) const {
+        const auto instance = [&](BindingId id) { return instance_member(id); };
+        if (const auto id = target(name); id.valid()) return instance(id);
+        const auto* record = types_.member(&name);
+        return record && record->state == ResolutionState::Resolved && std::ranges::any_of(record->candidates, instance);
+    }
+
+    // Whether values of a type are copied implicitly (3.2). Ownership checks
+    // are later work, so stage0 decides it structurally: scalars, function
+    // values and raw pointers are Copy, as are tuples, optionals, structs and
+    // payload-free enums made of Copy parts. Unknown types do not report.
+    // A generic parameter is Copy when the argument it stands for is; outside
+    // an instance, such as in a declaration's own `self`, it may not be.
+    bool copyable(ScalarType root) const {
+        struct Part { ScalarType type; u32 env; };  // env: the instance whose arguments it sees
+        std::vector<std::vector<std::pair<usize, Part>>> envs(1);
+        std::vector<Part> work{{root, 0}};
+        for (usize steps = 0; !work.empty(); ++steps) {
+            if (steps > kCopyableSteps) return true;  // undecided; ownership checks decide later
+            const auto [raw, env] = work.back();
+            work.pop_back();
+            const auto type = raw.scalar();
+            switch (type.kind) {
+                case ScalarType::String: case ScalarType::Array: case ScalarType::Shared: case ScalarType::Weak:
+                case ScalarType::Projection:
+                    return false;
+                case ScalarType::TypeParameter: {
+                    const auto declaration = types_.descriptor(type)->declaration.value;
+                    const auto& bound = envs[env];
+                    const auto it = std::ranges::find(bound, declaration, &std::pair<usize, Part>::first);
+                    if (it == bound.end()) return false;
+                    work.push_back(it->second);
+                    break;
+                }
+                case ScalarType::Tuple:
+                    for (const auto element : types_.descriptor(type)->parameters) work.push_back({element, env});
+                    break;
+                case ScalarType::Nominal: {
+                    const auto* descriptor = types_.descriptor(type);
+                    const Item* item = resolution_.binding(descriptor->declaration).item;
+                    const auto* decl = item ? as_type_decl(item) : nullptr;
+                    std::vector<ScalarType> fields;
+                    if (!decl || !stored_fields(*decl, fields)) return false;
+                    if (fields.empty()) break;
+                    // The fields see this instance's arguments, as seen from where it is named.
+                    std::vector<std::pair<usize, Part>> arguments;
+                    const auto parameters = generic_parameters(*decl);
+                    for (usize i = 0; i < parameters.size() && i < descriptor->arguments.size(); ++i)
+                        arguments.push_back({parameters[i].value, {descriptor->arguments[i], env}});
+                    envs.push_back(std::move(arguments));
+                    for (const auto field : fields) work.push_back({field, static_cast<u32>(envs.size() - 1)});
+                    break;
+                }
+                default: break;
+            }
+        }
+        return true;
+    }
+    static constexpr usize kCopyableSteps = 4096;
+    // A declaration's own `self`, whose generic fields stay symbolic.
+    bool copyable(const TypeDeclItem& decl) const {
+        std::vector<ScalarType> fields;
+        if (!stored_fields(decl, fields)) return false;
+        return std::ranges::all_of(fields, [&](ScalarType type) { return copyable(type); });
+    }
+    // The stored field types of a struct, or false when the declaration is
+    // never Copy. Enums are Copy without payloads, and have no fields to check.
+    bool stored_fields(const TypeDeclItem& decl, std::vector<ScalarType>& fields) const {
+        if (decl.kind == ItemKind::Enum)
+            return std::ranges::all_of(decl.members, [](const Item* member) {
+                const auto* entry = as<EnumCaseItem>(member);
+                return !entry || entry->fields.empty();
+            });
+        if (decl.kind != ItemKind::Struct) return false;
+        const auto owner = items_.find(&decl);
+        if (owner == items_.end()) return true;
+        for (const BindingId id : resolution_.scopes()[resolution_.binding(owner->second).members.value].bindings) {
+            const auto& binding = resolution_.binding(id);
+            if (binding.kind != BindingKind::Field || (binding.item && has_modifier(binding.item->mods, Modifier::Static))) continue;
+            fields.push_back(types_.binding(id));
+        }
+        return true;
+    }
+    // A type's generic parameters in declaration order, from the scope around its members.
+    std::vector<BindingId> generic_parameters(const TypeDeclItem& decl) const {
+        std::vector<BindingId> result;
+        const auto owner = items_.find(&decl);
+        if (owner == items_.end()) return result;
+        const auto generics = resolution_.scopes()[resolution_.binding(owner->second).members.value].parent;
+        for (const BindingId id : resolution_.scopes()[generics.value].bindings)
+            if (resolution_.binding(id).kind == BindingKind::GenericParameter) result.push_back(id);
+        return result;
+    }
+    std::string type_name(ScalarType type) const { return types_.type_name(type, resolution_, names_, 1024); }
+
     void immutable(const NameExpr& name, Span declared, std::string_view note) {
         auto& d = diag_.error(DiagCode::ImmutableAssignment, name.span, "cannot assign to immutable '{}'",
                               names_.str(name.name.sym));
@@ -570,6 +805,13 @@ private:
             return;
         }
         const auto& binding = resolution_.binding(id);
+        if (captured_.contains(id.value)) {
+            auto& d = diag_.error(DiagCode::ImmutableAssignment, name.span,
+                                  "cannot assign to captured '{}'; a closure captures a read-only copy of it",
+                                  names_.str(name.name.sym));
+            d.notes.push_back({binding.name.span, "declared outside the closure here"});
+            return;
+        }
         switch (binding.kind) {
             case BindingKind::Local: {
                 const auto* found = local(id);
@@ -593,6 +835,10 @@ private:
                 immutable(name, binding.name.span, "pattern bindings cannot be reassigned");
                 return;
             case BindingKind::Parameter: {
+                if (closure_params_.contains(binding.name.span.lo)) {
+                    immutable(name, binding.name.span, "closure parameters are read-only");
+                    return;
+                }
                 const auto it = params_.find(binding.name.span.lo);
                 // Promoted constructor parameters name fields; receiver rules are later work.
                 if (it == params_.end() || it->second->conv == Convention::Inout || it->second->binding != Binding::None) return;
@@ -674,6 +920,7 @@ private:
                 continue;
             }
             if (const auto* name = as<NameExpr>(expr)) read(*name, state);
+            else if (const auto* closure = as<ClosureExpr>(expr)) create(*closure, state);
             else if (const auto* call = as<CallExpr>(expr)) {
                 mutating_call(*call);
                 // Any call inside `try?` may throw after its operands have run;
@@ -822,6 +1069,16 @@ private:
     FlatMap<u32, Field> fields_;
     Place self_;
     Storage self_storage_ = Storage::Unknown;
+    const TypeDeclItem* self_owner_ = nullptr;
+    struct PendingClosure {
+        const ClosureExpr* closure;
+        Place self;  // the captured `self`, if the body uses it
+        Storage storage;
+        const TypeDeclItem* owner;
+    };
+    std::vector<PendingClosure> closures_;          // created by the current callable, checked after it
+    FlatMap<u32, const ClosureParam*> closure_params_;  // name span.lo -> parameter of the current closure
+    FlatSet<usize> captured_;                        // bindings the current closure captures
     std::vector<State> breaks_;
     std::vector<State> caught_;  // error exits of enclosing `try?` expressions
     usize tracked_ = 0;

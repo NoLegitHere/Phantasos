@@ -29,6 +29,7 @@ struct Context {
     BindingId owner;
     bool receiver = false;
     bool implicit_receiver = false; // instance field initializers cannot use explicit self yet
+    bool closure = false;           // inside a closure body, where outer locals are captured
 };
 struct TypeScopes {
     ScopeId generics, members, constructor;
@@ -184,10 +185,25 @@ private:
 
     Target name_ref(Name name, Context context, NameSpace space) {
         const Target found = lookup(context.scope, name.sym, space);
+        if (context.closure && space == NameSpace::Value && found.state == ResolutionState::Resolved) capture(found.set, context, name.span);
         if (found.state != ResolutionState::Unresolved) return record(name.span, context, space, found);
         const auto code = space == NameSpace::Type ? DiagCode::UnknownType : DiagCode::UnknownValue;
         diag_.error(code, name.span, "unknown {} '{}'", space == NameSpace::Type ? "type" : "name", names_.str(name.sym));
         return record(name.span, context, space, {ResolutionState::Unresolved, {}});
+    }
+
+    // A local, parameter or pattern binding named inside a closure but declared
+    // outside it is captured by that closure and by every closure in between.
+    void capture(BindingSetId set, Context context, Span use) {
+        if (set_info_[set.value].size != 1) return;
+        const BindingId id = set_info_[set.value].first;
+        const auto& binding = result_.binding(id);
+        if (binding.kind != BindingKind::Local && binding.kind != BindingKind::Parameter && binding.kind != BindingKind::Pattern) return;
+        for (ScopeId s = context.scope; s.valid() && s != binding.scope; s = result_.scopes_[s.value].parent) {
+            const auto closure = closure_scopes_.find(s.value);
+            if (closure == closure_scopes_.end()) continue;
+            if (captured_.insert(u64(s.value) << 32 | id.value)) result_.captures_[closure->second].push_back({id, use});
+        }
     }
 
     Target qualified(Name name, Context context, NameSpace space, Target base) {
@@ -523,7 +539,8 @@ private:
             case ExprKind::Match: {
                 const auto& match = *cast<MatchExpr>(&expr);
                 for (const MatchArm& arm : std::views::reverse(match.arms)) {
-                    Context local{scope(context.scope, ScopeKind::MatchArm), context.owner, context.receiver, context.implicit_receiver};
+                    Context local = context;
+                    local.scope = scope(context.scope, ScopeKind::MatchArm);
                     push(arm.body, local);
                     push(arm.guard, local);
                     pattern(*arm.pattern, local);
@@ -585,6 +602,19 @@ private:
                 break;
             }
             case ExprKind::Unsafe: push(cast<UnsafeExpr>(&expr)->block, context); break;
+            case ExprKind::Closure: {
+                const auto& closure = *cast<ClosureExpr>(&expr);
+                Context inner = context;
+                inner.scope = scope(context.scope, ScopeKind::Closure);
+                inner.closure = true;
+                closure_scopes_.emplace(inner.scope.value, &closure);
+                push(closure.body, inner);
+                for (const ClosureParam& p : std::views::reverse(closure.params)) {
+                    work_.push_back({Declare{p.name, BindingKind::Parameter}, inner});
+                    push(p.type, context);
+                }
+                break;
+            }
             case ExprKind::Int:
             case ExprKind::Float:
             case ExprKind::Char:
@@ -592,7 +622,6 @@ private:
             case ExprKind::Bool:
             case ExprKind::None:
             case ExprKind::Unit:
-            case ExprKind::Closure:  // rejected by validation for now
             case ExprKind::Error: break;
         }
     }
@@ -615,6 +644,8 @@ private:
     FlatMap<const TypeDeclItem*, TypeScopes> type_scopes_;
     FlatMap<const Param*, BindingId> constructor_params_;
     FlatMap<const Expr*, Target> expression_targets_;
+    FlatMap<usize, const ClosureExpr*> closure_scopes_;  // a closure's own scope -> the closure
+    FlatSet<u64> captured_;                               // (closure scope, binding) pairs already recorded
     std::vector<Work> work_;
 };
 

@@ -92,7 +92,12 @@ There are **no implicit numeric conversions**. Widening is written
     the call. `inout` gives exclusive read/write access for the duration of
     the call.
   - Borrows are **second-class**. They cannot be stored in fields, returned,
-    or captured by escaping closures, so no lifetime annotations are needed.
+    or captured by closures, so no lifetime annotations are needed.
+  - Closures capture by **copy** (3.29). A closure can capture a borrowed
+    parameter only when its type is `Copy`, since it keeps a copy rather
+    than the borrow, and it can never capture an `inout` parameter. An `own`
+    parameter or a local is moved into the closure when its type is not
+    `Copy`.
   - While an `inout` borrow is active, its source cannot be accessed any
     other way (the law of exclusivity).
 - **Sharing.**
@@ -269,6 +274,11 @@ ownership and effect analysis remain on the [roadmap](../roadmap.md).
   not its iterable. Each match arm has its own scope: its pattern bindings
   are visible in the guard and body. Matching alternatives share bindings;
   case names and pattern types are looked up outside the arm's bindings.
+- A closure's parameters are visible in its body, which is a nested scope
+  like a block's. A local, parameter or pattern binding declared outside the
+  closure and named inside it is a **capture** of that closure, and of every
+  closure between the name and its declaration (3.29). File-level names,
+  fields and functions are not captures.
 - `Self` denotes the enclosing type. `self` requires an instance function,
   initializer or destructor body; `super` additionally requires a declared
   base type. Static bodies and parameter defaults do not have a receiver.
@@ -903,7 +913,8 @@ without an expected type remains `Deferred`.
 
 **Flow checks.** After scalar typing succeeds, stage0 checks each function,
 initializer and destructor body, and separately each parameter default and
-variable initializer. Analysis is structural and does not evaluate
+variable initializer. Each closure body is checked as its own callable after
+the body that creates it (3.29). Analysis is structural and does not evaluate
 conditions: both arms of an `if` and both operands of `&&`, `||` and `??` are
 possible paths, `while` and `for` may run zero times, and `loop` exits only
 through `break`. A call to `panic` or a call of (non-optional) type `Never`
@@ -925,7 +936,8 @@ pattern always runs its guard, and arms after an unguarded one are unreachable.
 - **Immutable bindings (`E0502`).** Assignment and compound assignment may
   target a `var` local or global, or an `inout` parameter. Other parameters,
   `let` locals and globals, pattern and `for` bindings, and `if let` bindings
-  are read-only. A `let` local declared without an initializer may be assigned
+  are read-only, and so are closure parameters and a closure's captures
+  (3.29). A `let` local declared without an initializer may be assigned
   once while it is definitely unassigned, so each path initializes it exactly
   once. Assignment anywhere in a loop's condition or body counts as possibly
   repeated on the next iteration.
@@ -1007,8 +1019,8 @@ Everything else reports `E0600`. That includes shifts, `for`, `defer`,
 `throw`, `match`, `unsafe` blocks, operators on strings, string interpolation,
 floating-point values, arrays, comparisons of tuples,
 optionals, classes, enums, interfaces, members other than struct fields and
-method calls, method values, globals, operators on function values, and
-values of generic or `where`-constrained functions. A `mut fun` call
+method calls, method values, globals, operators on function values,
+values of generic or `where`-constrained functions, and closures (3.29). A `mut fun` call
 needs a receiver rooted in a local, `self` or a field of `self`. A local whose
 type is still deferred also reports `E0600` and needs an annotation. One
 `E0600` is reported per construct, and uses of a rejected local are not
@@ -1143,3 +1155,107 @@ Equality and ordering of tuples remain deferred, like other composite
 comparisons; arithmetic on tuples is `E0401`. Stage0 generates code for tuples
 of the subset (3.25); they use the struct layout and passing of abi.md A.2 and
 A.6, with elements in place of fields.
+
+## 3.29 Closures [Core]
+
+A closure `{ x, y -> x + y }` (2.4) is a value of a function type. Its body
+is a callable of its own: `return` leaves the closure with its result,
+`break` and `continue` cannot leave it (`E0203`), and a closure cannot throw
+(`E0204`) or `await` (`E0205`), since closure types are never `throws` or
+`async`. Parameter names must be distinct (`E0200`).
+
+**Types.** A closure takes its type from the function type it is expected to
+have. The expected type comes from:
+
+- the annotation of the `let` or `var` it initializes, or of the parameter
+  whose default it is;
+- the declared result of the function whose expression body or `return` it
+  is;
+- the target of a plain assignment (`f = { ... }`);
+- the parameter it is passed to, as a call argument. The callee is a value
+  of function type, a non-generic function or method, or the primary
+  constructor of a non-generic type, named directly or through a type alias.
+  When the callee is an overload set, the overloads that accept the call's
+  shape must agree on that parameter's type, and none of them may be generic;
+- the result type of an enclosing closure, for a closure that is that
+  closure's final expression or `return` value.
+
+Parentheses around the closure do not matter, and an optional function type
+gives the function type inside it. With an expected function type, each
+parameter without an annotation takes the expected parameter type, an
+annotated parameter must have exactly that type, and the body's value and
+every `return` value must have the expected result type, so literals take it:
+
+```phantasos
+let wide: fun(Int64) -> Int64 = { x -> x + 1 }   // x: Int64, 1: Int64
+fun makeAdder(n: Int): fun(Int) -> Int = { x -> x + n }
+apply({ x -> x * 2 }, 3)                          // apply(f: fun(Int) -> Int, x: Int)
+```
+
+A closure whose parameters are all annotated needs no expected type. Its
+result is then the type that its final expression and its `return` values
+agree on, looking through the branches of an `if`, `match` or `unsafe` in
+either place, with literals taking their defaults: `{ x: Int -> x * 2 }` is a
+`fun(Int) -> Int`, and `{ -> 1.5 }` a `fun() -> Float64`. A body that never
+produces a value has result `Never`.
+
+Errors:
+
+- A parameter without an annotation and without an expected function type
+  is `E0480`. That includes a closure passed to a generic function or to
+  overloads that disagree on the parameter's type, and one used in a tuple
+  or array literal or another context not listed above.
+- An expected type that is not a function type, or a function type with a
+  different number of parameters, is `E0400`. So is an annotated parameter
+  whose type differs from the expected one, a body or `return` value of the
+  wrong type, and, without an expected type, results that disagree.
+- A closure never throws, so against an expected function type that
+  `throws` its typing stays deferred, like other effect coercions between
+  function types (3.18).
+
+**Captures.** A closure captures the outer locals, parameters and pattern
+bindings it names (3.13), including those named only by a closure nested
+inside it. Capturing copies the value when the closure is created, so later
+changes to a `var` do not reach the closure, and the closure can be returned
+and stored freely:
+
+```phantasos
+var count = 1
+let read = { -> count }
+count = 2
+read()        // 1
+```
+
+Inside the closure, a capture is a read-only copy. Assigning to it, to its
+fields or elements, or passing it to an `inout` parameter is `E0502`, as it
+is for a `let` local (3.24). A captured class reference still allows the
+object's `var` fields to change. Closure parameters are read-only too.
+Creating a closure reads each capture, so a captured local must be
+definitely initialized at that point (`E0501`).
+
+Parameters are borrowed unless they are `own` or `inout` (3.4), and a closure
+never holds a borrow:
+
+- capturing an `inout` parameter is `E0503`;
+- capturing a borrowed parameter, including a closure parameter, is `E0503`
+  unless its type is `Copy`. Declaring the parameter `own` moves it into the
+  closure instead;
+- `self` is captured when the closure uses it, explicitly or through a bare
+  instance field or method name, in a method, initializer, destructor or
+  instance field initializer. A call uses it when the overload it selects is
+  an instance method. It follows the same rules: in a `mut fun`
+  it is `inout` and cannot be captured, and elsewhere its type must be
+  `Copy` (`E0503`). The captured `self` is read-only.
+
+Until `Copy` derivation is checked, stage0 decides it structurally: integer,
+floating-point, `Bool`, `Char` and `Unit` values, function values and raw
+pointers are `Copy`, and so are tuples, optionals and structs whose elements
+or stored fields are all `Copy`, and enums whose cases carry no payload. A
+generic instance's fields are checked with its arguments in place, so
+`Box<Int>` can be `Copy` while `Box<String>` is not.
+`String`, arrays, `shared` and `weak` handles, classes, actors, generic type
+parameters and enums with payloads are not. Locals and `own` parameters of
+other types are moved into the closure; moves are checked with ownership.
+
+Closures cannot be generic, and are compared like other function values:
+not at all yet. Stage0 checks closures, but `gate` rejects them (3.25).

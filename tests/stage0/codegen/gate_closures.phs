@@ -13,7 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Closures parse, but 'check' does not check them yet.
+// Closures pass 'check', but stage0 cannot generate code for them yet.
 
 fun main(): Int {
     let k = { -> 42 }

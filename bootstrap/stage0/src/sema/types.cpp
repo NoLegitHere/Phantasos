@@ -2751,31 +2751,41 @@ private:
             return {Expected::Known, parameters[argument]};
         }
         const Expr* receiver = unparen(call.callee);
-        const auto ids = callees(receiver);
+        const auto named = callees(receiver);
+        std::vector<BindingId> ids(named.begin(), named.end());
+        // A primary constructor may be named through a type alias.
+        if (const auto constructed = entity(call.callee); constructed.state == ExpansionState::Resolved && constructed.target.valid() &&
+            !constructed.optional_depth && resolution_.binding(constructed.target).kind == BindingKind::Type)
+            ids = {constructed.target};
         if (ids.empty()) return {unavailable(callee) ? Expected::Pending : Expected::Missing};
         std::optional<Type> found;
+        bool generic = false;
         // Like call selection, reading a candidate's parameter commits none of its type uses.
         const ScopedValue probing(probing_constraints_, true);
         for (BindingId id : ids) {
             const auto& binding = resolution_.binding(id);
             List<Param> params;
+            bool symbolic = false;
             usize context = reference_contexts_.contains(receiver) ? reference_contexts_.at(receiver) : 0;
             if (binding.kind == BindingKind::Function) {
-                if (signatures_.at(id.value).generic) return {Expected::Generic};
+                symbolic = signatures_.at(id.value).generic;
                 params = cast<FunItem>(binding.item)->sig.params;
                 if (const auto member = members_.find(receiver); member != members_.end() && known(member->second.receiver_type))
                     context = owner_context(member_owner(id), member->second.receiver_type);
             } else if (binding.kind == BindingKind::Type) {
                 const auto* type = cast_type_decl(binding.item);
-                if (!type->generics.empty()) return {Expected::Generic};
+                symbolic = !type->generics.empty();
                 params = type->ctor_params;
             } else return {};
+            // Only candidates that accept the call's shape take part.
             std::vector<usize> mapping;
             if (!argument_mapping(call, params, mapping)) continue;
+            if (symbolic) { generic = true; continue; }
             const Type type = annotation(params[mapping[argument]].type, context);
             if (found && *found != type) return {Expected::Overloaded};
             found = type;
         }
+        if (generic) return {Expected::Generic};
         if (!found) return {Expected::Known, Type::Error};  // no candidate fits; the call reports it
         if (*found == Type::Error || known(*found)) return {Expected::Known, *found};
         return {Expected::Pending};

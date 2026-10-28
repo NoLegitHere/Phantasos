@@ -693,7 +693,7 @@ private:
                     const auto* descriptor = types_.descriptor(type);
                     const Item* item = resolution_.binding(descriptor->declaration).item;
                     const auto* decl = item ? as_type_decl(item) : nullptr;
-                    if (!decl || !copyable(*decl, work)) return false;
+                    if (!decl || !copyable(*decl, work, true)) return false;
                     for (const auto argument : descriptor->arguments) work.push_back(argument);
                     break;
                 }
@@ -702,13 +702,16 @@ private:
         }
         return true;
     }
+    // A declaration's own `self`, whose generic fields stay symbolic.
     bool copyable(const TypeDeclItem& decl) const {
         std::vector<ScalarType> work;
-        if (!copyable(decl, work)) return false;
+        if (!copyable(decl, work, false)) return false;
         return std::ranges::all_of(work, [&](ScalarType type) { return copyable(type); });
     }
     // Queues the stored field types of a struct; enums are Copy without payloads.
-    bool copyable(const TypeDeclItem& decl, std::vector<ScalarType>& fields) const {
+    // An instance's generic fields are covered by its arguments; otherwise a
+    // field of a generic parameter's type may not be Copy.
+    bool copyable(const TypeDeclItem& decl, std::vector<ScalarType>& fields, bool instance) const {
         if (decl.kind == ItemKind::Enum)
             return std::ranges::all_of(decl.members, [](const Item* member) {
                 const auto* entry = as<EnumCaseItem>(member);
@@ -720,9 +723,8 @@ private:
         for (const BindingId id : resolution_.scopes()[resolution_.binding(owner->second).members.value].bindings) {
             const auto& binding = resolution_.binding(id);
             if (binding.kind != BindingKind::Field || (binding.item && has_modifier(binding.item->mods, Modifier::Static))) continue;
-            // Generic fields stay symbolic; the instance's arguments are checked instead.
             const auto type = types_.binding(id);
-            if (type.kind != ScalarType::TypeParameter && type.kind != ScalarType::Projection) fields.push_back(type);
+            if (!instance || (type.kind != ScalarType::TypeParameter && type.kind != ScalarType::Projection)) fields.push_back(type);
         }
         return true;
     }

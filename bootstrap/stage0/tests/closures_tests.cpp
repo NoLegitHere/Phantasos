@@ -197,6 +197,13 @@ void errors() {
         {"struct S(var v: Int) {\nfun f() { let g = { -> v }\nlet h: fun() -> Unit = { -> self.v = 1 } }\n}",
          {DiagCode::ImmutableAssignment}},
         {"struct S(var v: String) {\nfun f() { let g = { -> v } }\n}", {DiagCode::InvalidCapture}},
+        {"struct Box<T>(value: T) {\nfun f() { let g = { -> self.value } }\n}", {DiagCode::InvalidCapture}},
+        // References inside match arms are captures too.
+        {"fun main(n: inout Int) { let g = { -> match 0 { _ -> n } } }", {DiagCode::InvalidCapture}},
+        {"fun main() { let n: Int\nlet g = { -> match 0 { _ -> n } }\nn = 1 }", {DiagCode::UninitializedUse}},
+        // A constructor named through an alias, and overloads filtered by shape, still give parameter types.
+        {"struct Handler(run: fun(Int) -> Int)\ntype Alias = Handler\nfun main() { let h = Alias(run: { x -> x }) }", {}},
+        {"fun take<T>(x: T, y: Int) {}\nfun take(f: fun(Int) -> Int) {}\nfun main() { take({ x -> x }) }", {}},
     }) { Frontend bad; bad.check(test.first, test.second); }
 }
 }  // namespace

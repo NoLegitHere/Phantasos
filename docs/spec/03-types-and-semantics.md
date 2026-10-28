@@ -1174,8 +1174,9 @@ have. The expected type comes from:
 - the target of a plain assignment (`f = { ... }`);
 - the parameter it is passed to, as a call argument. The callee is a value
   of function type, a non-generic function or method, or the primary
-  constructor of a non-generic type. When the callee is an overload set, the
-  overloads that accept the call's shape must agree on that parameter's type;
+  constructor of a non-generic type, named directly or through a type alias.
+  When the callee is an overload set, the overloads that accept the call's
+  shape must agree on that parameter's type, and none of them may be generic;
 - the result type of an enclosing closure, for a closure that is that
   closure's final expression or `return` value.
 

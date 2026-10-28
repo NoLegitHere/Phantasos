@@ -539,7 +539,8 @@ private:
             case ExprKind::Match: {
                 const auto& match = *cast<MatchExpr>(&expr);
                 for (const MatchArm& arm : std::views::reverse(match.arms)) {
-                    Context local{scope(context.scope, ScopeKind::MatchArm), context.owner, context.receiver, context.implicit_receiver};
+                    Context local = context;
+                    local.scope = scope(context.scope, ScopeKind::MatchArm);
                     push(arm.body, local);
                     push(arm.guard, local);
                     pattern(*arm.pattern, local);

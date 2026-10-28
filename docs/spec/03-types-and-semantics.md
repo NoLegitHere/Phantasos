@@ -988,22 +988,26 @@ stored-field initialization and global initialization order.
 
 This section describes an implementation limit of stage0, not a language rule.
 Stage0's first native backend lowers only a subset of scalars, plain
-structs and generic functions and structs. The `gate` command
+structs, generic functions and structs, and interfaces used as bounds. The `gate` command
 runs `check` first. If `check` succeeds, `gate` reports every construct outside
 the subset, so that nothing half-checked reaches code generation:
 
-- **Declarations.** Top-level functions with a body, and plain structs with
-  their methods, generic ones included. A function or method cannot be
+- **Declarations.** Top-level functions with a body, plain structs with
+  their methods, generic ones included, and plain interfaces. A function or method cannot be
   `async`, `unsafe` or throwing, or carry attributes. Its parameters have no defaults
   and are not `inout`; `borrow` and `own` parameters are passed like
   default ones, since stage0 values have no destructors yet. A function
   with an `own` parameter has no function value (3.18). A plain struct
   takes all its fields, at least one, from its primary constructor, without
   conventions or defaults.
-  It has no attributes or conformances, and its body holds only instance
+  It has no attributes, its conformances name plain interfaces, and its body holds only instance
   methods, `fun` or `mut fun`: no static methods, body fields, `init` or
   `deinit`. It cannot hold itself through its fields, directly, through
   other structs or through their type arguments.
+  A plain interface is not generic, extends no other interface and has no
+  attributes or `where` clause. Its body holds only instance methods that are
+  not generic, with or without a default body. Type parameter bounds may
+  name only plain interfaces.
 - **Types.** `Bool`, `Int8` to `Int64`, `UInt8` to `UInt64`, `Int`, `UInt`,
   `String`, `Unit` and `Never`, without optional wrappers. Parameters and
   locals need one of the value types, so they cannot be `Unit` or `Never`.
@@ -1039,8 +1043,9 @@ the subset, so that nothing half-checked reaches code generation:
 Everything else reports `E0600`. That includes shifts, `for`, `defer`,
 `throw`, `match`, `unsafe` blocks, operators on strings, string interpolation,
 floating-point values, arrays, comparisons of tuples,
-optionals, classes, enums, interfaces, members other than struct fields and
-method calls, method values, globals, operators on function values,
+optionals, classes, enums, values of an interface type, generic
+interfaces, interfaces that extend others, `where` clauses, members other
+than struct fields and method calls, method values, globals, operators on function values,
 and values of `where`-constrained functions. A closure's body is
 checked like a function body. A `mut fun` call
 needs a receiver rooted in a local, `self` or a field of `self`. A local whose
@@ -1063,8 +1068,14 @@ its instance types that the program uses. Polymorphic recursion, where an instan
 the same function with bigger type arguments, would need instances without
 end, so stage0 reports `E0602` at the call or value where the instances nest more
 than 64 levels deep or where the program would need more than 10,000 of
-them. Calls whose type arguments are not inferred yet, which includes calls
-to functions with bounds or `where` clauses, report `E0600`.
+them. Calls whose type arguments are not inferred yet report `E0600`.
+
+A call on a value whose type is a bounded type parameter, or on `self`
+inside an interface's default body, is dispatched statically: once the
+instance knows the receiver's struct, the call goes straight to the method
+that implements the requirement for it. When that is the interface's default
+body, the default gets one instance per conforming struct that uses it, with
+`Self` standing for that struct. There are no vtables in stage0.
 
 The program needs exactly one `fun main()` with no parameters or type
 parameters. It returns `Int` (the exit status), nothing, or `Never`. A
@@ -1113,7 +1124,9 @@ generic function used as a value refers to the instance for its type
 arguments, the one a call with them uses. A method
 instance is named after its receiver's type, such as `Box<Int>.get`, with a
 generic method's own type arguments after its name, as in
-`Box<Int>.with<Bool>`. A type
+`Box<Int>.with<Bool>`. An interface's default body instantiated for a
+struct is named after the interface and that struct, as in
+`Shape.twice<Square>`. A type
 argument longer than 256 bytes is cut short with `...`, and when that gives
 two instances the same name, the later one gets a numeric suffix such as
 `.1` after the closing bracket.

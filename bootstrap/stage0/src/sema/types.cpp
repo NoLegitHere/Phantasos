@@ -2246,7 +2246,7 @@ private:
         candidates = std::move(found.ids);
         if (candidates.empty()) {
             // A built-in `x.clone()` is checked with its call (3.31).
-            if (!name_expr && !record.type_receiver && clone_callees_.contains(expr)) {
+            if (!name_expr && !record.type_receiver && !symbolic(record.receiver_type) && clone_callees_.contains(expr)) {
                 members_[expr] = std::move(record);
                 return std::nullopt;
             }
@@ -3537,7 +3537,8 @@ private:
         // A literal receiver takes its default type, as `let` would give it.
         if (base.literal != Literal::None && known(default_type(base)))
             base = materialize(expressions_.at(member->base), default_type(base));
-        if (unavailable(base) || base.type == Type::Never) return std::nullopt;
+        // A generic receiver finds `clone` through its bounds, as any method.
+        if (unavailable(base) || base.type == Type::Never || symbolic(base.type)) return std::nullopt;
         if (base.type.kind == Type::Nominal && !base.type.optional_depth) {
             const auto found = lookup_member(types_.descriptor(base.type)->declaration, member->name.sym);
             if (!found || found->state != ExpansionState::Resolved || !found->ids.empty()) return std::nullopt;
@@ -3548,6 +3549,9 @@ private:
         Type blocker;
         switch (clonable(base.type, blocker)) {
             case Expansion::Deferred: return Value{};
+            case Expansion::Failed:
+                record.state = CallState::Error;
+                return Value{Type::Error};
             case Expansion::No: {
                 auto& d = diag_.error(DiagCode::UnknownMember, member->name.span, "type '{}' has no member 'clone'",
                                       scalar_type_name(base.type));
@@ -3562,7 +3566,7 @@ private:
         record.state = CallState::Resolved;
         return Value{base.type};
     }
-    enum class Expansion : u8 { Yes, No, Deferred };
+    enum class Expansion : u8 { Yes, No, Deferred, Failed };
     // Strings, Copy scalars, function values and payload-free enums clone, as
     // do optionals, tuples and non-generic structs made of clonable parts.
     // Generic parameters, arrays, classes and other references do not yet.
@@ -3575,11 +3579,13 @@ private:
             switch (type.kind) {
                 case Type::Deferred: return Expansion::Deferred;
                 case Type::Tuple:
+                    // Each distinct type is checked once, however often it is shared.
+                    if (!seen.insert(type.detail)) break;
                     for (const auto element : types_.descriptor(type)->parameters) work.push_back(element);
                     break;
                 case Type::Nominal: {
                     const auto* descriptor = types_.descriptor(type);
-                    if (!seen.insert(descriptor->declaration.value)) break;
+                    if (!seen.insert(type.detail)) break;
                     const auto& binding = resolution_.binding(descriptor->declaration);
                     const auto* decl = binding.item ? as_type_decl(binding.item) : nullptr;
                     if (decl && decl->kind == ItemKind::Enum &&
@@ -3592,8 +3598,12 @@ private:
                     for (const BindingId id : resolution_.scopes()[binding.members.value].bindings) {
                         const auto& field = resolution_.binding(id);
                         if (field.kind != BindingKind::Field || static_member(id)) continue;
-                        if (!known(nodes_[id.value].value.type)) {
-                            pending_dependencies_.push_back(id.value);
+                        const auto& node = nodes_[id.value];
+                        // A field whose type failed was reported where it is declared.
+                        if (node.value.type == Type::Error) return Expansion::Failed;
+                        if (!known(node.value.type)) {
+                            // Only a field still being inferred can make progress.
+                            if (node.state != 2) pending_dependencies_.push_back(id.value);
                             return Expansion::Deferred;
                         }
                         work.push_back(nodes_[id.value].value.type);

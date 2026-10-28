@@ -308,6 +308,19 @@ let h = (1, "z").clone()
                        {DiagCode::UnknownMember});
         CHECK(rejected.call("bad").state == CallState::Error && rejected.call("bad").kind == CallKind::Clone);
     }
+    // A generic receiver's `clone` comes from its bounds.
+    Frontend bound;
+    bound.check("interface I { fun clone(): Int }\nfun f<T: I>(x: T): Int = x.clone()\nfun g<T>(x: T): T = x.clone()",
+                {DiagCode::UnknownMember});
+    // A field whose type failed reports once, and the clone stops waiting on it.
+    Frontend failed;
+    failed.check("struct S { let x = true + 1 }\nlet s = S()\nlet bad = s.clone()", {DiagCode::InvalidScalarOperand});
+    CHECK(failed.call("bad").state == CallState::Error);
+    // Shared tuple types are checked once each.
+    std::string aliases = "type T0 = String\n";
+    for (int i = 1; i < 64; ++i) aliases += std::format("type T{} = (T{}, T{})\n", i, i - 1, i - 1);
+    Frontend shared;
+    shared.check(aliases + "fun f(x: T63): T63 = x.clone()");
 }
 
 void none_needs_optional_parameters() {

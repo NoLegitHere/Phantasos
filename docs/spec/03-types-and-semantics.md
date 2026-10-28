@@ -1332,7 +1332,8 @@ Arrays, classes, generic parameters, instances of generic structs and
 reference types do not clone yet. Calling `clone()` on a value whose type has
 none is `E0450`, with a note naming the part that does not clone. A type
 that declares its own `clone` member uses it instead, as an ordinary method
-call, and a type name is not a receiver.
+call, as does a generic receiver whose bounds declare one; a type name is
+not a receiver.
 
 The receiver is only borrowed (3.30), so `take(a.clone())` leaves `a`
 usable, and the result is a new value that moves like any other. A literal

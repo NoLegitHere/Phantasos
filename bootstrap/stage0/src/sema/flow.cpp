@@ -262,11 +262,10 @@ private:
     // Diagnostics go nowhere while a loop body is evaluated only to learn
     // what an iteration moves. A cleanup is checked where it is registered,
     // and for moves again at each exit of its scope (3.30).
-    // A cleanup registered inside another cleanup's exit run reports nothing.
-    enum class Filter : u8 { All, NoMoves, OnlyMoves, Nothing };
+    enum class Filter : u8 { All, NoMoves, OnlyMoves };
     bool shown(DiagCode code) const {
         const bool moves = code == DiagCode::UseAfterMove;
-        if (quiet_ || filter_ == Filter::Nothing) return false;
+        if (quiet_) return false;
         return moves ? filter_ != Filter::NoMoves : filter_ != Filter::OnlyMoves;
     }
     template <typename... Args>
@@ -592,6 +591,8 @@ private:
             self_owner_ = next.owner;
             move_sites_.assign(movables_, Span{});
             State closure_state = live();
+            // The last expression of a closure body is its result.
+            consume(next.closure->body);
             eval(next.closure->body, closure_state);
         }
     }
@@ -813,7 +814,7 @@ private:
         }
         PendingClosure pending{&closure, self_, self_storage_, self_owner_};
         // Created again when the loop is checked, or already where its cleanup was registered.
-        if (quiet_ || filter_ == Filter::OnlyMoves || filter_ == Filter::Nothing) return;
+        if (quiet_ || filter_ == Filter::OnlyMoves) return;
         if (self_storage_ != Storage::Unknown && self_owner_) {
             if (const auto use = uses_self(closure)) {
                 // `self` is a parameter too: borrowed, or `inout` in a `mut fun`.
@@ -1078,6 +1079,14 @@ private:
                 if (const auto* call = as<CallExpr>(expr)) consume_arguments(*call);
                 else if (const auto* tuple = as<TupleExpr>(expr)) for (const Expr* elem : tuple->elems) consume(elem);
                 else if (const auto* array = as<ArrayExpr>(expr)) for (const Expr* elem : array->elems) consume(elem);
+                if (const auto* unary = as<UnaryExpr>(expr); unary && unary->op == UnOp::Try && caught_.empty()) {
+                    // An error that `try` propagates leaves the callable after
+                    // its operand runs, through every pending cleanup.
+                    eval(unary->operand, state);
+                    State exit = state;
+                    cleanups(0, exit);
+                    continue;
+                }
                 if (const auto* unary = as<UnaryExpr>(expr); unary && unary->op == UnOp::TryOpt) {
                     // A caught error resumes after the `try?` expression.
                     caught_.push_back({dead(), defers_.size()});
@@ -1205,7 +1214,8 @@ private:
     // diverges ends the exit. While a cleanup runs, only the cleanups
     // registered before it are pending.
     void cleanups(usize from, State& state) {
-        if (!state.live || defers_.size() <= from) return;
+        // Inside a cleanup's registration check, moves are not tracked.
+        if (!state.live || defers_.size() <= from || filter_ == Filter::NoMoves) return;
         const auto filter = std::exchange(filter_, Filter::OnlyMoves);
         auto caught = std::exchange(caught_, {});
         const auto pending = defers_;
@@ -1315,19 +1325,21 @@ private:
             case StmtKind::Defer: {
                 // Cleanup reads see the state at registration and never initialize the scope.
                 // Its errors are handled inside it, never by an enclosing `try?`.
-                // Its moves happen at scope exit, where they are checked again.
-                State cleanup = state;
-                breaks_.push_back(dead());
-                continues_.push_back(dead());
-                auto caught = std::exchange(caught_, {});
-                const auto filter = std::exchange(filter_, filter_ == Filter::All       ? Filter::NoMoves
-                                                           : filter_ == Filter::NoMoves ? Filter::NoMoves
-                                                                                        : Filter::Nothing);
-                control_flow(*cast<DeferStmt>(&stmt)->body, cleanup);
-                filter_ = filter;
-                caught_ = std::move(caught);
-                continues_.pop_back();
-                breaks_.pop_back();
+                // Its moves happen at scope exit and are checked only there, so
+                // this check, done once per cleanup, skips them; a quiet pass or
+                // a cleanup's own exit run has nothing else to report.
+                if (!quiet_ && filter_ != Filter::OnlyMoves) {
+                    State cleanup = state;
+                    breaks_.push_back(dead());
+                    continues_.push_back(dead());
+                    auto caught = std::exchange(caught_, {});
+                    const auto filter = std::exchange(filter_, Filter::NoMoves);
+                    control_flow(*cast<DeferStmt>(&stmt)->body, cleanup);
+                    filter_ = filter;
+                    caught_ = std::move(caught);
+                    continues_.pop_back();
+                    breaks_.pop_back();
+                }
                 defers_.push_back(cast<DeferStmt>(&stmt));
                 // Its writes happen at scope exit, so a later write to the same
                 // `let`, or another cleanup's, would assign it twice.

@@ -1284,8 +1284,8 @@ decides `Copy` structurally (3.29), so values of unknown types never move.
 An expression is consumed when it is:
 
 - the initializer of a `let` or `var`, or the value of a plain assignment;
-- the value of a `return`, or the expression body of a function with a
-  result;
+- the value of a `return`, the expression body of a function with a
+  result, or the last expression of a closure body;
 - an argument for an `own` parameter, or for a stored field of a primary
   constructor;
 - an element of a tuple or array literal, or a value captured by a closure.
@@ -1300,7 +1300,8 @@ one after it moved, including moving it again, is `E0504`: "was moved" when
 it moved on every path that reaches the use, and "may have been moved" when
 it moved on only some of them. A value that moves in a loop body has moved
 when the next iteration starts. A `defer` cleanup runs at each exit of its
-scope (its end, `break`, `continue`, `return` and `throw`), so its moves
+scope (its end, `break`, `continue`, `return`, `throw`, and an error that
+`try` propagates or `try?` catches), so its moves
 happen there, and it cannot use a value that moved after it was registered.
 Arguments run left to right, so
 `Box(a, a == "x")` reads `a` after moving it. Assigning a `var`, or running

@@ -658,6 +658,11 @@ void moves() {
         {"class C(a: own String) { let x: String = a\nlet y: String = a }", {M}},
         {"class C(a: own String) { let x: String = a\ninit { look(a) } }", {M}},
         {"class C(a: own String) { let x: Int = unsafe { look(a)\n1 }\nlet y: String = a\ninit {} }", {}},
+        // A clone borrows its receiver and moves a new value.
+        {"fun f() { let a = \"a\"\ntake(a.clone())\nlet b = a.clone()\nlook(a)\ntake(b) }", {}},
+        {"fun f() { let a = \"a\"\ntake(a)\nlet b = a.clone() }", {M}},
+        {"fun f() { let p = Box(\"a\", 1)\nlet q = p.clone()\nlet r = p\nlook(q.s) }", {}},
+        {"fun f() throws { let a = \"a\"\ndefer { look(a) }\nlet b = try unsafe { a.clone() } }", {}},
         // A moved value is reported once until it moves again.
         {"fun f() { let a = \"a\"\ntake(a)\nlook(a)\nlook(a)\ntake(a)\nlook(a) }", {M, M}},
         // Unreachable code reports nothing.

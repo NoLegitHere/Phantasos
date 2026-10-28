@@ -86,7 +86,7 @@ There are **no implicit numeric conversions**. Widening is written
   - Every value has exactly one owner.
   - Assigning a non-`Copy` value, or passing it to an `own` parameter,
     **moves** it. Using a moved-from binding is a compile-time error
-    (3.30).
+    (3.30). `x.clone()` makes an independent copy instead (3.31).
   - Class instances created with `ClassName(...)` are uniquely owned.
 - **Borrowing.**
   - Parameters are `borrow` by default: read-only access for the duration of
@@ -1317,3 +1317,26 @@ reported once until it moves again, and unreachable code reports nothing.
 Moving out of a borrowed parameter, `self`, a field, an element or a capture
 is not checked yet. Nothing in stage0's generated code owns memory, so a
 move copies the value's words and nothing is destroyed.
+
+## 3.31 Cloning [Core]
+
+`x.clone()`, with no arguments, returns an independent copy of `x` with the
+same type. Stage0 provides it until a `Clone` trait exists, and decides
+which types clone structurally, like `Copy` (3.29):
+
+- `String`, and every `Copy` type, clones;
+- a tuple or optional clones when its parts do;
+- a non-generic struct clones when all of its stored fields do.
+
+Arrays, classes, generic parameters, instances of generic structs and
+reference types do not clone yet. Calling `clone()` on a value whose type has
+none is `E0450`, with a note naming the part that does not clone. A type
+that declares its own `clone` member uses it instead, as an ordinary method
+call, as does a generic receiver whose bounds declare one; a type name is
+not a receiver.
+
+The receiver is only borrowed (3.30), so `take(a.clone())` leaves `a`
+usable, and the result is a new value that moves like any other. A literal
+receiver takes its default type first, so `7.clone()` is an `Int`. In
+stage0's generated code a clone copies the value's words, because nothing
+owns heap memory yet (3.30).

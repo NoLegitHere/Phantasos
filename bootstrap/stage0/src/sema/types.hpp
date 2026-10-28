@@ -150,8 +150,9 @@ struct ScalarSignature {
 
 enum class CallState : u8 { Resolved, Deferred, Error };
 // Builtin is a prelude function such as print, whose target is its BuiltinValue
-// binding and whose parameter_types hold the selected overload.
-enum class CallKind : u8 { Function, NumericConversion, NominalConstructor, IndirectFunction, Method, Builtin };
+// binding and whose parameter_types hold the selected overload. Clone is the
+// built-in `x.clone()`, with no target and `x` as its receiver (3.31).
+enum class CallKind : u8 { Function, NumericConversion, NominalConstructor, IndirectFunction, Method, Builtin, Clone };
 struct CheckedMember {
     ResolutionState state = ResolutionState::Deferred;
     BindingId owner;

@@ -275,6 +275,57 @@ let j = print(match flag { true -> false
     local.check("let print = 3\nlet bad = print(1)", {DiagCode::NotCallable});
 }
 
+void builtin_clone() {
+    Frontend clones;
+    clones.check(R"(
+struct P(name: String, n: Int)
+struct E(n: Int) { fun clone(): Int = n }
+let text = "hi"
+let maybe: String? = none
+let p = P("a", 1)
+let a = text.clone()
+let b = p.clone()
+let c = (text, p, 1.5).clone()
+let d = maybe.clone()
+let e = E(1).clone()
+let f = 7.clone()
+let h = (1, "z").clone()
+)");
+    for (std::string_view name : {"a", "b", "c", "d", "f", "h"}) {
+        const auto& call = clones.call(name);
+        CHECK(call.state == CallState::Resolved && call.kind == CallKind::Clone && !call.target.valid());
+        CHECK(call.receiver && call.parameters.empty());
+    }
+    CHECK(clones.type("a") == Type::String && clones.type("b") == clones.type("p") && clones.type("d") == clones.type("maybe"));
+    CHECK(clones.type("f") == Type::Int);
+    CHECK(clones.type("c").kind == Type::Tuple && clones.type("h").kind == Type::Tuple);
+    // A type's own `clone` member is an ordinary method.
+    CHECK(clones.call("e").kind == CallKind::Method && clones.type("e") == Type::Int);
+
+    for (std::string_view bad : {"Q([1]).clone()", "C(1).clone()", "G(1).clone()", "(1, [2]).clone()", "W(Q([1])).clone()"}) {
+        Frontend rejected;
+        rejected.check(std::format("struct Q(xs: [Int])\nclass C(n: Int)\nstruct G<T>(x: T)\nstruct W(q: Q)\nlet bad = {}", bad),
+                       {DiagCode::UnknownMember});
+        CHECK(rejected.call("bad").state == CallState::Error && rejected.call("bad").kind == CallKind::Clone);
+    }
+    // A generic receiver's `clone` comes from its bounds.
+    Frontend bound;
+    bound.check("interface I { fun clone(): Int }\nfun f<T: I>(x: T): Int = x.clone()\nfun g<T>(x: T): T = x.clone()",
+                {DiagCode::UnknownMember});
+    // A field whose type failed reports once, and the clone stops waiting on it.
+    Frontend failed;
+    failed.check("struct S { let x = true + 1 }\nlet s = S()\nlet bad = s.clone()", {DiagCode::InvalidScalarOperand});
+    CHECK(failed.call("bad").state == CallState::Error);
+    // A field whose own initializer clones its type stays deferred.
+    Frontend cycle;
+    cycle.check("struct S { let x = S().clone() }");
+    // Shared tuple types are checked once each.
+    std::string aliases = "type T0 = String\n";
+    for (int i = 1; i < 64; ++i) aliases += std::format("type T{} = (T{}, T{})\n", i, i - 1, i - 1);
+    Frontend shared;
+    shared.check(aliases + "fun f(x: T63): T63 = x.clone()");
+}
+
 void none_needs_optional_parameters() {
     for (std::string_view bad : {"let bad = take(none)", "let bad = take((none))", "let bad = pick(none)"}) {
         Frontend rejected;
@@ -467,6 +518,7 @@ int main() {
     overloads_and_literal_ranges();
     deferred_and_noncallable();
     prelude_print();
+    builtin_clone();
     none_needs_optional_parameters();
     recursion_and_stable_results();
     eliminated_overloads_do_not_create_return_cycles();

@@ -658,6 +658,13 @@ private:
             else work.push_back({call.args.front().value, true});
             return;
         }
+        if (checked && checked->kind == CallKind::Clone) {
+            // x.clone() copies a value of a supported type (3.31).
+            if (checked->state != CallState::Resolved || !supported_type(types_.expression(&call)))
+                unsupported_type(call.span, types_.expression(&call));
+            else work.push_back({checked->receiver, true});
+            return;
+        }
         if (checked && checked->kind == CallKind::NominalConstructor) {
             // Primary constructors of supported structs.
             if (checked->state != CallState::Resolved || !checked->type_arguments.empty() ||

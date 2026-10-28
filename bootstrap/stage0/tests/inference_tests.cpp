@@ -408,6 +408,13 @@ void shared_patterns_and_deep_bounds() {
     source += "let f: fun(F0<Int>) -> Int = leaf";
     valued.check(source, {}, false);
     CHECK(valued.value("f").kind == Type::Function);
+    // So does checking that a closure's parameter type leaves no type
+    // parameter open.
+    Frontend mapped;
+    source.erase(source.rfind("let f"));
+    source += "fun map<T, U>(x: T, f: fun(T) -> U): U = f(x)\nlet value: F0<Int>\nlet result = map(value, { x -> true })";
+    mapped.check(source, {}, false);
+    CHECK(mapped.value("result") == Type::Bool);
     Frontend bounds;
     source = "interface I0 { fun read(): Int }\n";
     for (int i = 1; i < 5000; ++i) source += std::format("interface I{}: I{} {{}}\n", i, i - 1);

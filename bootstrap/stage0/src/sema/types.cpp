@@ -2966,13 +2966,16 @@ private:
         const Type type = annotation(candidate.param->type, applied.context);
         if (type == Type::Error) return Expected{Expected::Known, type};
         if (!known(type)) return std::nullopt;
+        // Shared parts of type graphs are visited once.
+        std::unordered_set<usize> seen;
         const auto mentions = [&](Type root) {
+            seen.clear();
             std::vector<Type> work{root};
             while (!work.empty()) {
                 const Type t = work.back();
                 work.pop_back();
                 const auto* descriptor = types_.descriptor(t);
-                if (!descriptor) continue;
+                if (!descriptor || !seen.insert(t.detail).second) continue;
                 if (t.kind == Type::TypeParameter) {
                     if (open.contains(descriptor->declaration.value)) return true;
                     continue;
@@ -4426,7 +4429,15 @@ private:
                     }
                     break;
                 }
-                if ((!ids.empty() && resolution_.binding(ids.front()).kind != BindingKind::Function) || known(value(generic->base).type)) {
+                // Only generic functions take type arguments, whether or not
+                // the base has a function value of its own.
+                const bool plain_functions = !direct_callees_.contains(expr) && !ids.empty() &&
+                    std::ranges::all_of(ids, [&](BindingId id) {
+                        const auto& binding = resolution_.binding(id);
+                        return binding.kind == BindingKind::Function && cast<FunItem>(binding.item)->sig.generics.empty();
+                    });
+                if ((!ids.empty() && resolution_.binding(ids.front()).kind != BindingKind::Function) || plain_functions ||
+                    known(value(generic->base).type)) {
                     diag_.error(DiagCode::GenericArguments, expr->span, "type arguments require a generic declaration");
                     node.value = {Type::Error};
                 }

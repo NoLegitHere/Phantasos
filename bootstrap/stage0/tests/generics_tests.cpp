@@ -357,6 +357,8 @@ let inferred = apply<Int8>({ s -> s + 1 }, 1)
     CHECK(arguments.size() == 1 && arguments.front() == Type::Bool);
     for (const auto& [source, code] : std::vector<std::pair<std::string_view, DiagCode>>{
         {"fun f<T>(x: T): T = x\nlet g = f<Int, Bool>", DiagCode::GenericArguments},
+        {"fun f(x: Int): Int = x\nlet g = f<Int>", DiagCode::GenericArguments},
+        {"fun f(x: Int): Int = x\nfun f(x: Bool): Bool = x\nlet g = f<Int>", DiagCode::GenericArguments},
         {"fun f<T>(x: T): T = x\nlet g: fun(Int) -> Bool = f", DiagCode::ScalarTypeMismatch},
         {"fun f<T>(g: fun(T) -> T): Int = 0\nlet x = f({ s -> s })", DiagCode::ClosureInference},
         {"fun f<T>(p: *T): *T = p\nlet g: fun(*Int) -> *mut Int = f", DiagCode::ScalarTypeMismatch},

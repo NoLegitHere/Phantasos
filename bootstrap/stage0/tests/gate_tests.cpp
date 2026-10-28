@@ -96,7 +96,6 @@ let g = 1
 type T = Int
 fun real(x: Float32): Float32 = x
 fun opt(x: Int?) {}
-fun gen<T>(x: T) {}
 fun bad() throws {}
 fun conv(x: inout Int) {}
 fun dflt(x: Int = 0) {}
@@ -105,7 +104,7 @@ fun main() {}
 )", {DiagCode::UnsupportedCodegen, DiagCode::UnsupportedCodegen, DiagCode::UnsupportedCodegen,
      DiagCode::UnsupportedCodegen, DiagCode::UnsupportedCodegen, DiagCode::UnsupportedCodegen,
      DiagCode::UnsupportedCodegen, DiagCode::UnsupportedCodegen, DiagCode::UnsupportedCodegen,
-     DiagCode::UnsupportedCodegen, DiagCode::UnsupportedCodegen, DiagCode::UnsupportedCodegen});
+     DiagCode::UnsupportedCodegen, DiagCode::UnsupportedCodegen});
 }
 
 void rejected_bodies() {
@@ -144,6 +143,8 @@ void entry_points() {
     result.gate("fun main(): Bool = true\n", {DiagCode::InvalidEntryPoint});
     Frontend overloaded;
     overloaded.gate("fun main() {}\nfun main(x: Int) {}\n", {DiagCode::InvalidEntryPoint});
+    Frontend generic;
+    generic.gate("fun main<T>(): Int = 0\n", {DiagCode::InvalidEntryPoint});
     // A rejected result type is reported once, as unsupported.
     Frontend real;
     real.gate("fun main(): Float64 = 1.0\n", {DiagCode::UnsupportedCodegen});
@@ -172,6 +173,45 @@ void long_trees() {
     Frontend g;
     g.gate(nested);
 }
+
+void generic_functions() {
+    // A generic function is accepted when every call supplies supported type
+    // arguments, and gets one instance per distinct argument list.
+    Frontend f;
+    f.gate(R"(
+fun identity<T>(x: T): T = x
+fun pair<A, B>(a: A, b: B): (A, B) = (a, b)
+fun count<T>(x: T, n: Int): Int {
+    if n == 0 { return 0 }
+    return 1 + count(x, n - 1)
+}
+fun unused<T>(x: T): T = x
+fun main(): Int = pair(identity(1), identity<Bool>(true)).0 + count("s", 2)
+)");
+    // Polymorphic recursion nests instances without end.
+    Frontend deep;
+    deep.gate("fun grow<T>(x: T, n: Int): Int {\n    if n == 0 { return 0 }\n    return grow((x, x), n - 1)\n}\n"
+              "fun main(): Int = grow(1, 3)\n",
+              {DiagCode::InstanceLimit});
+    // Four levels of twelve calls each need more instances than allowed,
+    // although none nests deeply.
+    const char* types[] = {"Int",    "Int8",   "Int16",  "Int32", "Int64", "UInt",
+                           "UInt8", "UInt16", "UInt32", "UInt64", "Bool", "String"};
+    std::string wide;
+    for (int level = 0; level < 4; ++level) {
+        wide += "fun f" + std::to_string(level) + "<T>() {\n";
+        for (const char* type : types)
+            wide += "    f" + std::to_string(level + 1) + "<(T, " + type + ")>()\n";
+        wide += "}\n";
+    }
+    wide += "fun f4<T>() {}\nfun main() {\n    f0<Int>()\n}\n";
+    Frontend broad;
+    broad.gate(wide, {DiagCode::InstanceLimit});
+    // A generic function's body is still checked once, against the subset.
+    Frontend body;
+    body.gate("fun opt<T>(x: T): Int {\n    let y: Int? = 1\n    return 0\n}\nfun main() {}\n",
+              {DiagCode::UnsupportedCodegen});
+}
 }  // namespace
 
 int main() {
@@ -182,5 +222,6 @@ int main() {
     entry_points();
     gated_by_check_errors();
     long_trees();
+    generic_functions();
     std::println("gate tests passed");
 }

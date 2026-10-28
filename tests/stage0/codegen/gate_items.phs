@@ -30,8 +30,6 @@ fun float(x: Float64): Float64 = x * 2.0
 
 fun optional(x: Int?): Int = x ?? 0
 
-fun generic<T>(x: T): T = x
-
 fun throwing() throws {}
 
 fun inout_(x: inout Int) {}

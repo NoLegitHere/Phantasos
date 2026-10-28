@@ -150,7 +150,7 @@ void place_fields(const Program& program, Layout& layout);
 // assignment's target before its value. Unreachable blocks are removed.
 // Expression lowering is iterative; control nesting follows the syntax, which
 // the parser bounds (E0112).
-[[nodiscard]] Program lower(const ast::File& file, const Resolution& resolution, const ScalarTypes& types,
+[[nodiscard]] Program lower(const ast::File& file, const Resolution& resolution, ScalarTypes& types,
                             const Interner& names);
 
 [[nodiscard]] std::string dump(const Program& program);

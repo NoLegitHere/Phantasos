@@ -1,0 +1,18 @@
+gate_generics.phs:27:9: error[E0600]: stage0 code generation does not support generic methods yet
+   27 |     fun same<T>(x: T): T = x
+      |         ^^^^
+gate_generics.phs:35:5: error[E0600]: stage0 code generation does not support values of type 'Float64' yet
+   35 |     identity(1.5)
+      |     ^^^^^^^^^^^^^
+gate_generics.phs:36:5: error[E0600]: stage0 code generation does not support values of type 'Int?' yet
+   36 |     identity<Int?>(1)
+      |     ^^^^^^^^^^^^^^^^^
+gate_generics.phs:37:5: error[E0600]: stage0 code generation does not support type arguments of type 'Unit' yet
+   37 |     identity(())
+      |     ^^^^^^^^
+gate_generics.phs:38:5: error[E0600]: stage0 code generation does not support type arguments of type 'Never' yet
+   38 |     identity<Never>(stop())
+      |     ^^^^^^^^^^^^^^^
+gate_generics.phs:42:30: error[E0600]: stage0 code generation needs a known type here; this type is not inferred yet
+   42 |     let f: fun(Int) -> Int = identity
+      |                              ^^^^^^^^

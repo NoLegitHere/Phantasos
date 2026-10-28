@@ -1,7 +1,7 @@
 gate_methods.phs:21:16: error[E0600]: stage0 code generation does not support static methods yet
    21 |     static fun zero(): Factory = Factory(seed: 0)
       |                ^^^^
-gate_methods.phs:25:9: error[E0600]: stage0 code generation does not support generic functions yet
+gate_methods.phs:25:9: error[E0600]: stage0 code generation does not support generic methods yet
    25 |     fun scaled<T>(by: T): Int = count
       |         ^^^^^^
 gate_methods.phs:26:17: error[E0600]: stage0 code generation does not support values of type 'Float64' yet

@@ -16,6 +16,8 @@
 #include "codegen/gate.hpp"
 
 #include <algorithm>
+#include <cstdint>
+#include <format>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -101,12 +103,13 @@ bool supported_scalar(ScalarType type) {
 // positions have no value, so only their parts are checked.
 class Gate {
 public:
-    Gate(const Resolution& resolution, const ScalarTypes& types, const Interner& names, DiagEngine& diag)
+    Gate(const Resolution& resolution, ScalarTypes& types, const Interner& names, DiagEngine& diag)
         : resolution_(resolution), types_(types), names_(names), diag_(diag) {
         for (usize id = 0; id < resolution.bindings().size(); ++id) {
             const auto& binding = resolution.bindings()[id];
             if (binding.item) items_.emplace(binding.item, BindingId{id});
-            if (binding.kind == BindingKind::Local || binding.kind == BindingKind::Parameter)
+            if (binding.kind == BindingKind::Local || binding.kind == BindingKind::Parameter ||
+                binding.kind == BindingKind::GenericParameter)
                 values_.emplace(binding.name.span.lo, BindingId{id});
         }
     }
@@ -120,6 +123,7 @@ public:
                 for (const Item* member : as_type_decl(item)->members)
                     if (const auto* method = as<FunItem>(member)) methods.push_back(method);
         functions_.insert(methods.begin(), methods.end());
+        owners_.insert(methods.begin(), methods.end());
         std::vector<const FunItem*> mains;
         for (const Item* item : file.items) {
             if (item->kind == ItemKind::Struct) continue;
@@ -135,6 +139,7 @@ public:
             if (const auto* fun = as<FunItem>(item)) function(*fun);
         for (const auto* method : methods) function(*method);
         entry(file, mains);
+        if (ok_) instances(file, methods);
         return ok_;
     }
 
@@ -303,6 +308,8 @@ private:
             composites_.emplace(type.detail, supported);
             return supported;
         }
+        if (type.kind == ScalarType::TypeParameter && !type.optional_depth)
+            return generics_.contains(types_.descriptor(type)->declaration.value);
         if (type.kind != ScalarType::Nominal || type.optional_depth) return false;
         const auto* descriptor = types_.descriptor(type);
         return descriptor && descriptor->arguments.empty() && structs_.contains(descriptor->declaration.value);
@@ -351,10 +358,15 @@ private:
     void function(const FunItem& fun) {
         const bool before = ok_;
         ok_ = true;
+        current_ = &fun;
+        // A generic function's body is checked once, with values of its type
+        // parameters opaque; its instances are checked by instances().
+        generics_.clear();
+        for (const auto& param : fun.sig.generics) generics_.insert(values_.at(param.name.span.lo).value);
         if (!fun.attrs.empty()) unsupported(fun.attrs.front().span, "attributes");
         if (has_modifier(fun.mods, Modifier::Async)) unsupported(fun.name.span, "'async' functions");
         if (has_modifier(fun.mods, Modifier::Unsafe)) unsupported(fun.name.span, "'unsafe' functions");
-        if (!fun.sig.generics.empty()) unsupported(fun.name.span, "generic functions");
+        if (!fun.sig.generics.empty() && owners_.contains(&fun)) unsupported(fun.name.span, "generic methods");
         if (fun.sig.throws) unsupported(fun.name.span, "throwing functions");
         if (!fun.body) unsupported(fun.name.span, "functions without a body");
         if (ok_) {
@@ -374,6 +386,7 @@ private:
         // the same unsupported type. A block body's tail is not the result.
         if (ok_) body(fun.body, fun.expr_body);
         ok_ = ok_ && before;
+        generics_.clear();
     }
 
     void body(const Expr* root, bool used) {
@@ -635,7 +648,11 @@ private:
         // A top-level function named as a value.
         if (const auto function = types_.function(&name); function.valid()) {
             const auto* fun = as<FunItem>(resolution_.binding(function).item);
-            if (fun && functions_.contains(fun)) return;
+            if (fun && functions_.contains(fun) && fun->sig.generics.empty()) return;
+            if (fun && !fun->sig.generics.empty()) {
+                unsupported(name.span, "values of generic functions");
+                return;
+            }
         }
         if (kind == BindingKind::Function) unsupported(name.span, "values of functions stage0 cannot compile");
         else unsupported(name.span, "this name");
@@ -703,15 +720,80 @@ private:
             work.push_back({call.callee, true});
             return;
         }
-        const auto* callee = as<NameExpr>(call.callee);
+        // A top-level function by name, a generic one with explicit or
+        // inferred type arguments.
+        const Expr* named = unparen(call.callee);
+        if (const auto* inst = as<GenericInstExpr>(named)) named = unparen(inst->base);
         const bool direct = checked && checked->state == CallState::Resolved && checked->kind == CallKind::Function &&
-                            callee && checked->target.valid() && checked->type_arguments.empty();
+                            named->kind == ExprKind::Name && checked->target.valid();
         const auto* fun = direct ? as<FunItem>(resolution_.binding(checked->target).item) : nullptr;
-        if (!fun || !functions_.contains(fun)) {
+        if (!fun || !functions_.contains(fun) || checked->type_arguments.size() != fun->sig.generics.size()) {
             unsupported(call.callee->span, "calls to anything but a top-level function");
             return;
         }
+        // Instances store values of their type parameters, so these hold a value.
+        for (const ScalarType argument : checked->type_arguments)
+            if (!stored(call.callee->span, argument, "type arguments")) return;
+        if (!fun->sig.generics.empty()) generic_calls_[current_].push_back(&call);
         for (usize i = call.args.size(); i-- > 0;) work.push_back({call.args[i].value, true});
+    }
+
+    // The instances a program needs, from the generic calls of non-generic
+    // functions through those of each instance, with each instance's type
+    // arguments substituted into its calls. Polymorphic recursion would
+    // never end, so nesting and the number of instances are bounded (E0602).
+    void instances(const File& file, const std::vector<const FunItem*>& methods) {
+        static constexpr usize kMaxDepth = 64, kMaxInstances = 10000;
+        struct Instance {
+            const FunItem* fun;
+            std::vector<ScalarTypes::TypeArgument> arguments;
+            usize depth;
+        };
+        std::vector<Instance> work;
+        std::unordered_set<std::string> seen;
+        const auto key = [](const FunItem* fun, const std::vector<ScalarType>& arguments) {
+            std::string out = std::to_string(reinterpret_cast<std::uintptr_t>(fun));
+            for (const ScalarType argument : arguments)
+                out += std::format(":{}.{}.{}", static_cast<int>(argument.kind), argument.optional_depth, argument.detail);
+            return out;
+        };
+        const auto calls = [&](const Instance& from) {
+            const auto it = generic_calls_.find(from.fun);
+            if (it == generic_calls_.end()) return true;
+            for (const CallExpr* call : it->second) {
+                const CheckedCall& checked = *types_.call(call);
+                const auto& callee = *as<FunItem>(resolution_.binding(checked.target).item);
+                std::vector<ScalarType> arguments;
+                for (const ScalarType argument : checked.type_arguments)
+                    arguments.push_back(types_.substitute(argument, from.arguments));
+                if (!seen.insert(key(&callee, arguments)).second) continue;
+                if (from.depth + 1 > kMaxDepth || seen.size() > kMaxInstances) {
+                    ok_ = false;
+                    auto& d = diag_.error(DiagCode::InstanceLimit, call->callee->span,
+                                          "this call needs more generic instances than stage0 code generation allows");
+                    d.notes.push_back({call->callee->span,
+                                       from.depth + 1 > kMaxDepth
+                                           ? std::format("instances nest more than {} levels deep here", kMaxDepth)
+                                           : std::format("a program can have at most {} instances", kMaxInstances)});
+                    return false;
+                }
+                Instance next{&callee, {}, from.depth + 1};
+                for (usize i = 0; i < arguments.size(); ++i)
+                    next.arguments.emplace_back(values_.at(callee.sig.generics[i].name.span.lo), arguments[i]);
+                work.push_back(std::move(next));
+            }
+            return true;
+        };
+        std::vector<const FunItem*> roots(methods);
+        for (const Item* item : file.items)
+            if (const auto* fun = as<FunItem>(item); fun && fun->sig.generics.empty()) roots.push_back(fun);
+        for (const FunItem* fun : roots)
+            if (!calls({fun, {}, 0})) return;
+        while (!work.empty()) {
+            const Instance next = std::move(work.back());
+            work.pop_back();
+            if (!calls(next)) return;
+        }
     }
 
     void entry(const File& file, const std::vector<const FunItem*>& mains) {
@@ -731,6 +813,10 @@ private:
             ok_ = false;
             diag_.error(DiagCode::InvalidEntryPoint, main.sig.params.front().name.span, "'main' takes no parameters");
         }
+        if (!main.sig.generics.empty()) {
+            ok_ = false;
+            diag_.error(DiagCode::InvalidEntryPoint, main.sig.generics.front().name.span, "'main' cannot be generic");
+        }
         const auto id = items_.find(&main);
         const ScalarSignature* sig = id == items_.end() ? nullptr : types_.signature(id->second);
         const auto result = sig ? sig->result : ScalarType{};
@@ -744,12 +830,16 @@ private:
     }
 
     const Resolution& resolution_;
-    const ScalarTypes& types_;
+    ScalarTypes& types_;
     const Interner& names_;
     DiagEngine& diag_;
     std::unordered_map<const Item*, BindingId> items_;
-    std::unordered_map<u32, BindingId> values_;  // locals and parameters by declaration offset
+    std::unordered_map<u32, BindingId> values_;  // locals, parameters and type parameters by declaration offset
     std::unordered_set<const FunItem*> functions_;
+    std::unordered_set<const FunItem*> owners_;  // methods
+    const FunItem* current_ = nullptr;
+    std::unordered_set<usize> generics_;  // the current function's type parameters
+    std::unordered_map<const FunItem*, std::vector<const CallExpr*>> generic_calls_;
     // Whether each tuple and function type is supported, by descriptor; reset
     // when a struct is rejected.
     mutable std::unordered_map<usize, bool> composites_;
@@ -760,7 +850,7 @@ private:
 
 }  // namespace
 
-bool check_codegen_subset(const File& file, const Resolution& resolution, const ScalarTypes& types,
+bool check_codegen_subset(const File& file, const Resolution& resolution, ScalarTypes& types,
                           const Interner& names, DiagEngine& diag) {
     return Gate(resolution, types, names, diag).run(file);
 }

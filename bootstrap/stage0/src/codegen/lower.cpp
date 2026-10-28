@@ -14,8 +14,10 @@
 // limitations under the License.
 
 #include <algorithm>
+#include <cstdint>
 #include <format>
 #include <optional>
+#include <span>
 #include <string>
 #include <unordered_map>
 #include <variant>
@@ -97,30 +99,37 @@ Op assign_op(AssignOp op) {
 
 class Lowerer {
 public:
-    Lowerer(const Resolution& resolution, const ScalarTypes& types, const Interner& names)
+    Lowerer(const Resolution& resolution, ScalarTypes& types, const Interner& names)
         : resolution_(resolution), types_(types), names_(names) {
         for (usize id = 0; id < resolution.bindings().size(); ++id) {
             const auto& binding = resolution.bindings()[id];
             if (binding.item) items_.emplace(binding.item, BindingId{id});
-            if (binding.kind == BindingKind::Local || binding.kind == BindingKind::Parameter)
+            if (binding.kind == BindingKind::Local || binding.kind == BindingKind::Parameter ||
+                binding.kind == BindingKind::GenericParameter)
                 values_.emplace(binding.name.span.lo, BindingId{id});
         }
     }
 
     Program run(const File& file) {
-        std::vector<const FunItem*> funs;
         std::unordered_map<std::string, u32> seen;
         // Every struct in the file passed the gate; a struct's layout follows
         // those of the structs it holds.
         for (const Item* item : file.items)
             if (item->kind == ItemKind::Struct) (void)structure(items_.at(item));
         const auto add = [&](const FunItem& fun, std::string name) {
-            functions_.emplace(&fun, static_cast<u32>(funs.size()));
-            funs.push_back(&fun);
             // Overloads get a numeric suffix so that every name is unique.
             const u32 index = seen[name]++;
+            if (index) name = std::format("{}.{}", name, index);
+            // A generic function is only a template; each instance a call
+            // needs is added when the call is lowered.
+            if (!fun.sig.generics.empty()) {
+                templates_.emplace(&fun, std::move(name));
+                return;
+            }
+            functions_.emplace(&fun, static_cast<u32>(program_.functions.size()));
+            funs_.push_back({&fun, static_cast<u32>(program_.functions.size()), {}});
             auto& out = program_.functions.emplace_back();
-            out.name = index ? std::format("{}.{}", name, index) : name;
+            out.name = std::move(name);
             out.span = fun.name.span;
         };
         for (const Item* item : file.items) {
@@ -136,15 +145,23 @@ public:
             }
             const auto* fun = as<FunItem>(item);
             if (!fun) continue;
-            if (names_.str(fun->name.sym) == "main") program_.main = static_cast<u32>(funs.size());
+            if (names_.str(fun->name.sym) == "main") program_.main = static_cast<u32>(program_.functions.size());
             add(*fun, std::string(names_.str(fun->name.sym)));
         }
-        for (usize i = 0; i < funs.size(); ++i) function(*funs[i], static_cast<u32>(i));
         // Closures become functions of their own, after the functions that
-        // create them; a closure's body can add more.
-        for (usize i = 0; i < closures_.size(); ++i) {
-            const auto pending = closures_[i];
-            closure_function(pending);
+        // create them; a closure's body can add more, and any body can add
+        // generic instances.
+        usize next_fun = 0, next_closure = 0;
+        while (next_fun < funs_.size() || next_closure < closures_.size()) {
+            if (next_fun < funs_.size()) {
+                const auto pending = funs_[next_fun++];
+                env_ = pending.env;
+                function(*pending.fun, pending.function);
+            } else {
+                const auto pending = closures_[next_closure++];
+                env_ = pending.env;
+                closure_function(pending);
+            }
         }
         return std::move(program_);
     }
@@ -153,12 +170,20 @@ private:
     struct Loop {
         u32 head, exit;
     };
+    // A function or generic instance whose body is yet to be lowered, with
+    // the type arguments of its instance.
+    struct PendingFunction {
+        const FunItem* fun;
+        u32 function;
+        std::vector<ScalarTypes::TypeArgument> env;
+    };
     // A closure whose function is yet to be lowered.
     struct PendingClosure {
         const ClosureExpr* closure;
         u32 function;
         std::vector<BindingId> captures;
         std::optional<Type> self;  // the receiver's type, when the closure uses it
+        std::vector<ScalarTypes::TypeArgument> env;  // that of the function creating it
     };
     // A local or the receiver, and the fields below it from the outside in.
     struct Place {
@@ -215,7 +240,7 @@ private:
         Layout layout;
         layout.name = types_.type_name(type, resolution_, names_);
         layout.kind = Layout::Tuple;
-        const auto elements = types_.descriptor(type)->parameters;
+        const auto elements = types_.descriptor(type)->parameters;  // a copy, like function_type's
         for (usize i = 0; i < elements.size(); ++i) {
             layout.fields.push_back(lower_type(elements[i]));
             layout.names.push_back(std::to_string(i));
@@ -232,14 +257,15 @@ private:
     Type function_type(ScalarType type) {
         PHS_ASSERT(type.optional_depth == 0);
         if (const auto it = function_types_.find(type.detail); it != function_types_.end()) return aggregate(it->second);
-        const auto* descriptor = types_.descriptor(type);
+        // Copied, since building the layouts of its parts can intern types.
+        const auto descriptor = *types_.descriptor(type);
         Layout layout;
         layout.name = types_.type_name(type, resolution_, names_);
         layout.kind = Layout::Function;
         layout.fields = {Type::U64, Type::U64};
         layout.names = {"code", "env"};
-        for (const ScalarType param : descriptor->parameters) layout.params.push_back(lower_type(param));
-        layout.result = lower_type(descriptor->result);
+        for (const ScalarType param : descriptor.parameters) layout.params.push_back(lower_type(param));
+        layout.result = lower_type(descriptor.result);
         place_fields(program_, layout);
         const auto index = static_cast<u32>(program_.layouts.size());
         program_.layouts.push_back(std::move(layout));
@@ -255,7 +281,7 @@ private:
         layout.name = names_.str(item.name.sym);
         for (usize i = 0; i < item.ctor_params.size(); ++i) {
             const auto& param = item.ctor_params[i];
-            layout.fields.push_back(lower_type(types_.binding(values_.at(param.name.span.lo))));
+            layout.fields.push_back(lower_type(binding_type(values_.at(param.name.span.lo))));
             layout.names.emplace_back(names_.str(param.name.sym));
             fields_.emplace(param.name.span.lo, static_cast<u32>(i));
         }
@@ -273,7 +299,11 @@ private:
         return fields_.at(resolution_.binding(record->candidates.front()).name.span.lo);
     }
 
-    ScalarType scalar(const Expr* expr) const { return types_.expression(expr); }
+    // A type with the current instance's type arguments in place of its type
+    // parameters.
+    ScalarType concrete(ScalarType type) { return env_.empty() ? type : types_.substitute(type, env_); }
+    ScalarType scalar(const Expr* expr) { return concrete(types_.expression(expr)); }
+    ScalarType binding_type(BindingId id) { return concrete(types_.binding(id)); }
     BindingId target(const NameExpr& name) const {
         const auto* ref = resolution_.reference(name.name.span);
         PHS_ASSERT(ref && ref->state == ResolutionState::Resolved);
@@ -329,9 +359,9 @@ private:
             if (mutating(item)) fun_->inout = {true};
         }
         for (const auto& param : item.sig.params)
-            locals_[values_.at(param.name.span.lo).value] = reg(lower_type(types_.binding(values_.at(param.name.span.lo))));
+            locals_[values_.at(param.name.span.lo).value] = reg(lower_type(binding_type(values_.at(param.name.span.lo))));
         fun_->params = static_cast<u32>(fun_->regs.size());
-        fun_->result = lower_type(sig->result);
+        fun_->result = lower_type(concrete(sig->result));
         current_ = block();
         if (item.expr_body) {
             const Reg result = any(item.body);
@@ -354,7 +384,7 @@ private:
         const auto& closure = *pending.closure;
         const Reg env = reg(Type::U64);
         for (const auto& param : closure.params)
-            locals_[values_.at(param.name.span.lo).value] = reg(lower_type(types_.binding(values_.at(param.name.span.lo))));
+            locals_[values_.at(param.name.span.lo).value] = reg(lower_type(binding_type(values_.at(param.name.span.lo))));
         fun_->params = static_cast<u32>(fun_->regs.size());
         fun_->closure = true;
         fun_->result = lower_type(types_.descriptor(scalar(&closure))->result);
@@ -427,7 +457,7 @@ private:
                     // Destructuring: one local per element of the tuple.
                     for (usize i = 0; i < var.names.size(); ++i) {
                         const auto id = values_.at(var.names[i].span.lo);
-                        const Reg dst = reg(lower_type(types_.binding(id)));
+                        const Reg dst = reg(lower_type(binding_type(id)));
                         locals_[id.value] = dst;
                         // A diverging initializer has already ended the block.
                         if (init.valid()) emit({.op = Op::Field, .dst = dst, .a = init, .imm = i});
@@ -435,7 +465,7 @@ private:
                     return;
                 }
                 const auto id = values_.at(var.name.span.lo);
-                const Reg dst = reg(lower_type(types_.binding(id)));
+                const Reg dst = reg(lower_type(binding_type(id)));
                 locals_[id.value] = dst;
                 copy(dst, init);
                 return;
@@ -854,12 +884,12 @@ private:
     // A closure value: its function, named after the function that creates it,
     // and a new environment holding a copy of each captured value.
     Reg make_closure(const ClosureExpr& closure) {
-        PendingClosure pending{&closure, static_cast<u32>(program_.functions.size()), {}, {}};
+        PendingClosure pending{&closure, static_cast<u32>(program_.functions.size()), {}, {}, env_};
         Layout layout;
         std::vector<Reg> captured;
         for (const auto& capture : resolution_.captures(&closure)) {
             pending.captures.push_back(capture.binding);
-            layout.fields.push_back(lower_type(types_.binding(capture.binding)));
+            layout.fields.push_back(lower_type(binding_type(capture.binding)));
             layout.names.emplace_back(names_.str(resolution_.binding(capture.binding).name.sym));
             captured.push_back(locals_.at(capture.binding.value));
         }
@@ -996,7 +1026,7 @@ private:
         const Type type = lower_type(scalar(&call));
         if (const CheckedConversion* conversion = types_.conversion(&call)) {
             if (!args.front().valid()) return {};
-            if (type == lower_type(conversion->source)) return args.front();
+            if (type == lower_type(concrete(conversion->source))) return args.front();
             const Reg dst = reg(type);
             emit({.op = conversion->kind == ConversionKind::Truncating ? Op::Truncate : Op::Widen, .dst = dst,
                   .a = args.front()});
@@ -1052,18 +1082,59 @@ private:
             ordered.front() = owners.back();
         }
         const Reg dst = has_value(type) ? reg(type) : Reg{};
-        emit({.op = Op::Call, .dst = dst, .callee = functions_.at(&callee), .args = std::move(ordered)});
+        const u32 target = callee.sig.generics.empty() ? functions_.at(&callee) : instance(callee, checked.type_arguments);
+        emit({.op = Op::Call, .dst = dst, .callee = target, .args = std::move(ordered)});
         if (type == Type::Never) end(Term::Unreachable);
         else if (inout) rebuild(receiver, owners);
         return dst;
     }
 
+    // The longest type argument an instance's name spells out in full.
+    static constexpr usize kArgumentNameLimit = 256;
+    // The function of a generic function's instance for a call's type
+    // arguments, added the first time a call needs it. The gate has bounded
+    // how many there are (E0602).
+    u32 instance(const FunItem& callee, std::span<const ScalarType> type_arguments) {
+        std::vector<ScalarType> arguments;
+        std::string key = std::to_string(reinterpret_cast<std::uintptr_t>(&callee));
+        for (const ScalarType argument : type_arguments) {
+            arguments.push_back(concrete(argument));
+            key += std::format(":{}.{}.{}", static_cast<int>(arguments.back().kind), arguments.back().optional_depth,
+                               arguments.back().detail);
+        }
+        if (const auto it = instances_.find(key); it != instances_.end()) return it->second;
+        std::string name = templates_.at(&callee) + "<";
+        PendingFunction pending{&callee, static_cast<u32>(program_.functions.size()), {}};
+        for (usize i = 0; i < arguments.size(); ++i) {
+            if (i) name += ", ";
+            name += types_.type_name(arguments[i], resolution_, names_, kArgumentNameLimit);
+            pending.env.emplace_back(values_.at(callee.sig.generics[i].name.span.lo), arguments[i]);
+        }
+        name += ">";
+        // Long arguments are elided, so distinct instances can share a name;
+        // later ones get a numeric suffix.
+        if (const u32 clash = instance_names_[name]++) name += std::format(".{}", clash);
+        const auto caller = static_cast<usize>(fun_ - program_.functions.data());
+        auto& out = program_.functions.emplace_back();
+        fun_ = &program_.functions[caller];
+        out.name = std::move(name);
+        out.span = callee.name.span;
+        instances_.emplace(std::move(key), pending.function);
+        funs_.push_back(std::move(pending));
+        return funs_.back().function;
+    }
+
     const Resolution& resolution_;
-    const ScalarTypes& types_;
+    ScalarTypes& types_;
     const Interner& names_;
     std::unordered_map<const Item*, BindingId> items_;
     std::unordered_map<u32, BindingId> values_;  // locals and parameters by declaration offset
-    std::unordered_map<const FunItem*, u32> functions_;
+    std::unordered_map<const FunItem*, u32> functions_;  // non-generic functions
+    std::unordered_map<const FunItem*, std::string> templates_;  // generic functions to their base names
+    std::unordered_map<std::string, u32> instances_;  // generic function and type arguments to its instance
+    std::unordered_map<std::string, u32> instance_names_;  // instances so far with each name
+    std::vector<PendingFunction> funs_;
+    std::vector<ScalarTypes::TypeArgument> env_;  // the type arguments of the instance being lowered
     std::unordered_map<std::string, u64> strings_;  // literal bytes to their index in program_.strings
     std::unordered_map<usize, u32> layouts_;  // struct declaration binding to its index in program_.layouts
     std::unordered_map<usize, u32> tuples_;   // tuple type descriptor to its index in program_.layouts
@@ -1082,7 +1153,7 @@ private:
 
 }  // namespace
 
-Program lower(const File& file, const Resolution& resolution, const ScalarTypes& types, const Interner& names) {
+Program lower(const File& file, const Resolution& resolution, ScalarTypes& types, const Interner& names) {
     return Lowerer(resolution, types, names).run(file);
 }
 

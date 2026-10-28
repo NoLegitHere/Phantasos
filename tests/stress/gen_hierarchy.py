@@ -21,7 +21,8 @@ Shapes:
   tree   k-ary tree: Ci derives from C((i-1)/k)
   forest many independent chains of --depth classes
   generic one generic unit per --classes: a bounded generic function, a
-         function with a where clause and a bounded generic class, used once
+         function with a where clause and a bounded generic class, used once,
+         plus closures passed as arguments, returned and capturing locals
 
 Every class overrides one method and adds one field, so member lookup,
 override matching and witness checks all walk the hierarchy. --uses adds
@@ -30,7 +31,8 @@ instances of evenly spaced classes. --interfaces makes the root conform to
 that many interfaces, so each class has inherited conformances to check.
 
 The generic shape has no hierarchy. It stresses generic bounds, constraint
-checks and argument inference instead, which the class shapes never reach.
+checks, argument inference and closure checking instead, which the class
+shapes never reach.
 Its bounds are the --interfaces interfaces (at least one).
 
 Usage: python tests/stress/gen_hierarchy.py --shape chain --classes 200000 -o out.phs
@@ -70,7 +72,13 @@ def generate_generic(units: int, interfaces: int, out) -> None:
         w(f"fun pick{i}<T: {bound}>(first: T, second: T): T = first\n"
           f"fun keep{i}<T>(value: T): T where T: {bound} = value\n"
           f"class Box{i}<T: {bound}>(let value: T) {{ fun get(): T = value }}\n"
-          f"let b{i}: Box{i}<V> = Box{i}(keep{i}(pick{i}(V(), V())))\n")
+          f"let b{i}: Box{i}<V> = Box{i}(keep{i}(pick{i}(V(), V())))\n"
+          f"fun twice{i}(f: fun(Int) -> Int, x: Int): Int = f(f(x))\n"
+          f"fun adder{i}(n: Int): fun(Int) -> Int = {{ x -> x + n }}\n"
+          f"fun use{i}(k: Int): Int {{\n"
+          f"    let scale = {{ y: Int -> y * k }}\n"
+          f"    return twice{i}({{ x -> x + k }}, 1) + scale(2) + adder{i}(k)(3)\n"
+          f"}}\n")
 
 
 def generate(shape: str, classes: int, fanout: int, depth: int, uses: int, interfaces: int, out) -> None:

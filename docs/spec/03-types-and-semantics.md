@@ -753,7 +753,8 @@ not complete generic program validity. Initial argument inference and concrete
 bound/`where` satisfaction follow 3.22. Checking generic bodies once against
 their bounds, captured nominal owners, generic base substitution/conformance, associated types and
 dependent properties remain pending. Calls with applicable unchecked constraints,
-non-default conventions or omitted dependent defaults remain deferred. Primary
+omitted dependent defaults, or non-default conventions on a generic callee
+remain deferred; a method's conventions do not defer its calls. Primary
 constructors also defer non-default parameter conventions. An omitted
 default requires established compatible expression facts in its declaration
 environment, even when its parameter annotation is already concrete. Supplied
@@ -982,9 +983,12 @@ the subset, so that nothing half-checked reaches code generation:
 
 - **Declarations.** Top-level functions with a body, and plain structs with
   their methods. A function or method cannot be generic, `async`, `unsafe` or
-  throwing, and cannot carry attributes. Its parameters use the default
-  convention and have no defaults. A plain struct takes all its fields, at
-  least one, from its primary constructor, without conventions or defaults.
+  throwing, and cannot carry attributes. Its parameters have no defaults
+  and are not `inout`; `borrow` and `own` parameters are passed like
+  default ones, since stage0 values have no destructors yet. A function
+  with an `own` parameter has no function value (3.18). A plain struct
+  takes all its fields, at least one, from its primary constructor, without
+  conventions or defaults.
   It has no generic parameters, attributes or conformances, and its body
   holds only instance methods, `fun` or `mut fun`: no static methods, body
   fields, `init` or `deinit`. It cannot hold itself through its fields,

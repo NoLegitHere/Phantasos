@@ -196,7 +196,7 @@ private:
         if (!type.supers.empty()) unsupported(type.supers.front().type->span, "structs that implement interfaces");
         if (type.ctor_params.empty()) unsupported(type.name.span, "structs without fields");
         for (const auto& param : type.ctor_params) {
-            if (param.conv != Convention::Default) unsupported(param.name.span, "parameter conventions");
+            if (param.conv != Convention::Default) unsupported(param.name.span, "conventions on struct fields");
             if (param.default_value) unsupported(param.default_value->span, "parameter defaults");
         }
         for (const Item* member : type.members) {
@@ -359,7 +359,7 @@ private:
         if (!fun.body) unsupported(fun.name.span, "functions without a body");
         if (ok_) {
             for (const auto& param : fun.sig.params) {
-                if (param.conv != Convention::Default) unsupported(param.name.span, "parameter conventions");
+                if (param.conv == Convention::Inout) unsupported(param.name.span, "'inout' parameters");
                 if (param.default_value) unsupported(param.default_value->span, "parameter defaults");
                 const auto it = values_.find(param.name.span.lo);
                 if (it != values_.end()) stored(param.name.span, types_.binding(it->second), "parameters");

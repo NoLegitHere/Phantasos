@@ -3781,7 +3781,7 @@ private:
             for (const auto& param : fun->sig.params) {
                 const auto expected = annotation(param.type, context);
                 match.types.push_back(pending && owned_formal(expected, id) ? Type{} : expected);
-                match.deferred |= (owner.valid() || signature.generic) && param.conv != Convention::Default;
+                match.deferred |= signature.generic && param.conv != Convention::Default;
             }
             if (interface_owner(id) && !method_inputs_known(id) && !signature.generic) match.deferred = true;
             if (context) match.deferred |= !defaults_known(fun->sig.params, match.parameters, match.types);

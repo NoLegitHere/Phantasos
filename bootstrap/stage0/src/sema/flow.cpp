@@ -213,8 +213,15 @@ public:
                 // body, so a constructor parameter that one moves has possibly moved
                 // for the rest.
                 auto moved = defaults(type->ctor_params, type);
+                const auto* parent = superclass(*type);
                 for (const auto& base : type->supers)
-                    for (const auto& arg : base.args) add(moved, callable(type->ctor_params, arg.value, nullptr, moved));
+                    for (usize a = 0; a < base.args.size(); ++a) {
+                        // A superclass argument moves like a constructor call's argument.
+                        const Param* param = parent ? super_parameter(*parent, base.args, a) : nullptr;
+                        const bool consumes = param && param->conv != Convention::Inout &&
+                                              (param->conv == Convention::Own || param->binding != Binding::None);
+                        add(moved, callable(type->ctor_params, base.args[a].value, nullptr, moved, consumes));
+                    }
                 for (const Item* member : type->members) {
                     // Field initializers see the owner's primary-constructor parameters,
                     // and a closure in an instance field's initializer captures `self`.
@@ -583,6 +590,21 @@ private:
             add(moved, callable(params, param.default_value, nullptr, moved, param.conv == Convention::Own || stored));
         }
         return moved;
+    }
+    const TypeDeclItem* superclass(const TypeDeclItem& type) const {
+        const auto it = items_.find(&type);
+        const auto* hierarchy = it == items_.end() ? nullptr : types_.hierarchy(it->second);
+        if (!hierarchy || !hierarchy->superclass.valid()) return nullptr;
+        const Item* item = resolution_.binding(hierarchy->superclass).item;
+        return item ? as_type_decl(item) : nullptr;
+    }
+    // The primary-constructor parameter that superclass argument a initializes:
+    // positional arguments first, then labels.
+    static const Param* super_parameter(const TypeDeclItem& parent, List<Arg> args, usize a) {
+        if (args[a].label.sym.empty()) return a < parent.ctor_params.size() ? &parent.ctor_params[a] : nullptr;
+        for (const auto& param : parent.ctor_params)
+            if (param.name.sym == args[a].label.sym) return &param;
+        return nullptr;
     }
     static void add(ParamMoves& into, const ParamMoves& from) {
         for (usize i = 0; i < into.size() && i < from.size(); ++i)

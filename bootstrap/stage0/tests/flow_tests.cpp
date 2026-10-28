@@ -652,6 +652,9 @@ void moves() {
         {"fun f(b: own String = unsafe { let a = \"a\"\ndefer { look(a) }\na }) {}", {M}},
         {"struct S(a: own String, b: String = a) { init { look(a) } }", {M}},
         // Construction runs field initializers in order, then the primary `init`.
+        {"open class Base(s: own String)\nclass D(a: own String): Base(a) { init { look(a) } }", {M}},
+        {"open class Base(s: own String, n: Int)\nclass D(a: own String): Base(n: 1, s: a) { let x: String = a }", {M}},
+        {"open class Base(s: String)\nclass D(a: own String): Base(a) { init { look(a) } }", {}},
         {"class C(a: own String) { let x: String = a\nlet y: String = a }", {M}},
         {"class C(a: own String) { let x: String = a\ninit { look(a) } }", {M}},
         {"class C(a: own String) { let x: Int = unsafe { look(a)\n1 }\nlet y: String = a\ninit {} }", {}},

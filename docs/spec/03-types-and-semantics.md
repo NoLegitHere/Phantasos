@@ -1288,7 +1288,7 @@ An expression is consumed when it is:
 - the value of a `return`, the expression body of a function with a
   result (declared or inferred), or the last expression of a closure body;
 - an argument for an `own` parameter, or for a stored field of a primary
-  constructor;
+  constructor, including a superclass argument;
 - an element of a tuple or array literal, or a value captured by a closure.
 
 Consuming an `if`, `match` or `unsafe` block consumes the result of each

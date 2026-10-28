@@ -16,6 +16,7 @@
 #include "test_support.hpp"
 
 #include <algorithm>
+#include <format>
 #include <initializer_list>
 #include <string>
 #include <vector>
@@ -233,6 +234,12 @@ fun main(): Int {
     return unbox(b.with(true)).0 + Plain(n: 1).tag("s").0
 }
 )");
+    // Instance types that share their arguments are checked once each.
+    std::string shared = "struct Tag<A, B>(value: Int)\nfun twice<T>(x: T): Tag<T, T> = Tag<T, T>(value: 0)\nfun main() {\n    let a0 = 1\n";
+    for (int i = 1; i <= 40; ++i) shared += std::format("    let a{} = twice(a{})\n", i, i - 1);
+    shared += "}\n";
+    Frontend tags;
+    tags.gate(shared);
     // A method instance that calls itself on a bigger receiver.
     Frontend deep;
     deep.gate("struct W<T>(x: T) {\n    fun grow(n: Int): Int {\n        if n == 0 { return 0 }\n"

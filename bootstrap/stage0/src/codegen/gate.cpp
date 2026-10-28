@@ -321,12 +321,17 @@ private:
         if (type.kind == ScalarType::TypeParameter && !type.optional_depth)
             return generics_.contains(types_.descriptor(type)->declaration.value);
         if (type.kind != ScalarType::Nominal || type.optional_depth) return false;
-        // A generic struct's instance holds values of its arguments.
         const auto* descriptor = types_.descriptor(type);
-        return descriptor && structs_.contains(descriptor->declaration.value) &&
-               std::ranges::all_of(descriptor->arguments, [&](ScalarType argument) {
-                   return argument.kind != ScalarType::Unit && argument.kind != ScalarType::Never && supported_type(argument);
-               });
+        if (!descriptor || !structs_.contains(descriptor->declaration.value)) return false;
+        if (descriptor->arguments.empty()) return true;
+        // A generic struct's instance holds values of its arguments, which
+        // can share parts like composite types.
+        if (const auto it = composites_.find(type.detail); it != composites_.end()) return it->second;
+        const bool supported = std::ranges::all_of(descriptor->arguments, [&](ScalarType argument) {
+            return argument.kind != ScalarType::Unit && argument.kind != ScalarType::Never && supported_type(argument);
+        });
+        composites_.emplace(type.detail, supported);
+        return supported;
     }
 
     void unsupported(Span span, std::string_view what) {
@@ -877,8 +882,8 @@ private:
     const FunItem* current_ = nullptr;
     std::unordered_set<usize> generics_;  // the current function's type parameters
     std::unordered_map<const FunItem*, std::vector<const CallExpr*>> generic_calls_;
-    // Whether each tuple and function type is supported, by descriptor; reset
-    // when a struct is rejected.
+    // Whether each tuple, function and generic struct instance type is
+    // supported, by descriptor; reset when a struct is rejected.
     mutable std::unordered_map<usize, bool> composites_;
     std::unordered_set<usize> rejected_;  // locals whose declaration was reported
     std::unordered_set<usize> structs_;   // binding IDs of supported structs

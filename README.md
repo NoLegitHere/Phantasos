@@ -46,7 +46,7 @@ Windows x64 and Linux x86_64:
 - [x] Output: string literals and a prelude `print` for `String`, `Int`, `UInt` and `Bool`
 - [x] Structs and tuples: struct values, field assignment, methods including `mut fun`, and tuples
 - [x] Function values: named functions passed, returned, stored and called indirectly
-- [ ] Closures: brace closures that capture by value
+- [x] Closures: brace closures that capture by value, with a stage0 heap for their environments
 - [ ] Windows PE/COFF output, a general linker and runtime, and code generation for the rest of the language
 - [ ] Workspace-aware build driver
 
@@ -98,7 +98,7 @@ package loading is unavailable.
 `gate <file.phs>` runs `check`, then reports every construct that stage0's
 first native backend cannot compile yet. That backend covers Bool, integer and
 String values, plain struct values with field reads, field assignment and
-methods, tuples, functions, function values, locals, loops, calls, integer
+methods, tuples, functions, function values, closures, locals, loops, calls, integer
 arithmetic and
 `print`, and needs a `fun main()` that returns `Int` or nothing. See
 [spec 3.25](docs/spec/03-types-and-semantics.md) for the full subset.
@@ -161,6 +161,24 @@ fun fold(from: Int, to: Int, initial: Int, f: fun(Int) -> Int, combine: fun(Int,
 }
 
 fun main(): Int = fold(1, 5, 0, square, plus)  // 1 + 4 + 9 + 16 = 30
+```
+
+Brace closures capture copies of the values they use, and can outlive the
+call that made them
+([`run/adders.phs`](tests/stage0/run/adders.phs),
+[`run/scores.phs`](tests/stage0/run/scores.phs),
+[`run/rules.phs`](tests/stage0/run/rules.phs)):
+
+```phantasos
+fun makeAdder(n: Int): fun(Int) -> Int = { x -> x + n }
+
+fun compose(f: fun(Int) -> Int, g: fun(Int) -> Int): fun(Int) -> Int = { x -> g(f(x)) }
+
+fun main(): Int {
+    let add5 = makeAdder(5)
+    let double = { x: Int -> x * 2 }
+    return compose(double, add5)(10)  // 25
+}
 ```
 
 ## Repository layout
@@ -302,6 +320,8 @@ build/stage0/phantasos-stage0 build tests/stage0/run/vectors.phs -o vectors
 ./vectors                                                              # structs and methods
 build/stage0/phantasos-stage0 build tests/stage0/run/higher_order.phs -o higher_order
 ./higher_order                                                         # function values
+build/stage0/phantasos-stage0 build tests/stage0/run/adders.phs -o adders
+./adders                                                               # closures
 ```
 
 ## License

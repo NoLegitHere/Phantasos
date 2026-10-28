@@ -1,0 +1,49 @@
+// Copyright 2026 The Phantasos Authors
+// SPDX-License-Identifier: Apache-2.0
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// Closures stored in struct fields: each rule pairs a name with a check that
+// captured its own limits when it was made. An `own` String parameter moves
+// into the closure that formats a message.
+
+struct Rule(name: String, check: fun(Int) -> Bool)
+
+fun atLeast(limit: Int): Rule = Rule("at least", { x -> x >= limit })
+
+fun between(low: Int, high: Int): Rule = Rule("between", { x -> x >= low && x <= high })
+
+fun divisibleBy(n: Int): Rule = Rule("divisible", { x -> x % n == 0 })
+
+struct Report(pass: fun() -> String, fail: fun() -> String)
+
+fun report(subject: own String): Report = Report({ -> subject }, { -> "rejected" })
+
+// Counts the rules that value passes, printing the name of each one.
+fun passes(value: Int, first: Rule, second: Rule, third: Rule): Int {
+    var n = 0
+    if first.check(value) { print(first.name); n += 1 }
+    if second.check(value) { print(second.name); n += 1 }
+    if third.check(value) { print(third.name); n += 1 }
+    return n
+}
+
+fun main(): Int {
+    let rules = (atLeast(10), between(1, 50), divisibleBy(7))
+    let (a, b, c) = rules
+    let hits = passes(42, a, b, c)
+    print(hits)
+    let r = report("valid")
+    if hits == 3 { print(r.pass()) } else { print(r.fail()) }
+    return passes(5, a, b, c) + 41
+}

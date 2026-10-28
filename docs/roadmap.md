@@ -83,7 +83,7 @@ foundation. Complete.
   - [x] Tuples in the front end: types, literals, `.0` access and destructuring.
   - [x] Tuple code generation.
   - [x] Sample programs and run tests.
-- [ ] **Next: closures (M4).** Named functions as values with indirect calls,
+- [x] **Closures (M4).** Named functions as values with indirect calls,
   then brace closures (`{ x -> x * 2 }`) that capture by value, on Linux
   x86_64. A function value is two words, code and environment.
   - [x] Function values of named functions in the front end.
@@ -95,7 +95,7 @@ foundation. Complete.
   - [x] Closure code generation with a stage0 heap.
   - [x] `own` and `borrow` parameters in code generation, so closures can
     capture non-Copy parameters.
-  - [ ] Closure samples and run tests.
+  - [x] Closure samples and run tests.
 - [ ] Generic base substitution and built-in traits. Instantiate
   generic base/interface graphs, derive `Copy`/`Sendable`/`Error`, and complete
   generic method contracts, associated defaults and receiver-dependent contexts.

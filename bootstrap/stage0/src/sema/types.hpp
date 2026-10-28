@@ -22,6 +22,7 @@
 
 #include "sema/resolve.hpp"
 #include "support/flat_map.hpp"
+#include "support/id_map.hpp"
 #include "support/node_map.hpp"
 
 namespace phs {
@@ -128,8 +129,10 @@ private:
     Lookup lookup(const ast::TypeExpr* syntax, const Resolution& resolution) const;
     std::unordered_map<usize, ExpandedType> aliases_;
     std::unordered_map<usize, ScalarType> builtins_;
-    std::unordered_map<usize, std::unordered_map<u32, BindingId>> member_types_;
-    std::unordered_map<usize, std::vector<u32>> member_values_;
+    // Keyed by member_key(members scope, name): one table for every type.
+    static u64 member_key(usize scope, u32 name) { return u64(scope) << 32 | name; }
+    FlatMap<u64, BindingId> member_types_;  // type and type alias members
+    FlatSet<u64> member_values_;            // names of the other members
     std::vector<u8> progress_;
     BindingId unit_;
 };
@@ -264,7 +267,7 @@ private:
     std::unordered_map<const ast::CallExpr*, CheckedConversion> conversions_;
     std::unordered_map<const ast::Expr*, BindingId> functions_;
     NodeMap<const ast::Expr*, CheckedMember> members_;
-    std::unordered_map<usize, CheckedHierarchy> hierarchies_;
+    IdMap<CheckedHierarchy> hierarchies_;
     AliasExpansion aliases_;
     TypeTable types_;
     std::vector<CheckedConstraint> constraints_;

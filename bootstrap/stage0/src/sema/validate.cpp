@@ -17,14 +17,15 @@
 
 #include <algorithm>
 #include <ranges>
-#include <unordered_map>
 #include <variant>
 #include <vector>
+
+#include "support/flat_map.hpp"
 
 namespace phs {
 namespace {
 using namespace ast;
-using Names = std::unordered_map<u32, Span>;
+using Names = FlatMap<u32, Span>;
 
 struct Context {
     const TypeDeclItem* owner = nullptr;

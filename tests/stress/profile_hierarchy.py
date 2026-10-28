@@ -20,11 +20,15 @@ on it, and prints wall time and peak memory. With --perf, also records a
 `perf` profile and prints the functions with the most self and inclusive
 time. With --massif, also runs valgrind massif and prints which source lines
 hold the most heap at the peak. --max-kib-per-class fails runs whose peak
-memory divided by the class count is over budget. Build stage0 with -DCMAKE_BUILD_TYPE=RelWithDebInfo and
--fno-omit-frame-pointer for readable call stacks.
+memory divided by the class count is over budget. --max-growth fails a run
+whose time, relative to the previous size of the same shape, grew more than
+that many times faster than the size did (1 is linear), which catches
+accidentally quadratic passes. Build stage0 with
+-DCMAKE_BUILD_TYPE=RelWithDebInfo and -fno-omit-frame-pointer for readable
+call stacks.
 
 Usage: python tests/stress/profile_hierarchy.py --stage0 <exe> [--shapes chain,wide]
-           [--classes 1000,10000,200000] [--perf] [--massif] [--max-kib-per-class K] [--top 15] [--out DIR]
+           [--classes 1000,10000,200000] [--perf] [--massif] [--max-kib-per-class K] [--max-growth G] [--top 15] [--out DIR]
 """
 
 from __future__ import annotations
@@ -157,6 +161,8 @@ def main() -> int:
     ap.add_argument("--top", type=int, default=15)
     ap.add_argument("--massif", action="store_true", help="also run valgrind massif and print peak heap by source line")
     ap.add_argument("--max-kib-per-class", type=float, help="fail when peak memory per class exceeds this")
+    ap.add_argument("--max-growth", type=float,
+                    help="fail when time grows more than this many times faster than size between consecutive sizes")
     ap.add_argument("--out", help="keep generated sources and perf data here")
     args = ap.parse_args()
 
@@ -165,6 +171,7 @@ def main() -> int:
     failed = False
     print(f"{'shape':<8} {'classes':>8} {'seconds':>9} {'peak MiB':>9}  result")
     for shape in args.shapes.split(","):
+        previous: tuple[int, float] | None = None
         for n in (int(c) for c in args.classes.split(",")):
             source = out / f"{shape}-{n}.phs"
             subprocess.run([sys.executable, str(HERE / "gen_hierarchy.py"), "--shape", shape, "--classes", str(n),
@@ -178,6 +185,12 @@ def main() -> int:
             result = "timeout" if rc is None else ("ok" if rc == 0 else f"exit {rc}")
             if rc == 0 and rss and args.max_kib_per_class and rss / n > args.max_kib_per_class:
                 result = f"over budget: {rss / n:.1f} KiB per class > {args.max_kib_per_class}"
+            if result == "ok" and args.max_growth and previous:
+                growth = (elapsed / previous[1]) / (n / previous[0])
+                if growth > args.max_growth:
+                    result = f"superlinear: {growth:.1f}x the growth in size since {previous[0]}"
+            if rc == 0:
+                previous = (n, elapsed)
             failed |= result != "ok"
             peak = f"{rss / 1024:.0f}" if rss else "-"
             print(f"{shape:<8} {n:>8} {elapsed:>9.2f} {peak:>9}  {result}", flush=True)

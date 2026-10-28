@@ -56,6 +56,7 @@ jobs:
       - run: python tests/run_golden.py --stage0 build/stage0/phantasos-stage0
       - run: python tests/test_frontend.py --stage0 build/stage0/phantasos-stage0
       - run: python tests/stress/profile_hierarchy.py --stage0 build/stage0/phantasos-stage0 --classes 5000 --max-kib-per-class 8.5
+      - run: python tests/stress/profile_hierarchy.py --stage0 build/stage0/phantasos-stage0 --shapes generic --classes 1000,8000 --max-growth 1.8
       - run: python tests/fuzz_frontend.py --stage0 build/stage0/phantasos-stage0 --cases 300
       - run: python tests/fuzz_frontend.py --stage0 build/stage0/phantasos-stage0 --command check --cases 300
       - run: python tests/fuzz_frontend.py --stage0 build/stage0/phantasos-stage0 --command gate --cases 300

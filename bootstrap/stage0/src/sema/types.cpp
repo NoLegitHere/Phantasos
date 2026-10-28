@@ -604,10 +604,13 @@ private:
         const ScopedValue assumptions(probing_constraints_, true); // declared bounds are assumptions, not applications
         bounds_ready_ = false;
         formal_bounds_.clear(); projection_bounds_.clear(); uncertain_bounds_.clear();
+        formal_bound_count_ = projection_bound_count_ = 0;
         for (usize i = 0; i < resolution_.bindings().size(); ++i) {
             const auto& binding = resolution_.bindings()[i];
-            if (binding.kind == BindingKind::Type && binding.item->kind == ItemKind::Interface)
+            if (binding.kind == BindingKind::Type && binding.item->kind == ItemKind::Interface) {
                 formal_bounds_[symbol(BindingId{i}).detail].push_back(nominal(BindingId{i}));
+                ++formal_bound_count_;
+            }
         }
         std::unordered_set<usize> added_uncertain;
         const auto mark_uncertain = [&](usize detail) {
@@ -624,7 +627,7 @@ private:
             if (!owned_formal(source, owner)) { mark_uncertain(source.detail); return known(bound); }
             if (!known(bound) || symbolic(bound)) { mark_uncertain(source.detail); return known(bound); }
             auto& bounds = formal_bounds_[source.detail];
-            if (std::ranges::find(bounds, bound) == bounds.end()) bounds.push_back(bound);
+            if (std::ranges::find(bounds, bound) == bounds.end()) { bounds.push_back(bound); ++formal_bound_count_; }
             return true;
         };
         for (usize i = 0; i < resolution_.bindings().size(); ++i) {
@@ -640,9 +643,7 @@ private:
                 // resolve later parameters and multi-step where-clause subjects.
                 added_uncertain.clear();
                 for (usize count = std::numeric_limits<usize>::max(), pass = 0;; ++pass) {
-                    usize before = 0;
-                    for (const auto& [_, bounds] : formal_bounds_) before += bounds.size();
-                    for (const auto& [_, bounds] : projection_bounds_) before += bounds.size();
+                    const usize before = formal_bound_count_ + projection_bound_count_;
                     if (before == count) break;
                     count = before;
                     for (auto detail : added_uncertain) uncertain_bounds_.erase(detail);
@@ -698,7 +699,7 @@ private:
                         }
                     }
                     const ScopedValue ready(bounds_ready_, true);
-                    projection_bounds_.clear();
+                    projection_bounds_.clear(); projection_bound_count_ = 0;
                     for (usize p = 0; p < projection_types_.size(); ++p) {
                         const auto descriptor = *types_.descriptor(projection_types_[p]);
                         const bool was_uncertain = uncertain_bounds_.contains(projection_types_[p].detail);
@@ -711,7 +712,7 @@ private:
             }
         }
         bounds_ready_ = true;
-        projection_bounds_.clear();
+        projection_bounds_.clear(); projection_bound_count_ = 0;
         clear_deferred_annotations();
         for (usize i = 0; i < projection_types_.size(); ++i) {
             const auto descriptor = *types_.descriptor(projection_types_[i]);
@@ -1663,7 +1664,7 @@ private:
                 bool pending = found.state != ExpansionState::Resolved;
                 const auto add = [&](const TypeExpr* syntax, usize context) {
                     const auto bound = annotation(syntax, context);
-                    if (known(bound) && protocol(bound)) projection_bounds_[type.detail].push_back(bound);
+                    if (known(bound) && protocol(bound)) { projection_bounds_[type.detail].push_back(bound); ++projection_bound_count_; }
                     else pending = true;
                 };
                 const auto name = resolution_.binding(requirement).name.sym;
@@ -4247,6 +4248,9 @@ private:
     AnnotationCache speculative_annotations_;  // while probing constraints
     std::unordered_map<usize, std::vector<Type>> formal_bounds_;
     std::unordered_map<usize, std::vector<Type>> projection_bounds_;
+    // Entries in formal_bounds_ and projection_bounds_, so that the fixed point
+    // in collect_formal_bounds does not re-count every table on each pass.
+    usize formal_bound_count_ = 0, projection_bound_count_ = 0;
     std::unordered_set<usize> uncertain_bounds_;
     std::unordered_set<usize> invalid_constraints_;
     std::unordered_set<usize> projection_ids_;

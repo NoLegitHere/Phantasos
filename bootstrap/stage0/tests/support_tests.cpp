@@ -25,6 +25,7 @@
 
 #include "support/arena.hpp"
 #include "support/interner.hpp"
+#include "support/flat_map.hpp"
 #include "support/node_map.hpp"
 #include "support/scoped_value.hpp"
 #include "support/source.hpp"
@@ -200,6 +201,31 @@ void node_map_storage() {
     CHECK(set.insert(&keys[3]).second && !set.insert(&keys[3]).second && set.contains(&keys[3]));
 }
 
+void flat_map_storage() {
+    FlatMap<u64, int> map;
+    CHECK(map.empty() && map.find(3) == map.end() && !map.contains(3));
+    // Enough keys to grow several times, including ones that collide modulo
+    // small powers of two.
+    for (u64 key = 0; key < 1000; ++key) CHECK(map.try_emplace(key * 64, static_cast<int>(key)).second);
+    CHECK(!map.try_emplace(64, 99).second && map.at(64) == 1 && map.size() == 1000);
+    map[5] = 7;
+    CHECK(map.at(5) == 7 && map.size() == 1001);
+
+    // Backward-shift erase keeps every remaining key reachable.
+    for (u64 key = 0; key < 1000; key += 3) CHECK(map.erase(key * 64) == 1);
+    CHECK(map.erase(0) == 0);
+    for (u64 key = 0; key < 1000; ++key) CHECK(map.contains(key * 64) == (key % 3 != 0));
+    usize count = 0;
+    for (const auto& [key, value] : map) count += key == 5 ? value == 7 : static_cast<u64>(value) * 64 == key;
+    CHECK(count == map.size() && count == 667);
+    map.clear();
+    CHECK(map.empty() && !map.contains(5) && map.begin() == map.end());
+
+    FlatSet<u32> set;
+    set.reserve(100);
+    CHECK(set.insert(3) && !set.insert(3) && set.contains(3) && set.erase(3) == 1 && set.empty());
+}
+
 }  // namespace
 
 int main() {
@@ -208,4 +234,5 @@ int main() {
     arena_storage();
     interner_and_scoped_state();
     node_map_storage();
+    flat_map_storage();
 }

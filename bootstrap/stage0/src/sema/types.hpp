@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "sema/resolve.hpp"
+#include "support/flat_map.hpp"
 #include "support/node_map.hpp"
 
 namespace phs {
@@ -78,8 +79,11 @@ public:
     // Bound both output and expansion work; an incomplete name ends in "...".
     std::string name(ScalarType type, const Resolution& resolution, const Interner& names, usize limit = kNameLimit) const;
 private:
+    struct Slot { u32 id = 0; u32 hash = 0; };  // index in descriptors_ + 1 (0 is empty), low hash bits
+    void grow();
     std::vector<TypeDescriptor> descriptors_;
-    std::unordered_multimap<usize, usize> ids_;  // descriptor hash -> index in descriptors_
+    std::vector<u64> hashes_;  // parallel to descriptors_
+    std::vector<Slot> slots_;  // open addressing; size is zero or a power of two
 };
 
 enum class ExpansionState : u8 { Resolved, Deferred, Error };

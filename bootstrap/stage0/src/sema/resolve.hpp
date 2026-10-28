@@ -98,6 +98,8 @@ private:
     std::vector<std::span<const BindingId>> sets_;
     std::vector<BindingId> scope_items_, set_items_;  // storage behind scopes_ and sets_
     std::vector<NameReference> references_;  // sorted by span.lo
+    static constexpr u32 kReferenceBucketBits = 4;
+    std::vector<u32> reference_buckets_;      // (span.lo >> kReferenceBucketBits) -> first index in references_
 };
 
 // Run after parsing and validate_file succeed. Resolves one file; imports

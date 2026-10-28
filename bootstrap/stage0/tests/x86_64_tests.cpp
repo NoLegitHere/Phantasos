@@ -81,9 +81,12 @@ Native run_native(const Compiled& compiled, u32 function) {
     const usize trampoline = (object.text.size() + 15) / 16 * 16;
     const usize rodata = trampoline + 16;
     const usize size = rodata + object.rodata.size();
-    void* memory = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    // UBSan's function check reads the 8 bytes before a called function, so
+    // the code does not start at the mapping's first byte.
+    constexpr usize lead = 16;
+    void* memory = mmap(nullptr, lead + size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     CHECK(memory != MAP_FAILED);
-    auto* base = static_cast<u8*>(memory);
+    auto* base = static_cast<u8*>(memory) + lead;
     std::memcpy(base, object.text.data(), object.text.size());
     // movabs rax, on_trap; jmp rax
     const auto handler = reinterpret_cast<u64>(&on_trap);
@@ -104,7 +107,7 @@ Native run_native(const Compiled& compiled, u32 function) {
         const auto field = static_cast<i32>(value);
         std::memcpy(base + reloc.offset, &field, 4);
     }
-    CHECK(mprotect(memory, size, PROT_READ | PROT_EXEC) == 0);
+    CHECK(mprotect(memory, lead + size, PROT_READ | PROT_EXEC) == 0);
     using Entry = Words (*)();
     Entry entry = nullptr;
     const auto address = reinterpret_cast<uintptr_t>(base + object.symbols[function].offset);
@@ -119,7 +122,7 @@ Native run_native(const Compiled& compiled, u32 function) {
             CHECK(native.words.rax + native.words.rdx <= object.rodata.size());
         }
     } else native.outcome = {true, 0, trap_code};
-    CHECK(munmap(memory, size) == 0);
+    CHECK(munmap(memory, lead + size) == 0);
     return native;
 }
 #endif

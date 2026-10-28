@@ -1,0 +1,18 @@
+closure_control_flow.phs:25:25: error[E0203]: 'break' cannot leave a closure; it requires a loop inside the closure
+   25 |         let stop = { -> break }
+      |                         ^^^^^
+closure_control_flow.phs:26:25: error[E0203]: 'continue' cannot leave a closure; it requires a loop inside the closure
+   26 |         let skip = { -> continue }
+      |                         ^^^^^^^^
+closure_control_flow.phs:28:22: error[E0204]: 'throw' cannot escape a closure, since closures cannot throw; handle it with 'try?' inside the closure
+   28 |     let raise = { -> throw fails() }
+      |                      ^^^^^^^^^^^^^
+closure_control_flow.phs:29:22: error[E0205]: 'await' is not allowed in a closure
+   29 |     let pause = { -> await waits() }
+      |                      ^^^^^^^^^^^^^
+closure_control_flow.phs:30:26: error[E0200]: duplicate binding 'x'
+   30 |     let same = { x: Int, x: Int -> x }
+      |                          ^
+closure_control_flow.phs:30:18: note: first declared here
+   30 |     let same = { x: Int, x: Int -> x }
+      |                  ^

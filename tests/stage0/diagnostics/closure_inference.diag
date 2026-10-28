@@ -1,0 +1,27 @@
+closure_inference.phs:25:19: error[E0480]: cannot infer the type of closure parameter 'x': the closure is not used where a function type is expected; give it a type annotation
+   25 |     let alone = { x -> x }
+      |                   ^
+closure_inference.phs:26:29: error[E0480]: cannot infer the type of closure parameter 'x': overloads of the function it is passed to disagree on its type; give it a type annotation
+   26 |     let overloaded = over({ x -> 1 })
+      |                             ^
+closure_inference.phs:27:32: error[E0480]: cannot infer the type of closure parameter 'x': it is passed to a generic function, whose parameter types are not inferred yet; give it a type annotation
+   27 |     let viaGeneric = generic({ x -> x }, 1)
+      |                                ^
+closure_inference.phs:28:28: error[E0400]: expected 'Int', found a closure
+   28 |     let notFunction: Int = { -> 1 }
+      |                            ^^^^^^^^
+closure_inference.phs:29:34: error[E0400]: expected 'fun(Int) -> Int', found a closure with 2 parameters
+   29 |     let arity: fun(Int) -> Int = { x, y -> x }
+      |                                  ^^^^^^^^^^^^^
+closure_inference.phs:30:43: error[E0400]: closure parameter 'x' has type 'Bool', but the expected function type takes 'Int'
+   30 |     let annotated: fun(Int) -> Int = { x: Bool -> 1 }
+      |                                           ^^^^
+closure_inference.phs:31:30: error[E0400]: expected 'Int', found 'Bool'
+   31 |     let result = take({ x -> true })
+      |                              ^^^^
+closure_inference.phs:34:20: error[E0400]: closure result 'Bool' does not match an earlier result 'Int'; give the closure an expected function type
+   34 |             return true
+      |                    ^^^^
+closure_inference.phs:38:36: error[E0400]: expected 'Unit', found 'Int'
+   38 |     let unit: fun() -> Unit = { -> 5 }
+      |                                    ^

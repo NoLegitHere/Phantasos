@@ -91,7 +91,7 @@ foundation. Complete.
   - [x] x86_64 indirect calls and function value passing.
   - [x] Function value samples and run tests.
   - [x] Closure syntax.
-  - [ ] Closure checking: parameter inference and captures.
+  - [x] Closure checking: parameter inference and captures.
   - [ ] Closure code generation with a stage0 heap.
   - [ ] Closure samples and run tests.
 - [ ] Generic base substitution and built-in traits. Instantiate

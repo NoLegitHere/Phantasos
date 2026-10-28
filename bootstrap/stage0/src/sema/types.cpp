@@ -97,6 +97,9 @@ struct Declaration {
     const VarStmt* destructuring = nullptr;
     u32 source = std::numeric_limits<u32>::max();
     u32 element = 0;
+    // A closure parameter, whose type may come from the closure's expected type.
+    const ClosureExpr* closure = nullptr;
+    u32 parameter = 0;
 };
 // One edge of the inference graph; a node's edges form a list in insertion order.
 struct Dependency {
@@ -124,10 +127,27 @@ struct Requirement {
     Span span;
     const Expr* target = nullptr; // assignment: type obtained after inference
     AssignOp assignment = AssignOp::Assign;
+    const ClosureExpr* closure = nullptr; // a closure's body or `return`: its result type
+};
+// What a `return` inside the walked node returns to: a function's declared
+// result, or the innermost enclosing closure.
+struct Returns {
+    Type type = Type::Deferred;
+    const ClosureExpr* closure = nullptr;
+    Returns(Type result = Type::Deferred, const ClosureExpr* owner = nullptr) : type(result), closure(owner) {}
+    Returns(Type::Kind result) : type(result) {}
+};
+// Where a closure's expected function type comes from (3.29).
+struct Expectation {
+    enum Kind : u8 { Fixed, Target, Argument, Result } kind = Fixed;
+    Type type;                            // Fixed: an annotation or declared result
+    const Expr* expr = nullptr;           // Target: an assignment target; Argument: the call
+    usize argument = 0;                   // Argument: the argument's position
+    const ClosureExpr* closure = nullptr; // Result: the closure whose result this closure is
 };
 struct Walk {
     std::variant<const Item*, const Expr*, const Stmt*, const Pattern*> node;
-    Type returns = Type::Deferred;
+    Returns returns;
     bool discarded = false;
 };
 }  // namespace
@@ -309,7 +329,7 @@ public:
         for (const auto& selection : pending_selections_)
             if (retried.insert(selection.index).second) (void)select_function(selection.index, selection.expected, selection.span);
         for (const auto& requirement : requirements_) {
-            const Type expected = requirement.target ? value(requirement.target).type : requirement.expected;
+            const Type expected = requirement_type(requirement);
             if (requirement.target && requirement.assignment != AssignOp::Assign) {
                 const bool ints = requirement.assignment >= AssignOp::BitAnd || requirement.assignment == AssignOp::Rem;
                 const auto domain = ints ? OperandDomain::Integer : OperandDomain::Numeric;
@@ -337,7 +357,7 @@ public:
         release(annotations_, speculative_annotations_, environments_, environment_ids_, node_declarations_, dependencies_,
                 declarations_, declaration_next_, direct_callees_, function_names_, reference_contexts_, call_contexts_,
                 entities_, large_scope_names_, ancestry_cache_, class_intervals_, visit_marks_, ancestry_work_, ancestry_visited_, inherited_members_, walk_,
-                requirements_);
+                requirements_, expectations_, closure_returns_);
         ScalarTypes result;
         for (const auto& [expr, index] : expressions_) result.expressions_.emplace(expr, nodes_[index].value.type);
         release(expressions_);
@@ -2273,7 +2293,7 @@ private:
     }
 
     template <typename T>
-    void push(const T* node, Type returns = Type::Deferred, bool discarded = false) {
+    void push(const T* node, Returns returns = {}, bool discarded = false) {
         if (node) walk_.push_back({node, returns, discarded});
     }
     usize expression(const Expr* expr) {
@@ -2303,7 +2323,7 @@ private:
         const auto child = expression(expr);
         depend(parent, child);
     }
-    void child(usize parent, const Expr* expr, Type returns, bool discarded = false) {
+    void child(usize parent, const Expr* expr, Returns returns, bool discarded = false) {
         if (!expr) return;
         dependency(parent, expr);
         push(expr, returns, discarded);
@@ -2338,15 +2358,16 @@ private:
             declare(p.name, p.type, nullptr);
             push(p.default_value);
             if (p.default_value) requirements_.push_back({p.default_value, annotation(p.type), p.default_value->span});
+            expect(p.default_value, p.type);
         }
     }
-    void condition(const Cond& cond, Type returns) {
+    void condition(const Cond& cond, Returns returns) {
         push(cond.expr, returns);
         if (!cond.is_let) requirements_.push_back({cond.expr, Type::Bool, cond.span});
         // Conditional optional bindings are deferred along with optional types.
     }
 
-    void collect(const Item& item, Type, bool) {
+    void collect(const Item& item, Returns, bool) {
         for (const auto& attr : item.attrs)
             for (const auto& arg : attr.args) push(arg.value);
         if (const auto* type = as_type_decl(&item)) {
@@ -2358,10 +2379,13 @@ private:
             parameters(fun->sig.params);
             const Type returns = fun->sig.ret ? annotation(fun->sig.ret) : fun->expr_body ? Type::Deferred : Type::Unit;
             push(fun->body, returns, !fun->expr_body);
-            if (fun->body && fun->expr_body && fun->sig.ret)
+            if (fun->body && fun->expr_body && fun->sig.ret) {
                 requirements_.push_back({fun->body, returns, fun->body->span});
+                expect(fun->body, {.type = returns});
+            }
         } else if (const auto* var = as<VarItem>(&item)) {
             declare(var->name, var->type, var->init);
+            expect(var->init, var->type);
             push(var->init);
         } else if (const auto* ext = as<ExternItem>(&item)) {
             for (const Item* nested : ext->items) push(nested);
@@ -2371,19 +2395,30 @@ private:
         } else if (const auto* deinit = as<DeinitItem>(&item)) push(deinit->body, Type::Unit, true);
     }
 
-    void collect(const Stmt& stmt, Type returns, bool discarded) {
+    void collect(const Stmt& stmt, Returns returns, bool discarded) {
         switch (stmt.kind) {
             case StmtKind::Var: {
                 const auto& var = *cast<VarStmt>(&stmt);
                 if (var.names.empty()) declare(var.name, var.type, var.init);
                 else destructure(var);
+                if (var.names.empty()) expect(var.init, var.type);
                 push(var.init, returns);
                 break;
             }
             case StmtKind::Return: {
                 const auto* ret = cast<ReturnStmt>(&stmt);
                 push(ret->value, returns);
-                requirements_.push_back({ret->value, returns, ret->value ? ret->value->span : ret->span});
+                const Span span = ret->value ? ret->value->span : ret->span;
+                if (returns.closure) {
+                    // A closure's result may be inferred from its returns.
+                    closure_returns_[returns.closure].push_back(ret);
+                    dependency(expression(returns.closure), ret->value);
+                    requirements_.push_back({.value = ret->value, .span = span, .closure = returns.closure});
+                    expect(ret->value, {.kind = Expectation::Result, .closure = returns.closure});
+                } else {
+                    requirements_.push_back({ret->value, returns.type, span});
+                    expect(ret->value, {.type = returns.type});
+                }
                 break;
             }
             case StmtKind::Throw: push(cast<ThrowStmt>(&stmt)->value, returns); break;
@@ -2393,6 +2428,7 @@ private:
                 push(assign.target, returns);
                 push(assign.value, returns);
                 requirements_.push_back({assign.value, Type::Deferred, assign.span, assign.target, assign.op});
+                if (assign.op == AssignOp::Assign) expect(assign.value, {.kind = Expectation::Target, .expr = assign.target});
                 break;
             }
             case StmtKind::While: {
@@ -2413,7 +2449,7 @@ private:
         }
     }
 
-    void collect(const Pattern& pat, Type returns, bool) {
+    void collect(const Pattern& pat, Returns returns, bool) {
         if (const auto* literal = as<LiteralPat>(&pat)) push(literal->literal, returns);
         else if (const auto* alt = as<AltPat>(&pat)) {
             for (const Pattern* p : alt->alts) push(p, returns);
@@ -2422,7 +2458,7 @@ private:
         }
     }
 
-    void collect(const Expr& expr, Type returns, bool discarded) {
+    void collect(const Expr& expr, Returns returns, bool discarded) {
         const usize index = expression(&expr);
         if (discarded) defaults_.push_back(&expr);
         switch (expr.kind) {
@@ -2492,7 +2528,34 @@ private:
                 const auto& call = *cast<CallExpr>(&expr);
                 direct_callees_.insert(unparen(call.callee));
                 child(index, call.callee, returns);
-                for (const auto& arg : call.args) child(index, arg.value, returns);
+                for (usize a = 0; a < call.args.size(); ++a) {
+                    expect(call.args[a].value, {.kind = Expectation::Argument, .expr = &call, .argument = a});
+                    child(index, call.args[a].value, returns);
+                }
+                break;
+            }
+            case ExprKind::Closure: {
+                const auto& closure = *cast<ClosureExpr>(&expr);
+                // Parameter types come from annotations or, through the
+                // expectation's sources, from the expected function type.
+                for (usize i = 0; i < closure.params.size(); ++i) {
+                    const auto& param = closure.params[i];
+                    const auto head = declarations_.find(param.name.span.lo);
+                    for (u32 b = head == declarations_.end() ? kNoDeclaration : head->second; b != kNoDeclaration; b = declaration_next_[b]) {
+                        auto& declared = declaration(b);
+                        declared.annotation = param.type;
+                        declared.closure = &closure;
+                        declared.parameter = static_cast<u32>(i);
+                        if (!param.type) expectation_sources(b, &closure);
+                        depend(index, b);
+                    }
+                }
+                expectation_sources(index, &closure);
+                // `return` inside the body leaves the closure, not the function.
+                child(index, closure.body, Returns{Type::Deferred, &closure});
+                if (const auto* tail = closure.body->stmts.empty() ? nullptr : as<ExprStmt>(closure.body->stmts.back()))
+                    expect(tail->expr, {.kind = Expectation::Result, .closure = &closure});
+                requirements_.push_back({.value = closure.body, .span = closure.body->span, .closure = &closure});
                 break;
             }
             case ExprKind::Member: child(index, cast<MemberExpr>(&expr)->base, returns); break;
@@ -2624,6 +2687,218 @@ private:
             i = expressions_.at(paren->inner);
         }
         return Value{expected};
+    }
+
+    // Records where a closure, possibly in parentheses, gets its expected type.
+    void expect(const Expr* value, Expectation expectation) {
+        if (const auto* closure = as<ClosureExpr>(unparen(value))) expectations_.insert_or_assign(closure, expectation);
+    }
+    void expect(const Expr* value, const TypeExpr* annotated) {
+        if (annotated && value && unparen(value)->kind == ExprKind::Closure) expect(value, {.type = annotation(annotated)});
+    }
+    // Makes `node` wait for everything a closure's expected type is read from.
+    void expectation_sources(usize node, const ClosureExpr* closure) {
+        for (;;) {
+            const auto it = expectations_.find(closure);
+            if (it == expectations_.end()) return;
+            const auto& expectation = it->second;
+            if (expectation.kind == Expectation::Target) depend(node, expression(expectation.expr));
+            else if (expectation.kind == Expectation::Argument) depend(node, expression(cast<CallExpr>(expectation.expr)->callee));
+            if (expectation.kind != Expectation::Result) return;
+            closure = expectation.closure;
+        }
+    }
+
+    // A closure's expected type, as far as stage0 can find it.
+    struct Expected {
+        enum State : u8 { Known, Pending, Missing, Overloaded, Generic, Unmatched } state = Missing;
+        Type type;
+    };
+    Expected expected_type(const ClosureExpr* closure) {
+        const auto it = expectations_.find(closure);
+        if (it == expectations_.end()) return {};
+        const auto& expectation = it->second;
+        switch (expectation.kind) {
+            case Expectation::Fixed:
+                if (expectation.type == Type::Error || known(expectation.type)) return {Expected::Known, expectation.type};
+                return {};
+            case Expectation::Target: {
+                const auto type = value(expectation.expr).type;
+                if (type == Type::Error || known(type)) return {Expected::Known, type};
+                return {Expected::Pending};
+            }
+            case Expectation::Argument: return argument_type(*cast<CallExpr>(expectation.expr), expectation.argument);
+            case Expectation::Result: {
+                // Closures nest no deeper than the parser allows.
+                const auto outer = expected_type(expectation.closure);
+                if (outer.state != Expected::Known || outer.type == Type::Error) return outer;
+                if (outer.type.kind != Type::Function) return {};
+                return {Expected::Known, types_.descriptor(outer.type)->result};
+            }
+        }
+        unreachable();
+    }
+    // The parameter type an argument meets: from the function type of the
+    // callee, or from the declarations of the functions or the primary
+    // constructor it names. Overloads must agree on that parameter's type.
+    Expected argument_type(const CallExpr& call, usize argument) {
+        const Value callee = value(call.callee);
+        if (callee.type == Type::Error) return {Expected::Known, Type::Error};
+        if (callee.type.kind == Type::Function && !callee.type.optional_depth) {
+            const auto& parameters = types_.descriptor(callee.type)->parameters;
+            const bool positional = std::ranges::all_of(call.args, [](const Arg& arg) { return arg.label.sym.empty(); });
+            if (!positional || call.args.size() != parameters.size()) return {Expected::Unmatched};  // the call reports it
+            return {Expected::Known, parameters[argument]};
+        }
+        const Expr* receiver = unparen(call.callee);
+        const auto named = callees(receiver);
+        std::vector<BindingId> ids(named.begin(), named.end());
+        // A primary constructor may be named through a type alias.
+        if (const auto constructed = entity(call.callee); constructed.state == ExpansionState::Resolved && constructed.target.valid() &&
+            !constructed.optional_depth && resolution_.binding(constructed.target).kind == BindingKind::Type)
+            ids = {constructed.target};
+        if (ids.empty()) return {unavailable(callee) ? Expected::Pending : Expected::Missing};
+        std::optional<Type> found;
+        bool generic = false;
+        // Like call selection, reading a candidate's parameter commits none of its type uses.
+        const ScopedValue probing(probing_constraints_, true);
+        for (BindingId id : ids) {
+            const auto& binding = resolution_.binding(id);
+            List<Param> params;
+            bool symbolic = false;
+            usize context = reference_contexts_.contains(receiver) ? reference_contexts_.at(receiver) : 0;
+            if (binding.kind == BindingKind::Function) {
+                symbolic = signatures_.at(id.value).generic;
+                params = cast<FunItem>(binding.item)->sig.params;
+                if (const auto member = members_.find(receiver); member != members_.end() && known(member->second.receiver_type))
+                    context = owner_context(member_owner(id), member->second.receiver_type);
+            } else if (binding.kind == BindingKind::Type) {
+                const auto* type = cast_type_decl(binding.item);
+                symbolic = !type->generics.empty();
+                params = type->ctor_params;
+            } else return {};
+            // Only candidates that accept the call's shape take part.
+            std::vector<usize> mapping;
+            if (!argument_mapping(call, params, mapping)) continue;
+            if (symbolic) { generic = true; continue; }
+            const Type type = annotation(params[mapping[argument]].type, context);
+            if (found && *found != type) return {Expected::Overloaded};
+            found = type;
+        }
+        if (generic) return {Expected::Generic};
+        if (!found) return {Expected::Unmatched};  // no candidate fits; the call reports it
+        if (*found == Type::Error || known(*found)) return {Expected::Known, *found};
+        return {Expected::Pending};
+    }
+
+    // The function type a closure meets, or nothing when its expected type
+    // is not a function type.
+    std::optional<TypeDescriptor> expected_function(const Expected& expected) const {
+        if (expected.state != Expected::Known || expected.type.kind != Type::Function) return std::nullopt;
+        return *types_.descriptor(expected.type.scalar());
+    }
+    // An unannotated closure parameter takes its type from the expected
+    // function type. Without one the closure reports the error.
+    Type closure_parameter(const ClosureExpr& closure, u32 parameter) {
+        const auto expected = expected_type(&closure);
+        // When no candidate accepts the call's shape, the call reports it.
+        if (expected.state == Expected::Pending || expected.state == Expected::Unmatched) return {};
+        const auto function = expected_function(expected);
+        if (!function || function->parameters.size() != closure.params.size()) return Type::Error;
+        return function->parameters[parameter];
+    }
+    std::string_view param_name(const ClosureParam& param) const { return names_.str(param.name.sym); }
+
+    Value closure_value(const ClosureExpr& closure) {
+        const auto expected = expected_type(&closure);
+        if (expected.state == Expected::Known && expected.type == Type::Error) return {Type::Error};
+        const auto function = expected_function(expected);
+        if (expected.state == Expected::Known && !function) {
+            diag_.error(DiagCode::ScalarTypeMismatch, closure.span, "expected '{}', found a closure", scalar_type_name(expected.type));
+            return {Type::Error};
+        }
+        if (function && function->parameters.size() != closure.params.size()) {
+            diag_.error(DiagCode::ScalarTypeMismatch, closure.span, "expected '{}', found a closure with {} parameter{}",
+                        scalar_type_name(expected.type.scalar()), closure.params.size(), closure.params.size() == 1 ? "" : "s");
+            return {Type::Error};
+        }
+        if (const auto missing = std::ranges::find_if(closure.params, [](const ClosureParam& param) { return !param.type; });
+            !function && missing != closure.params.end()) {
+            if (expected.state == Expected::Pending || expected.state == Expected::Unmatched) return {};
+            const auto why = expected.state == Expected::Overloaded ? "overloads of the function it is passed to disagree on its type"
+                           : expected.state == Expected::Generic ? "it is passed to a generic function, whose parameter types are not inferred yet"
+                           : "the closure is not used where a function type is expected";
+            diag_.error(DiagCode::ClosureInference, missing->name.span, "cannot infer the type of closure parameter '{}': {}; give it a type annotation",
+                        param_name(*missing), why);
+            return {Type::Error};
+        }
+        TypeDescriptor descriptor{.kind = Type::Function};
+        bool failed = false, pending = false;
+        for (usize i = 0; i < closure.params.size(); ++i) {
+            const auto& param = closure.params[i];
+            const Type type = nodes_[declarations_.at(param.name.span.lo)].value.type;
+            if (function && param.type && known(type) && known(function->parameters[i]) && type != function->parameters[i]) {
+                diag_.error(DiagCode::ScalarTypeMismatch, param.type->span, "closure parameter '{}' has type '{}', but the expected function type takes '{}'",
+                            param_name(param), scalar_type_name(type), scalar_type_name(function->parameters[i]));
+                failed = true;
+            }
+            failed |= type == Type::Error;
+            pending |= !known(type);
+            descriptor.parameters.push_back(type);
+        }
+        if (failed) return {Type::Error};
+        if (function) {
+            descriptor.result = function->result;
+            return {types_.intern(std::move(descriptor))};
+        }
+        if (pending) return {};
+        descriptor.result = closure_result(closure);
+        if (descriptor.result == Type::Error) return {Type::Error};
+        if (!known(descriptor.result)) return {};
+        return {types_.intern(std::move(descriptor))};
+    }
+    // Without an expected type, a closure's result is the type that its
+    // final expression and its `return`s agree on.
+    Type closure_result(const ClosureExpr& closure) {
+        std::vector<Tail> found;
+        tails(closure.body, found);
+        std::optional<Type> result;
+        const auto add = [&](Value produced, Span span) {
+            if (produced.type == Type::Never) return true;
+            const Type type = default_type(produced);
+            if (!known(type)) return false;
+            if (result && *result != type) {
+                diag_.error(DiagCode::ScalarTypeMismatch, span, "closure result '{}' does not match an earlier result '{}'; give the closure an expected function type",
+                            scalar_type_name(type), scalar_type_name(*result));
+                result = Type::Error;
+                return false;
+            }
+            result = type;
+            return true;
+        };
+        for (const auto& tail : found)
+            if (!add(tail.kind == Tail::Value ? value(tail.expr) : Value{Type::Unit}, tail.expr->span)) return result ? *result : Type{};
+        // A returned `if`, `match` or `unsafe` contributes its branch tails too.
+        if (const auto it = closure_returns_.find(&closure); it != closure_returns_.end())
+            for (const auto* ret : it->second) {
+                if (!ret->value) {
+                    if (!add({Type::Unit}, ret->span)) return result ? *result : Type{};
+                    continue;
+                }
+                found.clear();
+                tails(ret->value, found);
+                for (const auto& tail : found)
+                    if (!add(tail.kind == Tail::Value ? value(tail.expr) : Value{Type::Unit}, tail.expr->span)) return result ? *result : Type{};
+            }
+        return result ? *result : Type{Type::Never};
+    }
+    // The type a requirement's value must have, once inference is done.
+    Type requirement_type(const Requirement& requirement) const {
+        if (requirement.closure) {
+            const auto type = value(requirement.closure).type;
+            return type.kind == Type::Function ? types_.descriptor(type)->result : Type{};
+        }
+        return requirement.target ? value(requirement.target).type : requirement.expected;
     }
 
     Value compatible(usize index, Type expected, Span span) {
@@ -3632,6 +3907,10 @@ private:
             return;
         }
         const auto declaration = declared(index);  // a copy: evaluation may add declarations
+        if (!expr && declaration.closure && !declaration.annotation) {
+            node.value = {closure_parameter(*declaration.closure, declaration.parameter)};
+            return;
+        }
         if (!expr && declaration.source != std::numeric_limits<u32>::max()) {
             const auto whole = nodes_[declaration.source].value.type;
             if (whole == Type::Error) node.value = {Type::Error};
@@ -3667,6 +3946,7 @@ private:
             case ExprKind::Char: node.value = {Type::Char}; break;
             case ExprKind::String: case ExprKind::Interp: node.value = {Type::String}; break;
             case ExprKind::Unit: node.value = {Type::Unit}; break;
+            case ExprKind::Closure: node.value = closure_value(*cast<ClosureExpr>(expr)); break;
             case ExprKind::Super: {
                 const auto* reference = resolution_.reference(expr->span);
                 if (reference && reference->receiver.valid()) {
@@ -3889,7 +4169,7 @@ private:
             else if (contract.state == ExpansionState::Error) errors.push_back(contract.span);
         }
         for (const auto& requirement : requirements_) if (requirement.value) {
-            const auto expected = requirement.target ? value(requirement.target).type : requirement.expected;
+            const auto expected = requirement_type(requirement);
             if (!known(expected) || probe(expressions_.at(requirement.value), expected).deferred) pending.push_back(requirement.span);
         }
         for (const auto* expr : defaults_)
@@ -4024,6 +4304,8 @@ private:
     FlatMap<u64, std::shared_ptr<const MemberLookup>> inherited_members_;  // name << 32 | owner << 1 | types_only
     std::vector<Walk> walk_;
     std::vector<Requirement> requirements_;
+    std::unordered_map<const ClosureExpr*, Expectation> expectations_;
+    std::unordered_map<const ClosureExpr*, std::vector<const ReturnStmt*>> closure_returns_;
     struct ConstraintUse {
         BindingId declaration;
         usize context;

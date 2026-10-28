@@ -41,7 +41,8 @@ Windows x64 and Linux x86_64:
 - [x] Initial argument-based generic inference and concrete interface/where constraints
 - [x] Initial generic body checking, bound-based lookup, associated types/Self and dependent witnesses
 - [x] Flow checks: all-path returns, definite initialization, immutable bindings and fields, `mut fun` receivers and branch results
-- [ ] Generic base substitution, built-in traits, remaining dependent contracts and ownership analysis
+- [x] Ownership: use after move, moving out of borrows, exclusive `inout` arguments and a built-in `.clone()`
+- [ ] Generic base substitution, built-in traits and remaining dependent contracts
 - [x] Native scalar slice: MIR, naive x86_64 code, and static Linux ELF executables with a stage0 runtime (`build`)
 - [x] Output: string literals and a prelude `print` for `String`, `Int`, `UInt` and `Bool`
 - [x] Structs and tuples: struct values, field assignment, methods including `mut fun`, and tuples
@@ -178,6 +179,34 @@ fun main(): Int {
     let add5 = makeAdder(5)
     let double = { x: Int -> x * 2 }
     return compose(double, add5)(10)  // 25
+}
+```
+
+Values that are not `Copy`, such as `String` and structs that hold one, move
+when they are passed to an `own` parameter, stored or returned. `check`
+reports a use after a move (`E0504`), a move out of something only borrowed
+(`E0505`) and an `inout` argument or `mut fun` receiver that overlaps another
+argument of the same call (`E0506`); `.clone()` makes a copy that can move
+instead
+([`run/inventory.phs`](tests/stage0/run/inventory.phs),
+[`run/greetings.phs`](tests/stage0/run/greetings.phs),
+[`run/clone.phs`](tests/stage0/run/clone.phs)):
+
+```phantasos
+struct Item(name: String, var count: Int) {
+    mut fun add(n: Int) { count += n }
+}
+
+fun stock(name: own String, count: Int): Item = Item(name, count)
+
+fun main(): Int {
+    let label = "bolts"
+    var bolts = stock(label.clone(), 10)  // `stock(label, 10)` would move label
+    print(label)
+    let moved = bolts                     // bolts cannot be used after this
+    var spare = moved.clone()
+    spare.add(moved.count)
+    return spare.count                    // 20
 }
 ```
 
@@ -322,6 +351,8 @@ build/stage0/phantasos-stage0 build tests/stage0/run/higher_order.phs -o higher_
 ./higher_order                                                         # function values
 build/stage0/phantasos-stage0 build tests/stage0/run/adders.phs -o adders
 ./adders                                                               # closures
+build/stage0/phantasos-stage0 build tests/stage0/run/inventory.phs -o inventory
+./inventory                                                            # ownership and moves
 ```
 
 ## License

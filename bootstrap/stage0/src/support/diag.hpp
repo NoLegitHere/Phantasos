@@ -66,7 +66,6 @@ enum class DiagCode : u16 {
     AwaitOutsideAsync = 205,
     PatternBindingMismatch = 206,
     InvalidParameterBinding = 207,
-    UncheckedClosure = 208,
     UnknownValue = 300,
     UnknownType = 301,
     ConflictingDeclaration = 302,
@@ -94,9 +93,11 @@ enum class DiagCode : u16 {
     MissingImplementation = 463,
     GenericArguments = 470,
     GenericConstraint = 471,
+    ClosureInference = 480,
     MissingReturn = 500,
     UninitializedUse = 501,
     ImmutableAssignment = 502,
+    InvalidCapture = 503,
     UnsupportedCodegen = 600,
     InvalidEntryPoint = 601,
 };
@@ -137,7 +138,6 @@ constexpr std::string_view diag_code(DiagCode code) {
         case DiagCode::AwaitOutsideAsync: return "E0205";
         case DiagCode::PatternBindingMismatch: return "E0206";
         case DiagCode::InvalidParameterBinding: return "E0207";
-        case DiagCode::UncheckedClosure: return "E0208";
         case DiagCode::UnknownValue: return "E0300";
         case DiagCode::UnknownType: return "E0301";
         case DiagCode::ConflictingDeclaration: return "E0302";
@@ -165,9 +165,11 @@ constexpr std::string_view diag_code(DiagCode code) {
         case DiagCode::MissingImplementation: return "E0463";
         case DiagCode::GenericArguments: return "E0470";
         case DiagCode::GenericConstraint: return "E0471";
+        case DiagCode::ClosureInference: return "E0480";
         case DiagCode::MissingReturn: return "E0500";
         case DiagCode::UninitializedUse: return "E0501";
         case DiagCode::ImmutableAssignment: return "E0502";
+        case DiagCode::InvalidCapture: return "E0503";
         case DiagCode::UnsupportedCodegen: return "E0600";
         case DiagCode::InvalidEntryPoint: return "E0601";
     }

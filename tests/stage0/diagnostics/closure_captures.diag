@@ -1,0 +1,51 @@
+closure_captures.phs:22:39: error[E0503]: a closure cannot capture 'self' of type 'Account', which is borrowed and not Copy
+   22 |     fun reader(): fun() -> Int = { -> balance }
+      |                                       ^^^^^^^
+closure_captures.phs:21:7: note: declared here
+   21 | class Account(var balance: Int) {
+      |       ^^^^^^^
+closure_captures.phs:26:43: error[E0503]: a closure cannot capture 'self' in a 'mut fun', where it is only borrowed for the call
+   26 |     mut fun reader(): fun() -> Int = { -> self.value }
+      |                                           ^^^^
+closure_captures.phs:33:18: error[E0503]: a closure cannot capture 'inout' parameter 'n', which is only borrowed for the call
+   33 |     let a = { -> n }
+      |                  ^
+closure_captures.phs:29:13: note: declared 'inout' here
+   29 | fun capture(n: inout Int, text: String, owned: own String, k: Int): Int {
+      |             ^
+closure_captures.phs:34:18: error[E0503]: a closure cannot capture borrowed parameter 'text' of type 'String', which is not Copy; declare it 'own' to move it into the closure
+   34 |     let b = { -> text }
+      |                  ^^^^
+closure_captures.phs:29:27: note: parameters are borrowed unless declared 'own'
+   29 | fun capture(n: inout Int, text: String, owned: own String, k: Int): Int {
+      |                           ^^^^
+closure_captures.phs:36:22: error[E0501]: 'later' is captured before it is initialized
+   36 |     let d = { -> k + later }
+      |                      ^^^^^
+closure_captures.phs:32:9: note: declared here without an initializer
+   32 |     let later: Int
+      |         ^^^^^
+closure_captures.phs:37:33: error[E0502]: cannot assign to captured 'count'; a closure captures a read-only copy of it
+   37 |     let e: fun() -> Unit = { -> count = 1 }
+      |                                 ^^^^^
+closure_captures.phs:30:9: note: declared outside the closure here
+   30 |     var count = 0
+      |         ^^^^^
+closure_captures.phs:38:33: error[E0502]: cannot assign to field 'x' because captured 'point' is immutable
+   38 |     let f: fun() -> Unit = { -> point.x = 2 }
+      |                                 ^^^^^^^
+closure_captures.phs:31:9: note: a closure captures a read-only copy of it
+   31 |     let point = Point(x: 1)
+      |         ^^^^^
+closure_captures.phs:39:38: error[E0502]: cannot assign to immutable 'y'
+   39 |     let g: fun(Int) -> Unit = { y -> y = 3 }
+      |                                      ^
+closure_captures.phs:39:33: note: closure parameters are read-only
+   39 |     let g: fun(Int) -> Unit = { y -> y = 3 }
+      |                                 ^
+closure_captures.phs:40:23: error[E0502]: cannot assign to captured 'count'; a closure captures a read-only copy of it
+   40 |     let h = { -> { -> count += 1 } }
+      |                       ^^^^^
+closure_captures.phs:30:9: note: declared outside the closure here
+   30 |     var count = 0
+      |         ^^^^^

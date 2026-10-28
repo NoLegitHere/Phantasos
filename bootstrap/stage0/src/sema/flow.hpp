@@ -24,7 +24,9 @@ namespace phs {
 // without an initializer are definitely initialized before use (E0501), and
 // assignments only target `var` locals/globals, `inout` parameters or a `let`
 // local that is still definitely unassigned (E0502). Field assignments and
-// `mut fun` calls need a mutable place (also E0502, spec 3.24). Ownership
+// `mut fun` calls need a mutable place (also E0502, spec 3.24). Closure bodies
+// are checked as callables of their own, whose captures are read-only copies;
+// capturing an `inout` or non-Copy borrowed parameter is E0503 (3.29). Ownership
 // remains later work. Run after scalar typing succeeds; the AST,
 // Resolution and ScalarTypes are unchanged.
 void check_flow(const ast::File& file, const Resolution& resolution, const ScalarTypes& types,

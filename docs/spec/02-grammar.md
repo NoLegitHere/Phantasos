@@ -178,8 +178,8 @@ because braces in an expression always start a closure: `{ foo() }` and
 `{ x }` are errors (`E0114`), and the parser skips the whole closure. A
 function-typed parameter whose type is followed by `->` keeps that arrow as
 its result type, so `{ f: fun(Int) -> Int -> f(1) }` declares one parameter
-of type `fun(Int) -> Int`. Stage0 parses closures, but `check` does not check
-them yet (`E0208`).
+of type `fun(Int) -> Int`. Closure types and captures are described in
+3.29.
 
 ## 2.5 Patterns
 ```

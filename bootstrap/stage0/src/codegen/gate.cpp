@@ -49,6 +49,7 @@ std::string_view expr_name(ExprKind kind) {
         case ExprKind::GenericInst: return "explicit generic arguments";
         case ExprKind::Match: return "'match'";
         case ExprKind::Unsafe: return "'unsafe' blocks";
+        case ExprKind::Closure: return "closures";
         default: return "this expression";
     }
 }

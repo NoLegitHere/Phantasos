@@ -2647,16 +2647,23 @@ private:
         std::vector<Type> arguments(generics.size());
         std::vector<std::pair<Type, Type>> work{{result, wanted.result}};
         for (usize p = 0; p < wanted.parameters.size(); ++p) work.push_back({signature.parameters[p], wanted.parameters[p]});
+        // Shared parts of type graphs are matched once. Equal composite
+        // types still go through their parts, since a type parameter in
+        // them, as in a generic function's own body, is still evidence.
+        auto hash = [](const std::pair<Type, Type>& pair) { return TypeDescriptorHash{}({.element = pair.first, .result = pair.second}); };
+        std::unordered_set<std::pair<Type, Type>, decltype(hash)> seen(0, hash);
         while (!work.empty()) {
             const auto [pattern, actual] = work.back();
             work.pop_back();
-            if (pattern == actual) continue;
+            if (pattern == actual && !types_.descriptor(pattern)) continue;
+            if (!seen.emplace(pattern, actual).second) continue;
             if (!known(pattern) || !known(actual)) return std::nullopt;
             if (pattern.kind == Type::TypeParameter) {
                 const auto declaration = types_.descriptor(pattern)->declaration;
                 const auto position = std::ranges::find_if(generics, [&](const GenericParam& param) {
                     return generic_bindings_.at(param.name.span.lo) == declaration;
                 });
+                if (position == generics.end() && pattern == actual) continue;
                 if (position == generics.end() || actual.optional_depth < pattern.optional_depth) return std::nullopt;
                 auto inferred = actual;
                 inferred.optional_depth -= pattern.optional_depth;
@@ -2669,7 +2676,8 @@ private:
             const auto* x = types_.descriptor(pattern);
             const auto* y = types_.descriptor(actual);
             if (!x || !y || x->declaration != y->declaration || x->throws != y->throws ||
-                x->parameters.size() != y->parameters.size() || x->arguments.size() != y->arguments.size())
+                x->mutable_pointer != y->mutable_pointer || x->parameters.size() != y->parameters.size() ||
+                x->arguments.size() != y->arguments.size())
                 return std::nullopt;
             work.push_back({x->element, y->element});
             work.push_back({x->result, y->result});
@@ -2877,6 +2885,11 @@ private:
             !constructed.optional_depth && resolution_.binding(constructed.target).kind == BindingKind::Type)
             ids = {constructed.target};
         if (ids.empty()) return {unavailable(callee) ? Expected::Pending : Expected::Missing};
+        std::optional<std::vector<Type>> explicit_arguments;
+        if (const auto* generic = as<GenericInstExpr>(receiver)) {
+            explicit_arguments.emplace();
+            for (auto* arg : generic->args) explicit_arguments->push_back(annotation(arg));
+        }
         std::optional<Type> found;
         bool generic = false;
         usize viable = 0;
@@ -2901,11 +2914,15 @@ private:
             // Only candidates that accept the call's shape take part.
             std::vector<usize> mapping;
             if (!argument_mapping(call, params, mapping)) continue;
+            if (explicit_arguments && (!symbolic || generic_parameters(id).size() != explicit_arguments->size())) continue;
             if (symbolic) {
-                // The other arguments may infer the type arguments the
-                // closure's parameter needs.
+                // Explicit type arguments, or the ones the other arguments
+                // infer, give the closure's parameter its type.
                 if (++viable == 1)
-                    inferred = GenericArgument{id, context, infer_arguments(id, params, call, mapping, context), &params[mapping[argument]]};
+                    inferred = GenericArgument{id, context,
+                                               explicit_arguments ? Inference{Relation::Yes, context, *explicit_arguments}
+                                                                  : infer_arguments(id, params, call, mapping, context),
+                                               &params[mapping[argument]]};
                 generic = true;
                 continue;
             }

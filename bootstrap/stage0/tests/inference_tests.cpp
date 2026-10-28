@@ -401,6 +401,13 @@ void shared_patterns_and_deep_bounds() {
     source += "type F40<T> = T\nfun leaf<T>(value: F0<T>): T { loop {} }\nlet value: F0<Int>\nlet result = leaf(value)";
     shared.check(source, {}, false);
     CHECK(shared.value("result") == Type::Int);
+    // Matching the same graph against an expected function type, for a
+    // generic function used as a value, visits each pair once too.
+    Frontend valued;
+    source.erase(source.rfind("let value"));
+    source += "let f: fun(F0<Int>) -> Int = leaf";
+    valued.check(source, {}, false);
+    CHECK(valued.value("f").kind == Type::Function);
     Frontend bounds;
     source = "interface I0 { fun read(): Int }\n";
     for (int i = 1; i < 5000; ++i) source += std::format("interface I{}: I{} {{}}\n", i, i - 1);

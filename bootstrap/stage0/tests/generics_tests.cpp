@@ -337,6 +337,21 @@ let composed = compose({ a: Int -> a > 1 }, { b -> !b })
     CHECK(f.name(f.value("expected")) == "fun(Int8) -> Int8" && f.name(f.value("explicit")) == "fun(Bool) -> Bool");
     CHECK(f.value("passed") == Type::Int && f.value("closure") == Type::Int && f.value("mapped") == Type::Bool);
     CHECK(f.name(f.value("composed")) == "fun(Int) -> Bool");
+    // Inside its own body a generic function is a value for its own type
+    // parameters, and explicit type arguments give a closure its type
+    // over literal defaults.
+    Frontend own;
+    own.check(R"(
+fun repeat<T>(x: T, n: Int): T {
+    let same: fun(T, Int) -> T = repeat
+    let pair: fun((T, Int), Int) -> (T, Int) = repeat
+    return x
+}
+fun apply<T>(f: fun(T) -> T, x: T): T = f(x)
+let annotated = apply<Int8>({ s: Int8 -> s }, 1)
+let inferred = apply<Int8>({ s -> s + 1 }, 1)
+)");
+    CHECK(own.value("annotated") == Type::Int8 && own.value("inferred") == Type::Int8);
     const auto* init = ast::cast<ast::VarItem>(f.result.resolution->binding(f.id("explicit")).item)->init;
     const auto arguments = f.result.scalar_types->function_arguments(init);
     CHECK(arguments.size() == 1 && arguments.front() == Type::Bool);
@@ -344,6 +359,7 @@ let composed = compose({ a: Int -> a > 1 }, { b -> !b })
         {"fun f<T>(x: T): T = x\nlet g = f<Int, Bool>", DiagCode::GenericArguments},
         {"fun f<T>(x: T): T = x\nlet g: fun(Int) -> Bool = f", DiagCode::ScalarTypeMismatch},
         {"fun f<T>(g: fun(T) -> T): Int = 0\nlet x = f({ s -> s })", DiagCode::ClosureInference},
+        {"fun f<T>(p: *T): *T = p\nlet g: fun(*Int) -> *mut Int = f", DiagCode::ScalarTypeMismatch},
     }) { Frontend bad; bad.check(source, {code}); }
     // Closures that would infer each other's parameter types infer neither.
     Frontend both;

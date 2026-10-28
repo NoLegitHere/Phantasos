@@ -19,6 +19,8 @@
 #include <string_view>
 #include <variant>
 
+#include "support/flat_map.hpp"
+
 namespace phs {
 usize TypeDescriptorHash::operator()(const TypeDescriptor& d) const {
     usize hash = static_cast<usize>(d.kind);
@@ -32,14 +34,35 @@ usize TypeDescriptorHash::operator()(const TypeDescriptor& d) const {
 }
 
 ScalarType TypeTable::intern(TypeDescriptor descriptor) {
-    // Keyed by hash so each descriptor is stored once, in descriptors_.
-    const usize hash = TypeDescriptorHash{}(descriptor);
-    for (auto [it, last] = ids_.equal_range(hash); it != last; ++it)
-        if (descriptors_[it->second] == descriptor) return {descriptor.kind, 0, it->second};
+    // Each descriptor is stored once, in descriptors_; slots_ indexes them by
+    // hash with linear probing, so a lookup touches one slot line per probe.
+    const u64 hash = mix_key(TypeDescriptorHash{}(descriptor));
+    if ((descriptors_.size() + 1) * 4 > slots_.size() * 3) grow();
+    const usize mask = slots_.size() - 1;
+    usize index = hash & mask;
+    for (; slots_[index].id; index = (index + 1) & mask) {
+        const usize id = slots_[index].id - 1;
+        if (slots_[index].hash == static_cast<u32>(hash) && hashes_[id] == hash && descriptors_[id] == descriptor)
+            return {descriptor.kind, 0, id};
+    }
     const usize id = descriptors_.size();
-    ids_.emplace(hash, id);
+    PHS_ASSERT(id < std::numeric_limits<u32>::max());
+    slots_[index] = {static_cast<u32>(id + 1), static_cast<u32>(hash)};
+    hashes_.push_back(hash);
     descriptors_.push_back(std::move(descriptor));
     return {descriptors_[id].kind, 0, id};
+}
+
+void TypeTable::grow() {
+    // Rebuilds from the cached hashes; descriptors are never rehashed.
+    std::vector<Slot> slots(slots_.empty() ? 64 : slots_.size() * 2);
+    const usize mask = slots.size() - 1;
+    for (usize id = 0; id < hashes_.size(); ++id) {
+        usize index = hashes_[id] & mask;
+        while (slots[index].id) index = (index + 1) & mask;
+        slots[index] = {static_cast<u32>(id + 1), static_cast<u32>(hashes_[id])};
+    }
+    slots_ = std::move(slots);
 }
 
 std::string TypeTable::name(ScalarType root, const Resolution& resolution, const Interner& names, usize limit) const {

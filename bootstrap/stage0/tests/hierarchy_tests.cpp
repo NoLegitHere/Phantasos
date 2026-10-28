@@ -332,6 +332,17 @@ void long_hierarchies_and_diamonds() {
     source += "class C: I64 {}\nlet value = C().read()";
     diamond.check(source, {}, false);
     CHECK(diamond.value("value") == Type::Int && diamond.hierarchy("C").witnesses.size() == 1);
+    // Upcasts across branches of a class tree, declared out of order, and to
+    // an interface reached through a superclass.
+    const std::string tree = "class A2: A {}\nopen class A: R, I {}\nopen class R {}\nopen class B: R {}\ninterface I {}\n"
+                             "let root: R = A2()\nlet parent: A = A2()\nlet viaSuper: I = A2()\nlet same: A2 = A2()\n";
+    Frontend branches;
+    branches.check(tree, {}, false);
+    CHECK(branches.value("root").kind == Type::Nominal && branches.value("viaSuper").kind == Type::Nominal);
+    for (const auto* invalid : {"let sibling: B = A2()", "let down: A2 = A()", "let unrelated: I = B()"}) {
+        Frontend f2;
+        f2.check(tree + invalid, {DiagCode::ScalarTypeMismatch});
+    }
 }
 } // namespace
 

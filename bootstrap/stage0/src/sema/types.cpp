@@ -326,7 +326,8 @@ public:
         // memory peaks on large files.
         release(annotations_, speculative_annotations_, environments_, environment_ids_, node_declarations_, dependencies_,
                 declarations_, parameter_indices_, direct_callees_, function_names_, reference_contexts_, call_contexts_,
-                entities_, large_scope_names_, ancestry_cache_, inherited_members_, walk_, requirements_);
+                entities_, large_scope_names_, ancestry_cache_, class_intervals_, visit_marks_, ancestry_work_, inherited_members_, walk_,
+                requirements_);
         ScalarTypes result;
         for (const auto& [expr, index] : expressions_) result.expressions_.emplace(expr, nodes_[index].value.type);
         release(expressions_);
@@ -1204,7 +1205,7 @@ private:
                 for (const auto& base : cast_type_decl(b.item)->supers) (void)annotation(base.type);
             const auto after = progress();
             if (after.second > before.second) {
-                hierarchies_.clear(); hierarchy_order_.clear(); ancestry_cache_.clear(); inherited_members_.clear();
+                hierarchies_.clear(); hierarchy_order_.clear(); ancestry_cache_.clear(); class_intervals_.clear(); inherited_members_.clear();
                 build_hierarchies();
             }
             if (after == before) break; // only Deferred -> known/error facts advance
@@ -1298,24 +1299,75 @@ private:
                 stack.pop_back();
             }
         }
+        number_classes();
+    }
+
+    // Numbers resolved classes in preorder and postorder over the superclass
+    // tree, so ancestry() can answer class targets without walking the chain.
+    // A resolved class only has resolved bases (build_hierarchies propagates
+    // incomplete states), so its whole superclass chain is numbered too.
+    void number_classes() {
+        const usize count = resolution_.bindings().size();
+        class_intervals_.assign(count, {});
+        constexpr u32 kNone = std::numeric_limits<u32>::max();
+        std::vector<u32> first_child(count, kNone), next_sibling(count, kNone);
+        std::vector<u32> roots;
+        for (const auto id : hierarchy_order_) {
+            const auto& fact = hierarchies_.at(id.value);
+            if (fact.state != ExpansionState::Resolved || resolution_.binding(id).item->kind != ItemKind::Class) continue;
+            if (!fact.superclass.valid()) { roots.push_back(static_cast<u32>(id.value)); continue; }
+            // hierarchy_order_ is a postorder, so prepending keeps children in reverse; order does not matter.
+            next_sibling[id.value] = first_child[fact.superclass.value];
+            first_child[fact.superclass.value] = static_cast<u32>(id.value);
+        }
+        u32 clock = 0;
+        std::vector<u32> stack;
+        for (const auto root : roots) {
+            class_intervals_[root].pre = ++clock;
+            stack.push_back(root);
+            while (!stack.empty()) {
+                auto& child = first_child[stack.back()];
+                if (child == kNone) {
+                    class_intervals_[stack.back()].post = ++clock;
+                    stack.pop_back();
+                    continue;
+                }
+                const u32 next = child;
+                child = next_sibling[next];  // consume the edge
+                class_intervals_[next].pre = ++clock;
+                stack.push_back(next);
+            }
+        }
     }
 
     Relation ancestry(BindingId source, BindingId target) const {
         if (source == target) return Relation::Yes;
+        const auto fact = hierarchies_.find(source.value);
+        if (fact == hierarchies_.end() || fact->second.state != ExpansionState::Resolved) return Relation::Deferred;
+        // Every base reachable from a resolved type is resolved, and only
+        // classes have class bases, so a class target is an ancestor exactly
+        // when its superclass-tree interval contains the source's.
+        if (target.value < class_intervals_.size() && class_intervals_[target.value].pre) {
+            const auto inner = class_intervals_[source.value], outer = class_intervals_[target.value];
+            return inner.pre && outer.pre <= inner.pre && inner.post <= outer.post ? Relation::Yes : Relation::No;
+        }
         const u64 key = static_cast<u64>(source.value) << 32 | target.value;
         if (const auto it = ancestry_cache_.find(key); it != ancestry_cache_.end()) return it->second;
-        std::vector<BindingId> work{source};
-        std::unordered_set<usize> visited;
+        if (++visit_epoch_ == 0) { std::ranges::fill(visit_marks_, 0); visit_epoch_ = 1; }
+        visit_marks_.resize(resolution_.bindings().size());
+        auto& work = ancestry_work_;
+        work.assign(1, source);
         Relation result = Relation::No;
         while (!work.empty()) {
             const auto next = work.back(); work.pop_back();
             if (next == target) { result = Relation::Yes; break; }
-            if (!visited.insert(next.value).second) continue;
+            if (visit_marks_[next.value] == visit_epoch_) continue;
+            visit_marks_[next.value] = visit_epoch_;
             const auto it = hierarchies_.find(next.value);
             if (it == hierarchies_.end() || it->second.state != ExpansionState::Resolved) { result = Relation::Deferred; continue; }
             for (const auto base : it->second.bases) work.push_back(base);
         }
-        ancestry_cache_.emplace(key, result);
+        ancestry_cache_.try_emplace(key, result);
         return result;
     }
 
@@ -3916,7 +3968,12 @@ private:
     bool hierarchy_ready_ = false;
     std::unordered_set<const TypeExpr*> reported_bases_;
     std::unordered_set<usize> reported_cycles_;
-    mutable std::unordered_map<u64, Relation> ancestry_cache_;  // source << 32 | target
+    struct ClassInterval { u32 pre = 0, post = 0; };  // 0: not a resolved class
+    std::vector<ClassInterval> class_intervals_;  // binding id -> superclass-tree numbering
+    mutable FlatMap<u64, Relation> ancestry_cache_;  // source << 32 | target, for non-class targets
+    mutable std::vector<u32> visit_marks_;  // binding id -> epoch of the ancestry walk that last visited it
+    mutable u32 visit_epoch_ = 0;
+    mutable std::vector<BindingId> ancestry_work_;
     std::unordered_map<u64, std::shared_ptr<const MemberLookup>> inherited_members_;  // name << 32 | owner << 1 | types_only
     std::vector<Walk> walk_;
     std::vector<Requirement> requirements_;

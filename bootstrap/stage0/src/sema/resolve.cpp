@@ -112,6 +112,14 @@ private:
         std::ranges::sort(refs, {}, [](const NameReference& r) { return r.span.lo; });
         for (usize i = 1; i < refs.size(); ++i) PHS_ASSERT(refs[i - 1].span.lo != refs[i].span.lo);
         refs.shrink_to_fit();
+        // buckets[b] is the first reference at or after byte b << kReferenceBucketBits.
+        auto& buckets = result_.reference_buckets_;
+        const usize count = refs.empty() ? 0 : (refs.back().span.lo >> Resolution::kReferenceBucketBits) + 2;
+        buckets.resize(count);
+        for (usize b = 0, i = 0; b < count; ++b) {
+            while (i < refs.size() && (refs[i].span.lo >> Resolution::kReferenceBucketBits) < b) ++i;
+            buckets[b] = static_cast<u32>(i);
+        }
         result_.bindings_.shrink_to_fit();
         result_.scopes_.shrink_to_fit();
     }
@@ -607,9 +615,16 @@ private:
 
 const NameReference* Resolution::reference(Span span) const {
     if (span.file != file_) return nullptr;
-    const auto it = std::ranges::lower_bound(references_, span.lo, {}, [](const NameReference& r) { return r.span.lo; });
-    if (it == references_.end() || it->span.lo != span.lo) return nullptr;
-    return it->span.hi == span.hi ? &*it : nullptr;
+    // Callers mostly ask in source order, so the bucket table and the
+    // references it points to are read sequentially, unlike a binary search.
+    const usize bucket = span.lo >> kReferenceBucketBits;
+    if (bucket + 1 >= reference_buckets_.size()) return nullptr;
+    for (u32 i = reference_buckets_[bucket]; i < reference_buckets_[bucket + 1]; ++i) {
+        const auto& reference = references_[i];
+        if (reference.span.lo < span.lo) continue;
+        return reference.span.lo == span.lo && reference.span.hi == span.hi ? &reference : nullptr;
+    }
+    return nullptr;
 }
 
 Resolution resolve_file(const ast::File& file, Interner& names, DiagEngine& diag) {

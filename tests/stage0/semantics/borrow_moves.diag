@@ -1,0 +1,66 @@
+borrow_moves.phs:22:27: error[E0505]: cannot move out of field 'text' of 'self'
+   22 |     fun label(): String = text
+      |                           ^^^^
+borrow_moves.phs:22:27: note: use '.clone()' to move a copy
+   22 |     fun label(): String = text
+      |                           ^^^^
+borrow_moves.phs:23:25: error[E0505]: cannot move out of 'self'
+   23 |     fun whole(): Name = self
+      |                         ^^^^
+borrow_moves.phs:23:25: note: use '.clone()' to move a copy
+   23 |     fun whole(): Name = self
+      |                         ^^^^
+borrow_moves.phs:30:10: error[E0505]: cannot move out of borrowed parameter 'a'
+   30 |     take(a)
+      |          ^
+borrow_moves.phs:30:10: note: declare it 'own' to take ownership, or use 'a.clone()' to move a copy
+   30 |     take(a)
+      |          ^
+borrow_moves.phs:31:13: error[E0505]: cannot move out of borrowed parameter 'b'
+   31 |     let x = b
+      |             ^
+borrow_moves.phs:31:13: note: use 'b.clone()' to move a copy
+   31 |     let x = b
+      |             ^
+borrow_moves.phs:37:13: error[E0505]: cannot move out of field 'text'
+   37 |     let t = name.text
+      |             ^^^^^^^^^
+borrow_moves.phs:37:13: note: use '.clone()' to move a copy
+   37 |     let t = name.text
+      |             ^^^^^^^^^
+borrow_moves.phs:38:13: error[E0505]: cannot move out of an element
+   38 |     let s = pair.1
+      |             ^^^^^^
+borrow_moves.phs:38:13: note: use '.clone()' to move a copy
+   38 |     let s = pair.1
+      |             ^^^^^^
+borrow_moves.phs:39:13: error[E0505]: cannot move out of an element
+   39 |     let e = list[0]
+      |             ^^^^^^^
+borrow_moves.phs:39:13: note: use '.clone()' to move a copy
+   39 |     let e = list[0]
+      |             ^^^^^^^
+borrow_moves.phs:40:13: error[E0505]: cannot move out of borrowed parameter 'maybe'
+   40 |     let m = maybe!
+      |             ^^^^^
+borrow_moves.phs:40:13: note: declare it 'own' to take ownership, or use 'maybe.clone()' to move a copy
+   40 |     let m = maybe!
+      |             ^^^^^
+borrow_moves.phs:44:13: error[E0505]: cannot move out of field 'text'
+   44 |     let t = name.text
+      |             ^^^^^^^^^
+borrow_moves.phs:44:13: note: use '.clone()' to move a copy
+   44 |     let t = name.text
+      |             ^^^^^^^^^
+borrow_moves.phs:48:22: error[E0505]: cannot move out of captured 's'
+   48 |     let again = { -> s }
+      |                      ^
+borrow_moves.phs:48:22: note: a closure can be called more than once; use 's.clone()' to move a copy
+   48 |     let again = { -> s }
+      |                      ^
+borrow_moves.phs:50:32: error[E0505]: cannot move out of borrowed parameter 'x'
+   50 |     let moved = { x: String -> x }
+      |                                ^
+borrow_moves.phs:50:32: note: use 'x.clone()' to move a copy
+   50 |     let moved = { x: String -> x }
+      |                                ^

@@ -42,7 +42,7 @@ fun main(): Int {
     var acc = Named(label: "loop", n: 0)
     var i = 0
     while i < 4 {
-        acc = Named(label: acc.label, n: acc.n + i)
+        acc = Named(label: acc.label.clone(), n: acc.n + i)
         i += 1
     }
     print(acc.label)

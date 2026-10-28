@@ -191,9 +191,9 @@ fun main() {}
     // Two-word arguments take two registers, or go on the stack with the
     // registers left for later scalars, and come back in rax:rdx.
     strings_agree(R"(
-fun pick(n: Int, a: String, b: String): String = if n == 0 { a } else { b }
-fun late(a: Int, b: Int, c: Int, d: Int, e: Int, text: String, g: Int): String = if g == 6 { text } else { "wrong" }
-fun stacked(a: String, b: String, c: String, d: String, e: String): String = d
+fun pick(n: Int, a: own String, b: own String): String = if n == 0 { a } else { b }
+fun late(a: Int, b: Int, c: Int, d: Int, e: Int, text: own String, g: Int): String = if g == 6 { text } else { "wrong" }
+fun stacked(a: String, b: String, c: String, d: own String, e: String): String = d
 fun f(): String {
     let x = late(1, 2, 3, 4, 5, pick(1, "no", "\u{1F30D} yes"), 6)
     return stacked("a", "b", "c", x, "e")
@@ -203,7 +203,7 @@ fun main() {}
     // Identical literals share their bytes.
     Compiled shared(R"(
 fun f(): String = pick("same", "same")
-fun pick(a: String, b: String): String = b
+fun pick(a: String, b: own String): String = b
 fun main() {}
 )");
     CHECK(shared.program->strings == std::vector<std::string>{"same"});
@@ -627,7 +627,7 @@ fun main(): Int {
     let all = { x: Int ->
         var total = x + Int(n8) + Int(u16) + Int(small.a) + twice(big.c) + pair.0
         if flag && small.b && !pair.1 { total += 1 }
-        let s = text
+        let s = text.clone()
         total
     }
     let nest = { a: Int -> { b: Int -> { -> a * 100 + b * 10 + big.b } } }
@@ -665,7 +665,7 @@ fun main(): Int {
 fun f(): String {
     let a = "first"
     let b = "second"
-    let g = { pick: Bool -> if pick { a } else { b } }
+    let g = { pick: Bool -> if pick { a.clone() } else { b.clone() } }
     return g(false)
 }
 fun main() {}

@@ -155,7 +155,7 @@ class C: Clone {}
 fun clone<T: Clone>(x: T): T = x.clone(x)
 let cloned = clone(C())
 interface Rewrite { fun rewrite(x: Self): Self }
-class D: Rewrite { fun rewrite(x: D): D = x }
+class D: Rewrite { fun rewrite(x: D): D = D() }
 fun rewrite<T: Rewrite>(x: T): T = x.rewrite(x)
 let rewritten = rewrite(D())
 interface Has { type Item; var value: Item }
@@ -239,7 +239,7 @@ interface Premise { type Item; fun read(): Int }
 class Requires<T: Premise> {}
 fun chained<T>(a: Requires<T>, b: Requires<T.Item>, x: T.Item): Int = x.read()
 class Target { type This = Self }
-class Holder { fun pass(x: Target.This): Target.This = x }
+class Holder { fun pass(x: own Target.This): Target.This = x }
 let passed: Target = Holder().pass(Target())
 interface Has { let value: Int }
 fun readHas<T: Has>(x: T): Int = x.value

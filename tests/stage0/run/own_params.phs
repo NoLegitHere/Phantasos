@@ -19,14 +19,14 @@
 // same way as default ones.
 
 struct Label(text: String, width: Int) {
-    fun prefixed(prefix: own String): fun() -> String = { -> prefix }
+    fun prefixed(prefix: own String): fun() -> String = { -> prefix.clone() }
 
     fun wider(extra: borrow Int): Int = width + extra
 }
 
-fun greeter(name: own String): fun() -> String = { -> name }
+fun greeter(name: own String): fun() -> String = { -> name.clone() }
 
-fun keep(label: own Label): fun() -> Label = { -> label }
+fun keep(label: own Label): fun() -> Label = { -> label.clone() }
 
 fun add(a: borrow Int, b: own Int): Int = a + b
 

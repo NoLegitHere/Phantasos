@@ -142,7 +142,7 @@ void overloads_and_literal_ranges() {
     Frontend f;
     f.check(R"(
 fun pick(value: Int): Int = value
-fun pick(value: String): String = value
+fun pick(value: String): String = value.clone()
 let integer = pick(1)
 let string = pick("hello")
 fun width(value: Int8): Int8 = value

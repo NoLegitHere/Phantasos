@@ -226,7 +226,8 @@ let fieldCycle = C().a
     source += ".value\nlet called = node";
     for (int i = 0; i < 10000; ++i) source += ".hop()";
     source += ".value }";
-    deep.check(source, {}, false);
+    // `hop` moves a class out of a borrowed field (3.30), which typing ignores.
+    deep.check(source, {DiagCode::MoveOutOfBorrow}, false);
     CHECK(deep.value("field", BindingKind::Local) == Type::Int && deep.value("called", BindingKind::Local) == Type::Int);
 }
 } // namespace

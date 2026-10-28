@@ -615,6 +615,7 @@ private:
     // An initializer root's value moves into its variable, field or parameter.
     ParamMoves callable(List<Param> params, const Expr* body, const FunItem* fun, const ParamMoves& moved = {},
                         bool initializer = false) {
+        invalid_captures_.clear();
         start(body);
         for (const auto& param : params) {
             params_.emplace(param.name.span.lo, &param);
@@ -648,6 +649,7 @@ private:
             const auto next = closures_.back();
             closures_.pop_back();
             start(next.closure->body);
+            closure_ = next.closure;
             for (const auto& param : next.closure->params) closure_params_.emplace(param.name.span.lo, &param);
             for (const auto& capture : resolution_.captures(next.closure)) captured_.insert(capture.binding.value);
             self_ = next.self;
@@ -666,12 +668,14 @@ private:
     void start(const Expr* body) {
         params_.clear();
         closure_params_.clear();
+        closure_ = nullptr;
         captured_.clear();
         locals_.clear();
         owned_.clear();
         consumed_.clear();
         iteration_moves_.clear();
         reported_moves_.clear();
+        reported_borrows_.clear();
         defers_.clear();
         tracked_ = 0;
         movables_ = 0;
@@ -786,7 +790,12 @@ private:
             work.pop_back();
             if (!expr) continue;
             switch (expr->kind) {
-                case ExprKind::Name: consumed_.insert(expr); break;
+                case ExprKind::Name:
+                    if (!borrowed_move(*expr)) consumed_.insert(expr);
+                    break;
+                case ExprKind::SelfValue: case ExprKind::Member: case ExprKind::TupleField: case ExprKind::Index:
+                    borrowed_move(*expr);
+                    break;
                 case ExprKind::Tuple: for (const Expr* elem : cast<TupleExpr>(expr)->elems) work.push_back(elem); break;
                 case ExprKind::Array: for (const Expr* elem : cast<ArrayExpr>(expr)->elems) work.push_back(elem); break;
                 case ExprKind::Unwrap: work.push_back(cast<UnwrapExpr>(expr)->operand); break;
@@ -815,6 +824,79 @@ private:
                 default: break;
             }
         }
+    }
+
+    // A consumed value that the callable only borrows cannot move (3.30): a
+    // parameter other than `own`, `self`, a field, an element, or a capture
+    // inside a closure body. Values of Copy types are copied instead.
+    bool borrowed_move(const Expr& expr) {
+        // Inside a closure body, `self` is a capture, which E0503 already checks.
+        if (closure_ && self_rooted(expr)) return false;
+        std::string subject;
+        std::string fix = "use '.clone()' to move a copy";
+        if (const auto* name = as<NameExpr>(&expr)) {
+            const auto id = target(*name);
+            const auto spelled = std::string(names_.str(name->name.sym));
+            if (!id.valid()) {
+                if (!implicit_field(*name)) return false;
+                subject = "field '" + spelled + "' of 'self'";
+            } else if (captured_.contains(id.value)) {
+                // A capture that is already an error is not reported again.
+                if (invalid_captures_.contains(id.value)) return true;
+                // A closure can run again, so it keeps what it captured (D3).
+                subject = "captured '" + spelled + "'";
+                fix = "a closure can be called more than once; use '" + spelled + ".clone()' to move a copy";
+            } else {
+                const auto& binding = resolution_.binding(id);
+                if (binding.kind == BindingKind::Field) {
+                    subject = "field '" + spelled + "' of 'self'";
+                } else if (binding.kind == BindingKind::Parameter && !owned_.contains(binding.name.span.lo)) {
+                    subject = "borrowed parameter '" + spelled + "'";
+                    const auto param = params_.find(binding.name.span.lo);
+                    const bool inout = param != params_.end() && param->second->conv == Convention::Inout;
+                    fix = closure_params_.contains(binding.name.span.lo) || inout
+                              ? "use '" + spelled + ".clone()' to move a copy"
+                              : "declare it 'own' to take ownership, or use '" + spelled + ".clone()' to move a copy";
+                } else {
+                    return false;
+                }
+            }
+            if (copyable(types_.binding(id.valid() ? id : implicit_binding(*name)), true)) return false;
+        } else {
+            if (expr.kind == ExprKind::SelfValue) {
+                // Only an instance method borrows its receiver.
+                if (self_.access == Access::Unknown) return false;
+                subject = "'self'";
+            } else if (const auto* member = as<MemberExpr>(&expr)) {
+                const auto* record = types_.member(member);
+                if (!record || record->state != ResolutionState::Resolved || record->candidates.size() != 1 ||
+                    record->type_receiver || resolution_.binding(record->candidates.front()).kind != BindingKind::Field)
+                    return false;
+                // Fields never move out on their own (D2).
+                subject = "field '" + std::string(names_.str(member->name.sym)) + "'";
+            } else {
+                subject = "an element";
+            }
+            if (copyable(types_.expression(&expr), true)) return false;
+        }
+        if (!shown(DiagCode::MoveOutOfBorrow) || reported_borrows_.insert(expr.span.lo)) {
+            auto& d = error(DiagCode::MoveOutOfBorrow, expr.span, "cannot move out of {}", subject);
+            d.notes.push_back({expr.span, fix});
+        }
+        return true;
+    }
+    bool self_rooted(const Expr& expr) const {
+        const Expr* root = unparen(&expr);
+        while (const Expr* base = projected(*root)) root = unparen(base);
+        if (root->kind == ExprKind::SelfValue) return true;
+        const auto* name = as<NameExpr>(root);
+        if (!name) return false;
+        const auto id = target(*name);
+        return id.valid() ? resolution_.binding(id).kind == BindingKind::Field : implicit_field(*name) != nullptr;
+    }
+    BindingId implicit_binding(const NameExpr& name) const {
+        const auto* record = types_.member(&name);
+        return record && record->candidates.size() == 1 ? record->candidates.front() : BindingId{};
     }
 
     // Arguments move into `own` parameters and into the stored fields of a
@@ -867,6 +949,8 @@ private:
             // A promoted constructor parameter is still the parameter wherever it resolves
             // as one: in defaults, field initializers and the primary `init`.
             if (const auto it = params_.find(binding.name.span.lo); it != params_.end()) convention = it->second->conv; else if (!closure_params_.contains(binding.name.span.lo)) continue;
+            if (convention == Convention::Inout || (convention != Convention::Own && !copyable(types_.binding(capture.binding))))
+                invalid_captures_.insert(capture.binding.value);
             if (convention == Convention::Inout) {
                 auto& d = error(DiagCode::InvalidCapture, capture.use,
                                       "a closure cannot capture 'inout' parameter '{}', which is only borrowed for the call", name);
@@ -947,7 +1031,10 @@ private:
     // payload-free enums made of Copy parts. Unknown types do not report.
     // A generic parameter is Copy when the argument it stands for is; outside
     // an instance, such as in a declaration's own `self`, it may not be.
-    bool copyable(ScalarType root) const {
+    // With generic_copy, an unbound generic parameter or associated type counts
+    // as Copy: what it stands for is unknown, so moving it out of a borrow is
+    // not reported.
+    bool copyable(ScalarType root, bool generic_copy = false) const {
         struct Part { ScalarType type; u32 env; };  // env: the instance whose arguments it sees
         std::vector<std::vector<std::pair<usize, Part>>> envs(1);
         std::vector<Part> work{{root, 0}};
@@ -958,13 +1045,18 @@ private:
             const auto type = raw.scalar();
             switch (type.kind) {
                 case ScalarType::String: case ScalarType::Array: case ScalarType::Shared: case ScalarType::Weak:
+                    return false;
                 case ScalarType::Projection:
+                    if (generic_copy) break;
                     return false;
                 case ScalarType::TypeParameter: {
                     const auto declaration = types_.descriptor(type)->declaration.value;
                     const auto& bound = envs[env];
                     const auto it = std::ranges::find(bound, declaration, &std::pair<usize, Part>::first);
-                    if (it == bound.end()) return false;
+                    if (it == bound.end()) {
+                        if (generic_copy) break;
+                        return false;
+                    }
                     work.push_back(it->second);
                     break;
                 }
@@ -1488,6 +1580,9 @@ private:
     FlatMap<const BlockExpr*, Bits> iteration_moves_;  // per loop body, while quiet
     std::vector<Span> move_sites_;   // where each movable binding last moved
     FlatSet<u32> reported_moves_;          // E0504 spans, which cleanups can reach more than once
+    const ClosureExpr* closure_ = nullptr;  // the closure whose body is being checked
+    FlatSet<usize> invalid_captures_;      // bindings a closure of this callable cannot capture (E0503)
+    FlatSet<u32> reported_borrows_;        // E0505 spans, which loops and cleanups can reach more than once
     std::vector<const DeferStmt*> defers_;  // cleanups of the enclosing scopes, innermost last
     std::vector<usize> scopes_;             // defers_ size where each enclosing block starts
     std::vector<usize> loops_;              // defers_ size where each enclosing loop body starts

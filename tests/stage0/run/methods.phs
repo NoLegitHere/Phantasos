@@ -28,15 +28,15 @@ struct Counter(var count: Int8, var step: Int) {
 }
 
 struct Big(var a: Int, var b: Int, var c: Int, var inner: Counter, var name: String) {
-    fun label(): String = name
+    fun label(): String = name.clone()
     fun sum(extra: Int): Int = a + b + c + inner.next() + extra
     mut fun grow(): Big {
         a += 1
         inner.bump(by: 2)
         self.inner.step *= 10
-        return self
+        return self.clone()
     }
-    fun copyWith(n: String): Big = Big(a: a, b: b, c: c, inner: inner, name: n)
+    fun copyWith(n: String): Big = Big(a: a, b: b, c: c, inner: inner, name: n.clone())
     fun fact(n: Int): Int {
         if n <= 1 { return 1 }
         return n * fact(n - 1)

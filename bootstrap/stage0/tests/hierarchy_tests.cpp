@@ -236,7 +236,7 @@ class Dependent<T>: Generic<T> { override fun f(): Int = 1 }
 interface Associated { type Element; fun f(v: Element): Element }
 abstract class Pending: Associated {}
 interface WithSelf { fun identity(v: Self): Self }
-class Identity: WithSelf { fun identity(v: Identity): Identity = v }
+class Identity: WithSelf { fun identity(v: Identity): Identity = Identity() }
 let pendingCall = Identity().identity(Identity())
 struct Copying: Copy {}
 interface Callback { fun use(cb: fun() -> Int throws(Self)): Int }

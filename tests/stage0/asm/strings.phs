@@ -17,7 +17,7 @@
 // both, calls pass it in two registers (or on the stack when only one
 // register is left) and results come back in rax:rdx.
 
-fun last(a: Int, b: Int, c: Int, d: Int, e: Int, text: String, f: Int): String = text
+fun last(a: Int, b: Int, c: Int, d: Int, e: Int, text: own String, f: Int): String = text
 
 fun main(): Int {
     let text = last(1, 2, 3, 4, 5, "late", 6)

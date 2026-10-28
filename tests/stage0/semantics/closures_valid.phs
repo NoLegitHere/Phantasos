@@ -20,7 +20,7 @@ fun apply(f: fun(Int) -> Int, x: Int): Int = f(x)
 
 fun makeAdder(n: Int): fun(Int) -> Int = { x -> x + n }
 
-fun makeGreeting(name: own String): fun() -> String = { -> name }
+fun makeGreeting(name: own String): fun() -> String = { -> name.clone() }
 
 struct Handler(run: fun(Int) -> Int)
 

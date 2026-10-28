@@ -26,10 +26,10 @@ struct Operator(symbol: String, apply: fun(Int, Int) -> Int)
 struct Table(plus: Operator, minus: Operator, times: Operator, over: Operator) {
     // The operator for code 0 to 3.
     fun pick(code: Int): Operator {
-        if code == 0 { return plus }
-        if code == 1 { return minus }
-        if code == 2 { return times }
-        return over
+        if code == 0 { return plus.clone() }
+        if code == 1 { return minus.clone() }
+        if code == 2 { return times.clone() }
+        return over.clone()
     }
 }
 

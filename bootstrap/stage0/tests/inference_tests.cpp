@@ -247,7 +247,7 @@ interface Refined: Read {}
 class Good: Refined, Flag { fun read() = 1; fun flag(): Bool = true }
 fun bounded<T: Read & Flag>(value: T): T = value
 fun constrained<T>(value: T): T where T: Read & Flag = value
-fun closed(value: Good): Good where Good: Read = value
+fun closed(value: own Good): Good where Good: Read = value
 class Box<T: Read>(let value: T) where T: Flag { fun take<U: Read>(value: U): U = value }
 class Closed where Good: Read { fun read(): Int = 1 }
 )", calls = R"(

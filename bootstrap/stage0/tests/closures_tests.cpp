@@ -184,7 +184,7 @@ void errors() {
          {DiagCode::ClosureInference}},
         {"fun main(n: inout Int) { let f = { -> n } }", {DiagCode::InvalidCapture}},
         {"fun main(s: String) { let f = { -> s } }", {DiagCode::InvalidCapture}},
-        {"fun main(s: own String, t: (Int, Bool)) { let f = { -> s }\nlet g = { -> t } }", {}},
+        {"fun main(s: own String, t: (Int, Bool)) { let f = { -> s.clone() }\nlet g = { -> t } }", {}},
         {"fun main() { var n = 0\nlet f = { -> n = 1 } }", {DiagCode::ImmutableAssignment}},
         {"fun main() { let n: Int\nlet f = { -> n }\nn = 1 }", {DiagCode::UninitializedUse}},
         {"fun main() { let f = { x: Int -> x = 1 } }", {DiagCode::ImmutableAssignment}},

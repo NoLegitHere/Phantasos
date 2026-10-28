@@ -362,7 +362,7 @@ fun main() {
 )", "0\n7\n-7\n10\n-1000000\n9223372036854775807\n-9223372036854775808\n0\n18446744073709551615\ntrue\nfalse\n");
     // Arguments evaluate before the write, left to right with other calls.
     prints(R"(
-fun shout(text: String): String {
+fun shout(text: own String): String {
     print("evaluating")
     return text
 }

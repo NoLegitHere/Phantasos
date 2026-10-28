@@ -1314,8 +1314,26 @@ them moves may have moved for the rest. Assigning a `var`, or running
 a declaration again, gives the binding a new value. Each moved binding is
 reported once until it moves again, and unreachable code reports nothing.
 
-Moving out of a borrowed parameter, `self`, a field, an element or a capture
-is not checked yet. Nothing in stage0's generated code owns memory, so a
+Only a callable's locals and `own` parameters can move. Consuming any other
+non-`Copy` value is `E0505`, "cannot move out of", with a note suggesting
+`own` or `.clone()` (3.31):
+
+- a parameter that is not `own`: borrowed by default, `borrow`, `inout`, or
+  a closure's parameter;
+- `self` in an instance method, and a field of `self`, named bare or through
+  `self`;
+- a field of any value, even an owned local: a struct moves whole or not at
+  all, so `let n = p.name` is an error and `p.name.clone()` copies it;
+- a tuple element (`t.1`) or an array element (`a[i]`);
+- inside a closure body, a value it captured, since the closure can be
+  called again; `{ -> s.clone() }` returns a copy instead.
+
+Unwrapping (`p!`) and the other forwarding forms above move their operand, so
+`let s = p!` on a borrowed `p` is the same error. A capture that is already
+`E0503`, such as `self` or a borrowed parameter, is not reported again inside
+the closure body. A type made from generic parameters or associated types
+counts as `Copy` here, because what it stands for is not known yet. Each
+place is reported once. Nothing in stage0's generated code owns memory, so a
 move copies the value's words and nothing is destroyed.
 
 ## 3.31 Cloning [Core]

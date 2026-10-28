@@ -592,6 +592,7 @@ private:
             case ExprKind::Bool:
             case ExprKind::None:
             case ExprKind::Unit:
+            case ExprKind::Closure:  // rejected by validation for now
             case ExprKind::Error: break;
         }
     }

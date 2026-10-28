@@ -69,7 +69,7 @@ struct TypeExpr {
 enum class ExprKind : u8 {
     Int, Float, Char, String, Interp, Bool, None, Unit, SelfValue, Super, SelfType,
     Name, ImplicitMember, Paren, Array, Tuple, Unary, Binary, Cast, Call, Member, OptMember,
-    TupleField, Index, Unwrap, GenericInst, If, Match, Block, Unsafe, Error
+    TupleField, Index, Unwrap, GenericInst, If, Match, Block, Unsafe, Closure, Error
 };
 
 enum class UnOp : u8 { Neg, Not, BitNot, Try, TryOpt, Await, Share };
@@ -187,6 +187,17 @@ struct MatchExpr : ExprOf<ExprKind::Match> {
     List<MatchArm> arms;
 };
 struct UnsafeExpr : ExprOf<ExprKind::Unsafe> { BlockExpr* block = nullptr; };
+// `{ a, b: Int -> body }`: parameters with optional types, then statements
+// whose last expression is the result. `{ -> body }` takes no parameters.
+struct ClosureParam {
+    Name name;
+    TypeExpr* type;  // may be null
+    Span span;
+};
+struct ClosureExpr : ExprOf<ExprKind::Closure> {
+    List<ClosureParam> params;
+    BlockExpr* body = nullptr;  // spans from '->' to the closing brace
+};
 struct ErrorExpr : ExprOf<ExprKind::Error> {};
 
 // ---------------------------------------------------------------- patterns

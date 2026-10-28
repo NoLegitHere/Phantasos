@@ -404,6 +404,10 @@ private:
             case ExprKind::TupleField: push(cast<TupleFieldExpr>(&expr)->base, context); break;
             case ExprKind::GenericInst: push(cast<GenericInstExpr>(&expr)->base, context); break;
             case ExprKind::Unsafe: push(cast<UnsafeExpr>(&expr)->block, context); break;
+            case ExprKind::Closure:
+                // Closures parse, but their checking comes with their semantics.
+                diag_.error(DiagCode::UncheckedClosure, expr.span, "closures are not checked yet");
+                break;
             case ExprKind::Int:
             case ExprKind::Float:
             case ExprKind::Char:

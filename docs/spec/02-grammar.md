@@ -156,6 +156,10 @@ Primary       = Literal | InterpString
               | '(' Expr ',' Expr { ',' Expr } [ ',' ] ')' (* tuple *)
               | '[' [ Expr { ',' Expr } [ ',' ] ] ']'
               | IfExpr | MatchExpr | 'unsafe' Block
+              | Closure
+Closure       = '{' [ ClosureParam { ',' ClosureParam } [ ',' ] ] '->'
+                [ Terms ] [ Stmt { Terms Stmt } [ Terms ] ] '}'
+ClosureParam  = Ident [ ':' Type ]
 InterpString  = StringHead Expr { StringMiddle Expr } StringTail
 IfExpr        = 'if' Cond Block [ 'else' ( IfExpr | Block ) ]
 MatchExpr     = 'match' Expr '{' { Arm ( Terms | ',' ) } '}'
@@ -165,6 +169,17 @@ One expression in parentheses is just that expression; a comma makes a tuple.
 A tuple literal has two or more elements and no labels, so `(1,)` and
 `(x: 1, y: 2)` are errors (`E0113`). The `IntLit` after `.` is a tuple index
 (1.5).
+
+A closure is written in braces: its parameters, `->`, then statements whose
+last expression is its result, as in `{ x -> x * 2 }` or
+`{ a: Int, b: Int -> a + b }`. A parameter's type may be left out when the
+context gives it. A closure without parameters is written `{ -> 42 }`,
+because braces in an expression always start a closure: `{ foo() }` and
+`{ x }` are errors (`E0114`), and the parser skips the whole closure. A
+function-typed parameter whose type is followed by `->` keeps that arrow as
+its result type, so `{ f: fun(Int) -> Int -> f(1) }` declares one parameter
+of type `fun(Int) -> Int`. Stage0 parses closures, but `check` does not check
+them yet (`E0208`).
 
 ## 2.5 Patterns
 ```
@@ -191,8 +206,10 @@ leading dot (`.Empty`) or qualified (`ParseError.Empty`).
    Otherwise `<` is a comparison. This is unambiguous because comparison is
    non-associative.
 2. **Brace blocks after conditions.** Phantasos has no struct literals and
-   no trailing closures in Core, so the `{` after `if`/`while`/`for`/`match`
-   heads always starts a block.
+   no trailing closures in Core, so the `{` after a complete
+   `if`/`while`/`for`/`match` head always starts a block, and so does `{`
+   right after a match arm's `->`. Anywhere else an operand is expected, `{`
+   starts a closure, so a closure as a match arm body needs parentheses.
 3. **Leading-dot chains** are disabled at the top level of match arm bodies
    (see 1.3).
 4. **Type arguments after `is`/`as`** are also speculative: `x as Int < y`

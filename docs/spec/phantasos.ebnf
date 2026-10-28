@@ -221,7 +221,11 @@ Primary = Literal | InterpString
         | "(", [ Expr ], ")"
         | "(", Expr, ",", Expr, { ",", Expr }, [ "," ], ")"
         | "[", [ Expr, { ",", Expr }, [ "," ] ], "]"
-        | IfExpr | MatchExpr | "unsafe", Block ;
+        | IfExpr | MatchExpr | "unsafe", Block
+        | Closure ;
+Closure = "{", [ ClosureParam, { ",", ClosureParam }, [ "," ] ], "->",
+          [ Terms ], [ Stmt, { Terms, Stmt }, [ Terms ] ], "}" ;
+ClosureParam = Ident, [ ":", Type ] ;
 Literal = IntLit | FloatLit | CharLit | StringLit | "true" | "false" | "none" ;
 InterpString = StringHead, Expr, { StringMiddle, Expr }, StringTail ;
 IfExpr = "if", Cond, Block, [ "else", ( IfExpr | Block ) ] ;
@@ -231,8 +235,10 @@ Arm = Pattern, [ "if", Expr ], "->", ( Block | Expr ) ;
 (* Empty parentheses form the Unit value. One parenthesized expression is
    grouping; a comma makes a tuple of two or more unlabeled elements. The
    IntLit after "." is a decimal tuple index (chapter 1). Braces after
-   control-flow heads start blocks: Core has neither struct literals nor
-   trailing closures. *)
+   complete control-flow heads and after a match arm's "->" start blocks:
+   Core has neither struct literals nor trailing closures. Braces anywhere
+   else an operand is expected start a Closure, which needs "->" even
+   without parameters. *)
 
 (* Patterns. A bare identifier always binds; enum cases use a leading dot,
    a qualified name, or a constructor argument list. *)

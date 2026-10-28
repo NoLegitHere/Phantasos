@@ -57,6 +57,7 @@ enum class DiagCode : u16 {
     DuplicateModifier = 111,
     NestingLimit = 112,
     InvalidTuple = 113,
+    InvalidClosure = 114,
     DuplicateBinding = 200,
     InvalidDeclarationContext = 201,
     InvalidTypeAlias = 202,
@@ -65,6 +66,7 @@ enum class DiagCode : u16 {
     AwaitOutsideAsync = 205,
     PatternBindingMismatch = 206,
     InvalidParameterBinding = 207,
+    UncheckedClosure = 208,
     UnknownValue = 300,
     UnknownType = 301,
     ConflictingDeclaration = 302,
@@ -126,6 +128,7 @@ constexpr std::string_view diag_code(DiagCode code) {
         case DiagCode::DuplicateModifier: return "E0111";
         case DiagCode::NestingLimit: return "E0112";
         case DiagCode::InvalidTuple: return "E0113";
+        case DiagCode::InvalidClosure: return "E0114";
         case DiagCode::DuplicateBinding: return "E0200";
         case DiagCode::InvalidDeclarationContext: return "E0201";
         case DiagCode::InvalidTypeAlias: return "E0202";
@@ -134,6 +137,7 @@ constexpr std::string_view diag_code(DiagCode code) {
         case DiagCode::AwaitOutsideAsync: return "E0205";
         case DiagCode::PatternBindingMismatch: return "E0206";
         case DiagCode::InvalidParameterBinding: return "E0207";
+        case DiagCode::UncheckedClosure: return "E0208";
         case DiagCode::UnknownValue: return "E0300";
         case DiagCode::UnknownType: return "E0301";
         case DiagCode::ConflictingDeclaration: return "E0302";

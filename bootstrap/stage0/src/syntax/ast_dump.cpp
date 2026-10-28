@@ -810,6 +810,16 @@ private:
                 line(d, "Unsafe");
                 expr(d + 1, cast<UnsafeExpr>(e)->block);
                 return;
+            case ExprKind::Closure: {
+                const auto* c = cast<ClosureExpr>(e);
+                line(d, "Closure");
+                for (const ClosureParam& p : c->params) {
+                    if (p.type) line(d + 1, "Param {}: {}", name(p.name), type(p.type));
+                    else line(d + 1, "Param {}", name(p.name));
+                }
+                expr(d + 1, c->body);
+                return;
+            }
             case ExprKind::Error: line(d, "<error>"); return;
         }
     }

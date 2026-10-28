@@ -846,6 +846,12 @@ private:
         Span start = cur().span;
         BlockExpr* b = mk<BlockExpr>(start);
         if (!expect(Tok::LBrace)) return b;
+        parse_stmts(b, start);
+        return b;
+    }
+
+    // Statements up to and including the closing brace of an opened block.
+    void parse_stmts(BlockExpr* b, Span start) {
         const ScopedValue leading_dot(no_leading_dot_, false);
         std::vector<Stmt*> stmts;
         skip_terms();
@@ -858,7 +864,46 @@ private:
         expect(Tok::RBrace);
         b->stmts = arena_.copy(stmts);
         b->span = from(start);
-        return b;
+    }
+
+    // `{ params -> statements }`. Without '->' the braces hold no valid
+    // closure; they are skipped as a whole.
+    Expr* parse_closure() {
+        const ScopedValue depth(depth_, depth_ + 1);
+        Span start = cur().span;
+        if (!check_depth()) return mk<ErrorExpr>(start);
+        ClosureExpr* c = mk<ClosureExpr>(start);
+        advance();  // '{'
+        skip_newlines();
+        std::vector<ClosureParam> params;
+        const usize errs = diag_.error_count();
+        while (at(Tok::Ident)) {
+            ClosureParam param{Name{cur().symbol(), cur().span}, nullptr, cur().span};
+            advance();
+            if (eat(Tok::Colon)) param.type = parse_type();
+            param.span = from(param.span);
+            params.push_back(param);
+            if (diag_.error_count() > errs || !eat(Tok::Comma)) break;
+            skip_newlines();
+        }
+        if (diag_.error_count() > errs || !at(Tok::Arrow)) {
+            if (diag_.error_count() == errs)
+                error(DiagCode::InvalidClosure, cur().span,
+                      "expected '->' after closure parameters, found {}; braces in an expression start a closure, "
+                      "and one without parameters is written '{{ -> body }}'",
+                      describe(cur()));
+            skip_to_close(Tok::LBrace, Tok::RBrace);
+            ErrorExpr* e = mk<ErrorExpr>(start);
+            e->span = from(start);
+            return e;
+        }
+        const Span arrow = cur().span;
+        advance();
+        c->params = arena_.copy(params);
+        c->body = mk<BlockExpr>(arrow);
+        parse_stmts(c->body, arrow);
+        c->span = from(start);
+        return c;
     }
 
     Cond parse_cond() {
@@ -1495,6 +1540,7 @@ private:
                 a->span = from(start);
                 return a;
             }
+            case Tok::LBrace: return parse_closure();
             case Tok::KwIf: return parse_if();
             case Tok::KwMatch: return parse_match();
             case Tok::KwUnsafe: {

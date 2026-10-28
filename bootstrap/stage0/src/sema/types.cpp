@@ -355,7 +355,7 @@ public:
         // Free the working tables before building the result, which is when
         // memory peaks on large files.
         release(annotations_, speculative_annotations_, environments_, environment_ids_, node_declarations_, dependencies_,
-                declarations_, declaration_next_, direct_callees_, function_names_, reference_contexts_, call_contexts_,
+                declarations_, declaration_next_, direct_callees_, generic_bases_, function_names_, reference_contexts_, call_contexts_,
                 entities_, large_scope_names_, ancestry_cache_, class_intervals_, visit_marks_, ancestry_work_, ancestry_visited_, inherited_members_, walk_,
                 requirements_, expectations_, closure_returns_);
         ScalarTypes result;
@@ -367,6 +367,7 @@ public:
         result.signatures_ = std::move(signatures_);
         result.calls_ = std::move(calls_);
         result.functions_ = std::move(functions_);
+        result.function_arguments_ = std::move(function_arguments_);
         result.conversions_ = std::move(conversions_);
         result.members_ = std::move(members_);
         result.hierarchies_ = std::move(hierarchies_);
@@ -2473,7 +2474,7 @@ private:
                 if (ref && ref->state == ResolutionState::Resolved) {
                     const auto candidates = resolution_.candidates(ref->target);
                     // A function name outside a direct call is a function value (3.15).
-                    if (!direct_callees_.contains(&expr) && !candidates.empty() &&
+                    if (!direct_callees_.contains(&expr) && !generic_bases_.contains(&expr) && !candidates.empty() &&
                         std::ranges::all_of(candidates, [&](BindingId id) { return function_value_candidate(id); })) {
                         function_names_.emplace(&expr, std::vector<BindingId>(candidates.begin(), candidates.end()));
                         // An overload set has no edges: the expected type that rules
@@ -2577,7 +2578,22 @@ private:
             }
             case ExprKind::Cast: child(index, cast<CastExpr>(&expr)->operand, returns); break;
             case ExprKind::Unwrap: child(index, cast<UnwrapExpr>(&expr)->operand, returns); break;
-            case ExprKind::GenericInst: child(index, cast<GenericInstExpr>(&expr)->base, returns); break;
+            case ExprKind::GenericInst: {
+                // A generic function named with type arguments outside a call
+                // is a function value, whose type needs the function's result.
+                const auto& generic = *cast<GenericInstExpr>(&expr);
+                const auto* base = unparen(generic.base);
+                generic_bases_.insert(base);
+                child(index, generic.base, returns);
+                const auto* name = as<NameExpr>(base);
+                const auto* ref = name ? resolution_.reference(name->name.span) : nullptr;
+                if (!direct_callees_.contains(&expr) && ref && ref->state == ResolutionState::Resolved) {
+                    const auto candidates = resolution_.candidates(ref->target);
+                    if (candidates.size() == 1 && function_value_candidate(candidates.front()) && generic_function(candidates.front()))
+                        depend(index, function_nodes_.at(candidates.front().value));
+                }
+                break;
+            }
             case ExprKind::Unsafe: child(index, cast<UnsafeExpr>(&expr)->block, returns, discarded); break;
             default: break;
         }
@@ -2602,17 +2618,81 @@ private:
         }
         return {};
     }
-    // Top-level, non-generic functions whose parameters take no convention
-    // have a plain function type, so their names can be used as values.
+    // Top-level functions whose parameters take no convention have a plain
+    // function type, so their names can be used as values. A generic one
+    // takes its type arguments from the expected function type, or from
+    // explicit ones (3.15).
     bool function_value_candidate(BindingId id) const {
         const auto& b = resolution_.binding(id);
         if (b.kind != BindingKind::Function || resolution_.scopes()[b.scope.value].kind != ScopeKind::File) return false;
         const auto& sig = cast<FunItem>(b.item)->sig;
         // Constraints are checked per call, so constrained functions wait too.
-        if (signatures_.at(id.value).generic || !sig.where.empty()) return false;
+        if (!sig.where.empty()) return false;
+        if (signatures_.at(id.value).generic &&
+            (sig.throws || std::ranges::any_of(sig.generics, [](const GenericParam& param) { return !param.bounds.empty(); })))
+            return false;
         return std::ranges::all_of(sig.params, [](const Param& param) {
             return param.conv == Convention::Default || param.conv == Convention::Borrow;
         });
+    }
+    bool generic_function(BindingId id) const { return signatures_.at(id.value).generic; }
+    // The type arguments that give generic function `id` exactly the function
+    // type `wanted`, matching its declared parameter and result types part by
+    // part; nothing when they do not match or its result is still unknown.
+    std::optional<std::vector<Type>> generic_match(BindingId id, const TypeDescriptor& wanted) const {
+        const auto& signature = signatures_.at(id.value);
+        const auto result = nodes_[function_nodes_.at(id.value)].value.type;
+        if (!known(result) || wanted.throws || signature.parameters.size() != wanted.parameters.size()) return std::nullopt;
+        const auto generics = generic_parameters(id);
+        std::vector<Type> arguments(generics.size());
+        std::vector<std::pair<Type, Type>> work{{result, wanted.result}};
+        for (usize p = 0; p < wanted.parameters.size(); ++p) work.push_back({signature.parameters[p], wanted.parameters[p]});
+        while (!work.empty()) {
+            const auto [pattern, actual] = work.back();
+            work.pop_back();
+            if (pattern == actual) continue;
+            if (!known(pattern) || !known(actual)) return std::nullopt;
+            if (pattern.kind == Type::TypeParameter) {
+                const auto declaration = types_.descriptor(pattern)->declaration;
+                const auto position = std::ranges::find_if(generics, [&](const GenericParam& param) {
+                    return generic_bindings_.at(param.name.span.lo) == declaration;
+                });
+                if (position == generics.end() || actual.optional_depth < pattern.optional_depth) return std::nullopt;
+                auto inferred = actual;
+                inferred.optional_depth -= pattern.optional_depth;
+                auto& argument = arguments[static_cast<usize>(position - generics.begin())];
+                if (known(argument) && argument != inferred) return std::nullopt;
+                argument = inferred;
+                continue;
+            }
+            if (pattern.kind != actual.kind || pattern.optional_depth != actual.optional_depth) return std::nullopt;
+            const auto* x = types_.descriptor(pattern);
+            const auto* y = types_.descriptor(actual);
+            if (!x || !y || x->declaration != y->declaration || x->throws != y->throws ||
+                x->parameters.size() != y->parameters.size() || x->arguments.size() != y->arguments.size())
+                return std::nullopt;
+            work.push_back({x->element, y->element});
+            work.push_back({x->result, y->result});
+            work.push_back({x->error, y->error});
+            for (usize i = 0; i < x->parameters.size(); ++i) work.push_back({x->parameters[i], y->parameters[i]});
+            for (usize i = 0; i < x->arguments.size(); ++i) work.push_back({x->arguments[i], y->arguments[i]});
+        }
+        if (!std::ranges::all_of(arguments, known)) return std::nullopt;
+        return arguments;
+    }
+    // A generic function's type for explicit type arguments, or nothing while
+    // they or its result are not settled.
+    std::optional<Type> generic_function_value(BindingId id, std::vector<Type> arguments, Span span) {
+        const auto* fun = cast<FunItem>(resolution_.binding(id).item);
+        const auto result = nodes_[function_nodes_.at(id.value)].value.type;
+        if (!known(result)) return std::nullopt;
+        const auto applied = application(id, std::move(arguments), 0, span);
+        if (applied.state != ExpansionState::Resolved) return std::nullopt;
+        TypeDescriptor descriptor{.kind = Type::Function};
+        for (const auto& param : fun->sig.params) descriptor.parameters.push_back(annotation(param.type, applied.context));
+        descriptor.result = fun->sig.ret ? annotation(fun->sig.ret, applied.context) : substitute_type(result, applied.context);
+        if (!known(descriptor.result) || !std::ranges::all_of(descriptor.parameters, known)) return std::nullopt;
+        return types_.intern(std::move(descriptor));
     }
     // The function type of a function value, or nothing while part of its
     // signature is still unknown or in error.
@@ -2663,8 +2743,16 @@ private:
         const auto* names = overloads(index);
         if (!names || expected.kind != Type::Function || !known(expected)) return std::nullopt;
         std::vector<BindingId> found;
+        std::vector<Type> arguments;
         bool pending = false;
         for (BindingId id : *names) {
+            if (generic_function(id)) {
+                if (auto matched = generic_match(id, *types_.descriptor(expected.scalar()))) {
+                    found.push_back(id);
+                    arguments = std::move(*matched);
+                } else pending |= !known(nodes_[function_nodes_.at(id.value)].value.type);
+                continue;
+            }
             const auto type = function_value(id);
             if (type == expected.scalar()) found.push_back(id);
             else pending |= type == Type::Deferred && may_have_type(id, *types_.descriptor(expected));
@@ -2689,6 +2777,7 @@ private:
             return Value{Type::Error};
         }
         functions_[name] = found.front();
+        if (generic_function(found.front())) function_arguments_[name] = std::move(arguments);
         for (usize i = index;;) {
             nodes_[i].value = {expected.scalar()};
             const auto* paren = as<ParenExpr>(nodes_[i].expr);
@@ -2705,6 +2794,13 @@ private:
     void expect(const Expr* value, const TypeExpr* annotated) {
         if (annotated && value && unparen(value)->kind == ExprKind::Closure) expect(value, {.type = annotation(annotated)});
     }
+    // Whether an argument can infer a generic callee's type arguments for a
+    // closure among the other arguments: anything but a closure with
+    // unannotated parameters, which waits for the callee's types itself.
+    static bool informs(const Expr* argument) {
+        const auto* closure = as<ClosureExpr>(unparen(argument));
+        return !closure || std::ranges::all_of(closure->params, [](const ClosureParam& param) { return param.type != nullptr; });
+    }
     // Makes `node` wait for everything a closure's expected type is read from.
     void expectation_sources(usize node, const ClosureExpr* closure) {
         for (;;) {
@@ -2712,7 +2808,15 @@ private:
             if (it == expectations_.end()) return;
             const auto& expectation = it->second;
             if (expectation.kind == Expectation::Target) depend(node, expression(expectation.expr));
-            else if (expectation.kind == Expectation::Argument) depend(node, expression(cast<CallExpr>(expectation.expr)->callee));
+            else if (expectation.kind == Expectation::Argument) {
+                const auto& call = *cast<CallExpr>(expectation.expr);
+                depend(node, expression(call.callee));
+                // A generic callee's type arguments come from its other
+                // arguments, except closures that wait for their own
+                // parameter types.
+                for (const auto& arg : call.args)
+                    if (unparen(arg.value) != closure && informs(arg.value)) depend(node, expression(arg.value));
+            }
             if (expectation.kind != Expectation::Result) return;
             closure = expectation.closure;
         }
@@ -2722,7 +2826,13 @@ private:
     struct Expected {
         enum State : u8 { Known, Pending, Missing, Overloaded, Generic, Unmatched } state = Missing;
         Type type;
+        // A function type whose result names type parameters of a generic
+        // callee that only the closure's own result can infer.
+        bool open_result = false;
     };
+    // A generic callee, what the other arguments of a call infer for it, and
+    // the parameter a closure argument meets.
+    struct GenericArgument { BindingId id; usize context; Inference inference; const Param* param; };
     Expected expected_type(const ClosureExpr* closure) {
         const auto it = expectations_.find(closure);
         if (it == expectations_.end()) return {};
@@ -2741,7 +2851,7 @@ private:
                 // Closures nest no deeper than the parser allows.
                 const auto outer = expected_type(expectation.closure);
                 if (outer.state != Expected::Known || outer.type == Type::Error) return outer;
-                if (outer.type.kind != Type::Function) return {};
+                if (outer.type.kind != Type::Function || outer.open_result) return {};
                 return {Expected::Known, types_.descriptor(outer.type)->result};
             }
         }
@@ -2769,6 +2879,8 @@ private:
         if (ids.empty()) return {unavailable(callee) ? Expected::Pending : Expected::Missing};
         std::optional<Type> found;
         bool generic = false;
+        usize viable = 0;
+        std::optional<GenericArgument> inferred;  // of the only viable candidate, when it is generic
         // Like call selection, reading a candidate's parameter commits none of its type uses.
         const ScopedValue probing(probing_constraints_, true);
         for (BindingId id : ids) {
@@ -2789,15 +2901,77 @@ private:
             // Only candidates that accept the call's shape take part.
             std::vector<usize> mapping;
             if (!argument_mapping(call, params, mapping)) continue;
-            if (symbolic) { generic = true; continue; }
+            if (symbolic) {
+                // The other arguments may infer the type arguments the
+                // closure's parameter needs.
+                if (++viable == 1)
+                    inferred = GenericArgument{id, context, infer_arguments(id, params, call, mapping, context), &params[mapping[argument]]};
+                generic = true;
+                continue;
+            }
+            ++viable;
             const Type type = annotation(params[mapping[argument]].type, context);
             if (found && *found != type) return {Expected::Overloaded};
             found = type;
         }
-        if (generic) return {Expected::Generic};
+        if (generic && viable == 1 && inferred->inference.state != Relation::No) {
+            if (const auto expected = inferred_parameter(*inferred, call.span)) return *expected;
+        }
+        if (generic) {
+            // Arguments still being inferred may settle the type arguments.
+            const bool waiting = viable == 1 && std::ranges::any_of(call.args, [&](const Arg& arg) {
+                return &arg != &call.args[argument] && informs(arg.value) && value(arg.value).type != Type::Error &&
+                       !known(value(arg.value).type);
+            });
+            return {waiting ? Expected::Pending : Expected::Generic};
+        }
         if (!found) return {Expected::Unmatched};  // no candidate fits; the call reports it
         if (*found == Type::Error || known(*found)) return {Expected::Known, *found};
         return {Expected::Pending};
+    }
+
+    // The parameter type a closure meets in a generic call, with the type
+    // arguments the other arguments inferred. Type parameters still open may
+    // appear only in the result of the function type it meets, which the
+    // closure's body then infers.
+    std::optional<Expected> inferred_parameter(const GenericArgument& candidate, Span span) {
+        const auto generics = generic_parameters(candidate.id);
+        std::vector<Type> arguments = candidate.inference.arguments;
+        std::unordered_set<usize> open;
+        for (usize p = 0; p < generics.size(); ++p) {
+            if (known(arguments[p])) continue;
+            const auto binding = generic_bindings_.at(generics[p].name.span.lo);
+            open.insert(binding.value);
+            arguments[p] = types_.intern({.kind = Type::TypeParameter, .declaration = binding});
+        }
+        const auto applied = application(candidate.id, std::move(arguments), candidate.context, span);
+        if (applied.state != ExpansionState::Resolved) return std::nullopt;
+        const Type type = annotation(candidate.param->type, applied.context);
+        if (type == Type::Error) return Expected{Expected::Known, type};
+        if (!known(type)) return std::nullopt;
+        const auto mentions = [&](Type root) {
+            std::vector<Type> work{root};
+            while (!work.empty()) {
+                const Type t = work.back();
+                work.pop_back();
+                const auto* descriptor = types_.descriptor(t);
+                if (!descriptor) continue;
+                if (t.kind == Type::TypeParameter) {
+                    if (open.contains(descriptor->declaration.value)) return true;
+                    continue;
+                }
+                work.insert(work.end(), descriptor->parameters.begin(), descriptor->parameters.end());
+                work.insert(work.end(), descriptor->arguments.begin(), descriptor->arguments.end());
+                for (const Type inner : {descriptor->element, descriptor->result, descriptor->error})
+                    if (known(inner)) work.push_back(inner);
+            }
+            return false;
+        };
+        if (open.empty() || !mentions(type)) return Expected{Expected::Known, type};
+        if (type.kind != Type::Function || type.optional_depth) return std::nullopt;
+        const auto& function = *types_.descriptor(type);
+        if (function.throws || std::ranges::any_of(function.parameters, mentions)) return std::nullopt;
+        return Expected{Expected::Known, type, true};
     }
 
     // The function type a closure meets, or nothing when its expected type
@@ -2835,7 +3009,7 @@ private:
             !function && missing != closure.params.end()) {
             if (expected.state == Expected::Pending || expected.state == Expected::Unmatched) return {};
             const auto why = expected.state == Expected::Overloaded ? "overloads of the function it is passed to disagree on its type"
-                           : expected.state == Expected::Generic ? "it is passed to a generic function, whose parameter types are not inferred yet"
+                           : expected.state == Expected::Generic ? "the other arguments of the generic function it is passed to do not settle its type"
                            : "the closure is not used where a function type is expected";
             diag_.error(DiagCode::ClosureInference, missing->name.span, "cannot infer the type of closure parameter '{}': {}; give it a type annotation",
                         param_name(*missing), why);
@@ -2856,7 +3030,7 @@ private:
             descriptor.parameters.push_back(type);
         }
         if (failed) return {Type::Error};
-        if (function) {
+        if (function && !expected.open_result) {
             descriptor.result = function->result;
             return {types_.intern(std::move(descriptor))};
         }
@@ -3329,6 +3503,15 @@ private:
                 bool found = false, pending = false;
                 const auto& wanted = *types_.descriptor(target);
                 for (BindingId id : *names) {
+                    if (generic_function(id)) {
+                        const auto node = function_nodes_.at(id.value);
+                        if (known(nodes_[node].value.type)) found |= generic_match(id, wanted).has_value();
+                        else {
+                            pending = true;
+                            if (nodes_[node].state == 0) pending_dependencies_.push_back(node);
+                        }
+                        continue;
+                    }
                     const auto descriptor = function_descriptor(id);
                     found |= descriptor && *descriptor == wanted;
                     if (!descriptor && may_have_type(id, wanted)) {
@@ -3889,7 +4072,9 @@ private:
             for (const auto& param : fun->sig.params) {
                 const auto expected = annotation(param.type, context);
                 match.types.push_back(pending && owned_formal(expected, id) ? Type{} : expected);
-                match.deferred |= signature.generic && param.conv != Convention::Default;
+                // `own` and `borrow` arguments check like default ones; only
+                // `inout` waits for generic callees.
+                match.deferred |= signature.generic && param.conv == Convention::Inout;
             }
             if (interface_owner(id) && !method_inputs_known(id) && !signature.generic) match.deferred = true;
             if (context) match.deferred |= !defaults_known(fun->sig.params, match.parameters, match.types);
@@ -4174,7 +4359,8 @@ private:
                     }
                 } else if (const auto names = function_names_.find(expr); names != function_names_.end()) {
                     // An overload set waits for an expected function type to pick one.
-                    if (names->second.size() == 1) {
+                    // A generic function waits for its type arguments.
+                    if (names->second.size() == 1 && !generic_function(names->second.front())) {
                         node.value = {function_value(names->second.front())};
                         if (known(node.value.type)) functions_[expr] = names->second.front();
                     }
@@ -4208,6 +4394,20 @@ private:
                         if (known(result)) entities_[expr] = type_entity(result);
                         break;
                     }
+                }
+                if (ids.size() == 1 && resolution_.binding(ids.front()).kind == BindingKind::Function && !direct_callees_.contains(expr) &&
+                    function_value_candidate(ids.front()) && generic_function(ids.front())) {
+                    if (cast<FunItem>(resolution_.binding(ids.front()).item)->sig.generics.size() != args.size()) {
+                        diag_.error(DiagCode::GenericArguments, expr->span, "type argument count does not match the generic function");
+                        node.value = {Type::Error};
+                        break;
+                    }
+                    if (const auto type = generic_function_value(ids.front(), args, expr->span)) {
+                        node.value = {*type};
+                        functions_[expr] = ids.front();
+                        function_arguments_[expr] = std::move(args);
+                    }
+                    break;
                 }
                 if ((!ids.empty() && resolution_.binding(ids.front()).kind != BindingKind::Function) || known(value(generic->base).type)) {
                     diag_.error(DiagCode::GenericArguments, expr->span, "type arguments require a generic declaration");
@@ -4393,6 +4593,8 @@ private:
     NodeMap<const Expr*, bool> direct_callees_;  // a set
     std::unordered_map<const Expr*, std::vector<BindingId>> function_names_;  // candidates of names used as function values
     std::unordered_map<const Expr*, BindingId> functions_;
+    std::unordered_map<const Expr*, std::vector<Type>> function_arguments_;  // of generic function values
+    NodeMap<const Expr*, bool> generic_bases_;  // names given type arguments; a set
     std::unordered_map<usize, Type> function_errors_;  // the error type of each throwing function
     struct PendingSelection { usize index; Type expected; Span span; };
     std::vector<PendingSelection> pending_selections_;  // overload selections waiting on inferred results

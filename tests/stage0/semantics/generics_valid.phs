@@ -36,7 +36,7 @@ type Names = Namespace
 let qualified: Names.Item<Int> = Namespace.Item<Int>(1)
 class Types<T> { type Value = T }
 let converted: Int8 = Types<Int8>.Value(1)
-extern "C" { fun pendingIdentity<T>(marker: borrow Bool): Int }
+extern "C" { fun pendingIdentity<T>(marker: inout Bool): Int }
 fun pendingDefault<T>(value: Int = pendingIdentity<T>(true)): Int = value
 let omitted: Bool = pendingDefault<Int>()
 class PendingDefault<T>(value: Int = pendingIdentity<T>(true)) {}

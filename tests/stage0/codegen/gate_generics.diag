@@ -16,6 +16,9 @@ gate_generics.phs:46:5: error[E0600]: stage0 code generation does not support ty
 gate_generics.phs:47:5: error[E0600]: stage0 code generation does not support type arguments of type 'Never' yet
    47 |     identity<Never>(stop())
       |     ^^^^^^^^^^^^^^^
-gate_generics.phs:51:30: error[E0600]: stage0 code generation needs a known type here; this type is not inferred yet
-   51 |     let f: fun(Int) -> Int = identity
-      |                              ^^^^^^^^
+gate_generics.phs:53:9: error[E0600]: stage0 code generation does not support values of type 'fun(Float64) -> Float64' yet
+   53 |     let h: fun(Float64) -> Float64 = identity
+      |         ^
+gate_generics.phs:54:9: error[E0600]: stage0 code generation does not support values of type 'fun(Unit) -> Unit' yet
+   54 |     let u = identity<Unit>
+      |         ^

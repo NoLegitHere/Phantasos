@@ -208,6 +208,15 @@ fun main(): Int = pair(identity(1), identity<Bool>(true)).0 + count("s", 2)
     wide += "fun f4<T>() {}\nfun main() {\n    f0<Int>()\n}\n";
     Frontend broad;
     broad.gate(wide, {DiagCode::InstanceLimit});
+    // Generic functions as values need instances too, also through values.
+    Frontend values;
+    values.gate("fun identity<T>(x: T): T = x\nfun apply<T>(f: fun(T) -> T, x: T): T = f(x)\n"
+                "fun main(): Int = apply(identity, 1) + identity<Int>(1)\n");
+    Frontend grown;
+    grown.gate("fun grow<T>(x: T, n: Int): Int {\n    if n == 0 { return 0 }\n"
+               "    let next: fun((T, T), Int) -> Int = grow\n    return next((x, x), n - 1)\n}\n"
+               "fun main(): Int = grow(1, 3)\n",
+               {DiagCode::InstanceLimit});
     // A generic function's body is still checked once, against the subset.
     Frontend body;
     body.gate("fun opt<T>(x: T): Int {\n    let y: Int? = 1\n    return 0\n}\nfun main() {}\n",

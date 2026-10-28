@@ -575,10 +575,18 @@ inferred. `E0400` reports an expected function type that no overload has, and a
 single function whose type differs from the expected one. Function values drop
 labels, so overloads that differ only in labels can share a function type; the
 expected type cannot choose between them, and `E0412` reports the ambiguity.
-Without an expected type, an overloaded name stays deferred. Generic functions,
-methods, functions with a `where` clause and functions with an `inout` or `own`
-parameter do not have plain function values yet; their names stay deferred
-too.
+Without an expected type, an overloaded name stays deferred.
+
+A generic function without bounds, `where` clause or `throws` is a value too.
+Its type arguments come from explicit arguments, as in `identity<Int>`, or
+from the expected function type, which must match its parameter and result
+types with the type parameters replaced, as in
+`let f: fun(Int) -> Int = identity` or `apply(identity, 1)` for
+`apply<T>(f: fun(T) -> T, x: T)`. The wrong number of explicit arguments is
+`E0470`; a generic function whose type cannot match the expected one is
+`E0400`. Without either, its name stays deferred. Methods, functions with a
+`where` clause or bounds and functions with an `inout` or `own` parameter do
+not have plain function values yet; their names stay deferred too.
 
 Call records distinguish direct functions, numeric intrinsics, nominal primary
 constructors and typed indirect functions. The latter two finish without adding
@@ -1020,7 +1028,8 @@ the subset, so that nothing half-checked reaches code generation:
   (3.27), integer conversions, primary constructors of supported structs,
   reads of their fields, calls to their methods with an explicit or implicit
   receiver, `self` and bare field names inside methods, tuple literals and
-  `.0` element reads, top-level functions named as values (3.14), closures
+  `.0` element reads, top-level functions named as values (3.14), generic
+  ones included, with inferred or explicit type arguments, closures
   (3.29) and calls of function values, unary `-`, `!` and `~`, arithmetic including
   the wrapping forms, `&`, `|`, `^`, comparisons, `&&` and `||`. Used `if` and block
   results are allowed where their type is known (3.24).
@@ -1030,7 +1039,7 @@ Everything else reports `E0600`. That includes shifts, `for`, `defer`,
 floating-point values, arrays, comparisons of tuples,
 optionals, classes, enums, interfaces, members other than struct fields and
 method calls, method values, globals, operators on function values,
-and values of generic or `where`-constrained functions. A closure's body is
+and values of `where`-constrained functions. A closure's body is
 checked like a function body. A `mut fun` call
 needs a receiver rooted in a local, `self` or a field of `self`. A local whose
 type is still deferred also reports `E0600` and needs an annotation. One
@@ -1043,12 +1052,14 @@ generation then makes one instance of such a function or method for each
 distinct list of type arguments that a call needs, starting from the calls
 in non-generic functions and in non-generic methods of non-generic structs
 and following the calls inside each instance with its arguments substituted.
+A generic function used as a value needs an instance the same way, with the
+type arguments the checker found for it (3.14).
 A method of a generic struct takes its receiver's type arguments, followed
 by its own when it is generic. A generic function or method that no such
 chain reaches has no instance, and a generic struct has a layout for each of
 its instance types that the program uses. Polymorphic recursion, where an instance calls
 the same function with bigger type arguments, would need instances without
-end, so stage0 reports `E0602` at the call where the instances nest more
+end, so stage0 reports `E0602` at the call or value where the instances nest more
 than 64 levels deep or where the program would need more than 10,000 of
 them. Calls whose type arguments are not inferred yet, which includes calls
 to functions with bounds or `where` clauses, report `E0600`.
@@ -1095,7 +1106,9 @@ of its own, named after the function, with its type arguments in angle
 brackets, so `identity` called with an `Int` is `identity<Int>` and `pair`
 called with `Int` and `(Bool, String)` is `pair<Int, (Bool, String)>`. An
 overload's suffix comes before them, as in `pick.1<Int>`, and a closure in an
-instance is named after the instance, as in `keep<Bool>$closure0`. A method
+instance is named after the instance, as in `keep<Bool>$closure0`. A
+generic function used as a value refers to the instance for its type
+arguments, the one a call with them uses. A method
 instance is named after its receiver's type, such as `Box<Int>.get`, with a
 generic method's own type arguments after its name, as in
 `Box<Int>.with<Bool>`. A type
@@ -1223,7 +1236,12 @@ have. The expected type comes from:
   of function type, a non-generic function or method, or the primary
   constructor of a non-generic type, named directly or through a type alias.
   When the callee is an overload set, the overloads that accept the call's
-  shape must agree on that parameter's type, and none of them may be generic;
+  shape must agree on that parameter's type, and none of them may be generic.
+  A single generic function takes the type arguments that the call's other
+  arguments infer, apart from closures with unannotated parameters; a type
+  parameter that only the result of the expected function type names is
+  then inferred from the closure's own result, as in `map(3, { x -> x > 1 })`
+  for `map<T, U>(x: T, f: fun(T) -> U): U`;
 - the result type of an enclosing closure, for a closure that is that
   closure's final expression or `return` value.
 
@@ -1249,9 +1267,10 @@ produces a value has result `Never`.
 Errors:
 
 - A parameter without an annotation and without an expected function type
-  is `E0480`. That includes a closure passed to a generic function or to
-  overloads that disagree on the parameter's type, and one used in a tuple
-  or array literal or another context not listed above.
+  is `E0480`. That includes a closure passed to a generic function whose
+  other arguments do not settle the parameter's type, or to overloads that
+  disagree on it, and one used in a tuple or array literal or another
+  context not listed above.
 - An expected type that is not a function type, or a function type with a
   different number of parameters, is `E0400`. So is an annotated parameter
   whose type differs from the expected one, a body or `return` value of the

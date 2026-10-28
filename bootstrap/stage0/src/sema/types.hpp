@@ -240,6 +240,11 @@ public:
         const auto it = functions_.find(expr);
         return it == functions_.end() ? BindingId{} : it->second;
     }
+    // The type arguments of a generic function named as a value.
+    std::span<const ScalarType> function_arguments(const ast::Expr* expr) const {
+        const auto it = function_arguments_.find(expr);
+        return it == function_arguments_.end() ? std::span<const ScalarType>{} : it->second;
+    }
     const CheckedConversion* conversion(const ast::CallExpr* expr) const {
         const auto it = conversions_.find(expr);
         return it == conversions_.end() ? nullptr : &it->second;
@@ -277,6 +282,7 @@ private:
     NodeMap<const ast::CallExpr*, CheckedCall> calls_;
     std::unordered_map<const ast::CallExpr*, CheckedConversion> conversions_;
     std::unordered_map<const ast::Expr*, BindingId> functions_;
+    std::unordered_map<const ast::Expr*, std::vector<ScalarType>> function_arguments_;
     NodeMap<const ast::Expr*, CheckedMember> members_;
     IdMap<CheckedHierarchy> hierarchies_;
     AliasExpansion aliases_;

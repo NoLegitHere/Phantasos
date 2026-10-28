@@ -730,17 +730,20 @@ private:
                     tasks.pop_back();
                     values.push_back({});
                     break;
-                case ExprKind::Name: {
+                case ExprKind::Name: case ExprKind::GenericInst: {
                     tasks.pop_back();
-                    const auto& name = *cast<NameExpr>(expr);
                     if (const BindingId function = types_.function(expr); function.valid()) {
-                        // A top-level function named as a value.
+                        // A top-level function named as a value, an instance
+                        // for a generic one.
                         const auto& item = *cast<FunItem>(resolution_.binding(function).item);
                         const Reg dst = reg(lower_type(scalar(expr)));
-                        emit({.op = Op::FnRef, .dst = dst, .callee = functions_.at(&item)});
+                        const u32 callee = generic(item) ? instance(item, {}, types_.function_arguments(expr))
+                                                         : functions_.at(&item);
+                        emit({.op = Op::FnRef, .dst = dst, .callee = callee});
                         values.push_back(dst);
                         break;
                     }
+                    const auto& name = *cast<NameExpr>(expr);
                     if (const auto index = implicit_field(name)) {
                         // A bare field name inside a method reads the receiver's field.
                         const Reg dst = reg(lower_type(scalar(expr)));

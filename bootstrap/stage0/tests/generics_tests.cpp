@@ -183,7 +183,7 @@ let bounded = bound<Int>(1)
 fun inferred<T>(x: T): T = x
 let inference = inferred(1)
 let noneArgument = inferred<Int?>(none)
-extern "C" { fun deferredValue<T>(marker: borrow Bool): T }
+extern "C" { fun deferredValue<T>(marker: inout Bool): T }
 fun dependentDefault<T>(x: T = deferredValue<T>(true)): T = x
 let defaulted = dependentDefault<Int>()
 class Owner<T> { class Nested {} }
@@ -200,7 +200,7 @@ let dependent = inherited.value
 
 void omitted_default_facts() {
     const std::string declarations = R"(
-fun identity<T>(x: borrow Bool): Int = 1
+fun identity<T>(x: inout Bool): Int = 1
 fun pending<T>(x: Int = identity<T>(true)): Int = x
 class Pending<T>(x: Int = identity<T>(true)) {}
 class Owner<T> { fun read(x: Int = identity<T>(true)): Int = x }
@@ -316,6 +316,41 @@ void iterative_alias_graphs() {
     CHECK(shared.value("value").kind == Type::Function);
     CHECK(shared.name(shared.value("value")).ends_with("..."));
 }
+void generic_function_values() {
+    // A generic function as a value takes its type arguments from the
+    // expected function type or from explicit arguments, and a closure passed
+    // to a generic function takes its parameter types from the call's other
+    // arguments; its result may infer the rest.
+    Frontend f;
+    f.check(R"(
+fun identity<T>(x: T): T = x
+fun apply<T>(f: fun(T) -> T, x: T): T = f(x)
+fun map<T, U>(x: T, f: fun(T) -> U): U = f(x)
+fun compose<A, B, C>(f: fun(A) -> B, g: fun(B) -> C): fun(A) -> C = { a -> g(f(a)) }
+let expected: fun(Int8) -> Int8 = identity
+let explicit = identity<Bool>
+let passed = apply(identity, 1)
+let closure = apply({ s -> s + 1 }, 2)
+let mapped = map(3, { x -> x > 1 })
+let composed = compose({ a: Int -> a > 1 }, { b -> !b })
+)");
+    CHECK(f.name(f.value("expected")) == "fun(Int8) -> Int8" && f.name(f.value("explicit")) == "fun(Bool) -> Bool");
+    CHECK(f.value("passed") == Type::Int && f.value("closure") == Type::Int && f.value("mapped") == Type::Bool);
+    CHECK(f.name(f.value("composed")) == "fun(Int) -> Bool");
+    const auto* init = ast::cast<ast::VarItem>(f.result.resolution->binding(f.id("explicit")).item)->init;
+    const auto arguments = f.result.scalar_types->function_arguments(init);
+    CHECK(arguments.size() == 1 && arguments.front() == Type::Bool);
+    for (const auto& [source, code] : std::vector<std::pair<std::string_view, DiagCode>>{
+        {"fun f<T>(x: T): T = x\nlet g = f<Int, Bool>", DiagCode::GenericArguments},
+        {"fun f<T>(x: T): T = x\nlet g: fun(Int) -> Bool = f", DiagCode::ScalarTypeMismatch},
+        {"fun f<T>(g: fun(T) -> T): Int = 0\nlet x = f({ s -> s })", DiagCode::ClosureInference},
+    }) { Frontend bad; bad.check(source, {code}); }
+    // Closures that would infer each other's parameter types infer neither.
+    Frontend both;
+    both.check("fun f<A, B>(g: fun(A) -> B, h: fun(B) -> A): Int = 0\nlet x = f({ s -> s }, { t -> t })",
+               {DiagCode::ClosureInference, DiagCode::ClosureInference});
+}
+
 } // namespace
 
 int main() {
@@ -327,5 +362,6 @@ int main() {
     explicitly_applied_functions();
     rejected_applications();
     pending_contracts();
+    generic_function_values();
     iterative_alias_graphs();
 }

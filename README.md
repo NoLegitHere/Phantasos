@@ -213,18 +213,20 @@ python tools/license-check/license_check.py                            # license
 ```
 
 To time and profile `check` on large class hierarchies (deep chains, wide
-fan-out, trees and forests), build with `-DCMAKE_BUILD_TYPE=RelWithDebInfo
+fan-out, trees and forests) or many generic declarations, build with `-DCMAKE_BUILD_TYPE=RelWithDebInfo
 "-DCMAKE_CXX_FLAGS=-fno-omit-frame-pointer"` and run:
 
 ```sh
 python tests/stress/profile_hierarchy.py --stage0 build/prof/phantasos-stage0 --classes 10000,50000,200000
 python tests/stress/profile_hierarchy.py --stage0 build/prof/phantasos-stage0 --shapes chain --perf  # hottest functions (Linux perf)
 python tests/stress/profile_hierarchy.py --stage0 build/prof/phantasos-stage0 --classes 10000 --massif # peak heap by source line (valgrind)
+python tests/stress/profile_hierarchy.py --stage0 build/prof/phantasos-stage0 --shapes generic --classes 1000,8000 --max-growth 1.5
 python tests/stress/gen_hierarchy.py --shape tree --classes 200000 -o big.phs                        # just the input file
 ```
 
 CI runs it at 5000 classes with `--max-kib-per-class`, which fails if peak
-memory per class grows past the budget.
+memory per class grows past the budget, and on the generic shape at 1000 and
+8000 units with `--max-growth`, which fails if time grows faster than linearly.
 
 The build separates the `phantasos-stage0` CLI from the `phantasos_frontend`
 static library (CMake alias `Phantasos::Frontend`). Link the library to reuse

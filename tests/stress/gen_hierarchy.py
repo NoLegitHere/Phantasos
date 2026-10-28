@@ -20,12 +20,18 @@ Shapes:
   wide   every class derives from C0
   tree   k-ary tree: Ci derives from C((i-1)/k)
   forest many independent chains of --depth classes
+  generic one generic unit per --classes: a bounded generic function, a
+         function with a where clause and a bounded generic class, used once
 
 Every class overrides one method and adds one field, so member lookup,
 override matching and witness checks all walk the hierarchy. --uses adds
 top-level expressions that call methods on, read fields of, and upcast
 instances of evenly spaced classes. --interfaces makes the root conform to
 that many interfaces, so each class has inherited conformances to check.
+
+The generic shape has no hierarchy. It stresses generic bounds, constraint
+checks and argument inference instead, which the class shapes never reach.
+Its bounds are the --interfaces interfaces (at least one).
 
 Usage: python tests/stress/gen_hierarchy.py --shape chain --classes 200000 -o out.phs
 """
@@ -50,7 +56,27 @@ def parent(shape: str, i: int, fanout: int, depth: int) -> int | None:
     raise ValueError(shape)
 
 
+def generate_generic(units: int, interfaces: int, out) -> None:
+    w = out.write
+    interfaces = max(1, interfaces)
+    for k in range(interfaces):
+        w(f"interface I{k} {{ fun i{k}(): Int }}\n")
+    bound = " & ".join(f"I{k}" for k in range(interfaces))
+    w("class V: " + ", ".join(f"I{k}" for k in range(interfaces)) + " {\n")
+    for k in range(interfaces):
+        w(f"    fun i{k}(): Int = {k}\n")
+    w("}\n")
+    for i in range(units):
+        w(f"fun pick{i}<T: {bound}>(first: T, second: T): T = first\n"
+          f"fun keep{i}<T>(value: T): T where T: {bound} = value\n"
+          f"class Box{i}<T: {bound}>(let value: T) {{ fun get(): T = value }}\n"
+          f"let b{i}: Box{i}<V> = Box{i}(keep{i}(pick{i}(V(), V())))\n")
+
+
 def generate(shape: str, classes: int, fanout: int, depth: int, uses: int, interfaces: int, out) -> None:
+    if shape == "generic":
+        generate_generic(classes, interfaces, out)
+        return
     w = out.write
     for k in range(interfaces):
         w(f"interface I{k} {{ fun i{k}(): Int }}\n")
@@ -81,7 +107,7 @@ def generate(shape: str, classes: int, fanout: int, depth: int, uses: int, inter
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--shape", choices=["chain", "wide", "tree", "forest"], default="chain")
+    ap.add_argument("--shape", choices=["chain", "wide", "tree", "forest", "generic"], default="chain")
     ap.add_argument("--classes", type=int, default=200_000)
     ap.add_argument("--fanout", type=int, default=4, help="children per class for --shape tree")
     ap.add_argument("--depth", type=int, default=100, help="chain length for --shape forest")

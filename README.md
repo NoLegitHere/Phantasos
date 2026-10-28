@@ -48,6 +48,7 @@ Windows x64 and Linux x86_64:
 - [x] Structs and tuples: struct values, field assignment, methods including `mut fun`, and tuples
 - [x] Function values: named functions passed, returned, stored and called indirectly
 - [x] Closures: brace closures that capture by value, with a stage0 heap for their environments
+- [x] Generics: monomorphized generic functions, structs, methods and function values, with interfaces as bounds through static dispatch
 - [ ] Windows PE/COFF output, a general linker and runtime, and code generation for the rest of the language
 - [ ] Workspace-aware build driver
 
@@ -99,7 +100,8 @@ package loading is unavailable.
 `gate <file.phs>` runs `check`, then reports every construct that stage0's
 first native backend cannot compile yet. That backend covers Bool, integer and
 String values, plain struct values with field reads, field assignment and
-methods, tuples, functions, function values, closures, locals, loops, calls, integer
+methods, tuples, functions, function values, closures, generics with
+interface bounds, locals, loops, calls, integer
 arithmetic and
 `print`, and needs a `fun main()` that returns `Int` or nothing. See
 [spec 3.25](docs/spec/03-types-and-semantics.md) for the full subset.
@@ -207,6 +209,42 @@ fun main(): Int {
     var spare = moved.clone()
     spare.add(moved.count)
     return spare.count                    // 20
+}
+```
+
+Generic functions, structs and methods get one copy of their code for each
+list of type arguments the program uses. A call on a value whose type is
+bounded by an interface goes straight to the conforming struct's method, or
+to the interface's default method compiled for that struct
+([`run/leaderboard.phs`](tests/stage0/run/leaderboard.phs),
+[`run/pipeline.phs`](tests/stage0/run/pipeline.phs),
+[`run/interfaces.phs`](tests/stage0/run/interfaces.phs)):
+
+```phantasos
+interface Ranked {
+    fun score(): Int
+    fun beats(other: Self): Bool = score() > other.score()
+}
+
+struct Player(points: Int): Ranked {
+    fun score(): Int = points
+}
+
+struct Pair<A, B>(first: A, second: B) {
+    fun swap(): Pair<B, A> = Pair(first: second, second: first)
+}
+
+fun best<T: Ranked>(a: T, b: T): T {
+    if b.beats(a) { return b }
+    return a
+}
+
+fun twice<T>(f: fun(T) -> T): fun(T) -> T = { x -> f(f(x)) }
+
+fun main(): Int {
+    let winner = best(Player(points: 7), Player(points: 9))
+    let p = Pair(first: true, second: winner.score()).swap()
+    return twice({ x: Int -> x + 1 })(p.first)  // 11
 }
 ```
 

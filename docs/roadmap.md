@@ -104,13 +104,13 @@ foundation. Complete.
   - [x] Moving out of borrowed parameters, `self`, fields and captures (E0505).
   - [x] Exclusive `inout` arguments (E0506).
   - [x] Move samples and run tests.
-- [ ] **Generics codegen (M6).** Monomorphized code for generic functions,
+- [x] **Generics codegen (M6).** Monomorphized code for generic functions,
   structs and methods, with interfaces as bounds through static dispatch.
   - [x] Generic functions, with a limit on instances (E0602).
   - [x] Generic structs and their methods.
   - [x] Values of generic functions, and generic closures.
   - [x] Interfaces as bounds, through witnesses.
-  - [ ] Generics samples and run tests.
+  - [x] Generics samples and run tests.
 - [ ] Generic base substitution and built-in traits. Instantiate
   generic base/interface graphs, derive `Copy`/`Sendable`/`Error`, and complete
   generic method contracts, associated defaults and receiver-dependent contexts.

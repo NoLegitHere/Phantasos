@@ -31,7 +31,7 @@ struct Frontend {
     FrontendSession session;
     CheckResult result{};
 
-    void check(std::string_view source, std::initializer_list<DiagCode> expected = {}, bool dump = true) {
+    void check(std::string_view source, const std::vector<DiagCode>& expected = {}, bool dump = true) {
         const auto id = session.sources().add("flow.phs", source);
         CHECK(id);
         const auto* syntax = session.parse(*id);
@@ -571,6 +571,47 @@ void long_trees() {
 }
 }  // namespace
 
+void moves() {
+    constexpr std::string_view prelude = "fun take(s: own String) {}\nfun look(s: String) {}\nstruct Box(s: String, n: Int)\n";
+    const auto M = DiagCode::UseAfterMove;
+    for (const auto& [source, expected] : std::vector<std::pair<std::string_view, std::vector<DiagCode>>>{
+        // Copy values never move; reads borrow.
+        {"fun f() { let n = 1\nlet m = n\nlet p = (n, true)\nlet q = p\nlet r = p\nlet g = look\nlet h = g\nlet i = g }", {}},
+        {"fun f() { let a = \"a\"\nlook(a)\nlook(a)\nprint(a)\nlet n = Box(a, 1).n }", {}},
+        // Moves through results of blocks, `match`, `??`, `!`, tuples and constructors.
+        {"fun f(c: Int) { let a = \"a\"\nlet b = match c { 0 -> a, _ -> \"z\" }\nlook(a) }", {M}},
+        {"fun f(o: String?) { let a: String? = \"a\"\nlet b = a ?? \"z\"\nlook(a!) }", {M}},
+        {"fun f() { let a: String? = \"a\"\nlet b = a!\nlet c = a }", {M}},
+        {"fun f() { let a = \"a\"\nlet b = Box(s: a, n: 1)\nlet c = Box(a, 2) }", {M}},
+        {"fun f() { let a = \"a\"\nlet t = (1, a)\nlet u = (a, 2) }", {M}},
+        {"fun f(): String { let a = \"a\"\nlook(a)\nreturn a }", {}},
+        {"fun f(): String { let a = \"a\"\ntake(a)\nreturn a }", {M}},
+        {"fun f(c: Bool, a: own String): String = if c { a } else { take(a)\n\"b\" }", {}},
+        {"fun f(a: own String): Box = Box(a, if a == \"x\" { 1 } else { 2 })", {M}},
+        {"fun f(): String { let a = \"a\"\nlet b = a\nreturn a }", {M}},
+        // Arguments move only into `own` parameters.
+        {"fun g(a: own String, b: String) {}\nfun f() { let a = \"a\"\ng(\"x\", a)\ng(a, a) }", {M}},
+        {"fun f(s: own String) { let t = s\ntake(s) }", {M}},
+        {"fun f(s: own String) { let g = { -> look(s) }\nlook(s) }", {M}},
+        // Paths, loops and reassignment.
+        {"fun f(c: Bool) { var a = \"a\"\nif c { take(a)\na = \"b\" }\nlook(a) }", {}},
+        {"fun f(c: Bool) { let a = \"a\"\nif c { take(a)\nreturn }\nlook(a) }", {}},
+        {"fun f(c: Bool) { let a = \"a\"\nwhile c { while c { take(a) } } }", {M}},
+        {"fun f(c: Bool) { let a = \"a\"\nfor i in 0..<3 { let b = \"b\"\ntake(b) } }", {}},
+        {"fun f(c: Bool) { let a = \"a\"\nloop { if c { take(a)\nbreak } } }", {}},
+        {"fun f(c: Bool) { let a = \"a\"\nloop { take(a)\nif c { break } }\n}", {M}},
+        {"fun f(c: Bool) { let a = \"a\"\nwhile c { let f = { -> look(a) } } }", {M}},
+        // A moved value is reported once until it moves again.
+        {"fun f() { let a = \"a\"\ntake(a)\nlook(a)\nlook(a)\ntake(a)\nlook(a) }", {M, M}},
+        // Unreachable code reports nothing.
+        {"fun f() { let a = \"a\"\ntake(a)\nreturn\nlook(a) }", {}},
+    }) {
+        Frontend f;
+        const std::string program = std::string(prelude) + std::string(source);
+        f.check(program, expected, false);
+    }
+}
+
 int main() {
     accepted_paths();
     missing_returns();
@@ -581,4 +622,5 @@ int main() {
     gated_by_type_errors();
     caught_errors_guards_and_conditions();
     long_trees();
+    moves();
 }

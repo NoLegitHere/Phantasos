@@ -98,6 +98,7 @@ enum class DiagCode : u16 {
     UninitializedUse = 501,
     ImmutableAssignment = 502,
     InvalidCapture = 503,
+    UseAfterMove = 504,
     UnsupportedCodegen = 600,
     InvalidEntryPoint = 601,
 };
@@ -170,6 +171,7 @@ constexpr std::string_view diag_code(DiagCode code) {
         case DiagCode::UninitializedUse: return "E0501";
         case DiagCode::ImmutableAssignment: return "E0502";
         case DiagCode::InvalidCapture: return "E0503";
+        case DiagCode::UseAfterMove: return "E0504";
         case DiagCode::UnsupportedCodegen: return "E0600";
         case DiagCode::InvalidEntryPoint: return "E0601";
     }
@@ -207,6 +209,7 @@ public:
         return diags_.emplace_back(Severity::Warning, code, span, std::format(fmt, std::forward<Args>(args)...));
     }
 
+    const SourceManager& sources() const { return sm_; }
     usize error_count() const { return errors_; }
     usize error_count(FileId file) const {
         const auto it = errors_by_file_.find(file.value);

@@ -85,7 +85,8 @@ There are **no implicit numeric conversions**. Widening is written
 - **Ownership.**
   - Every value has exactly one owner.
   - Assigning a non-`Copy` value, or passing it to an `own` parameter,
-    **moves** it. Using a moved-from binding is a compile-time error.
+    **moves** it. Using a moved-from binding is a compile-time error
+    (3.30).
   - Class instances created with `ClassName(...)` are uniquely owned.
 - **Borrowing.**
   - Parameters are `borrow` by default: read-only access for the duration of
@@ -1268,8 +1269,41 @@ generic instance's fields are checked with its arguments in place, so
 `Box<Int>` can be `Copy` while `Box<String>` is not.
 `String`, arrays, `shared` and `weak` handles, classes, actors, generic type
 parameters and enums with payloads are not. Locals and `own` parameters of
-other types are moved into the closure; moves are checked with ownership.
+other types are moved into the closure (3.30).
 
 Closures cannot be generic, and are compared like other function values:
 not at all yet. Stage0 compiles closures (3.25, 3.26): their environments
 are allocated when they are created and never freed.
+
+## 3.30 Moves [Core]
+
+A value of a type that is not `Copy` moves when it is consumed, and its old
+binding cannot be used again until it is given a new value (3.4). Stage0
+decides `Copy` structurally (3.29), so values of unknown types never move.
+
+An expression is consumed when it is:
+
+- the initializer of a `let` or `var`, or the value of a plain assignment;
+- the value of a `return`, or the expression body of a function with a
+  result;
+- an argument for an `own` parameter, or for a stored field of a primary
+  constructor;
+- an element of a tuple or array literal, or a value captured by a closure.
+
+Consuming an `if`, `match` or `unsafe` block consumes the result of each
+branch, and consuming `a ?? b`, `a!`, `shared a` or `a as T` consumes its
+operands. Every other read, such as an operand of an operator, a receiver or
+an argument for a borrowed parameter, only borrows the value.
+
+Moves are tracked for the callable's locals and its `own` parameters. Using
+one after it moved, including moving it again, is `E0504`: "was moved" when
+it moved on every path that reaches the use, and "may have been moved" when
+it moved on only some of them. A value that moves in a loop body has moved
+when the next iteration starts. Arguments run left to right, so
+`Box(a, a == "x")` reads `a` after moving it. Assigning a `var`, or running
+a declaration again, gives the binding a new value. Each moved binding is
+reported once until it moves again, and unreachable code reports nothing.
+
+Moving out of a borrowed parameter, `self`, a field, an element or a capture
+is not checked yet. Nothing in stage0's generated code owns memory, so a
+move copies the value's words and nothing is destroyed.

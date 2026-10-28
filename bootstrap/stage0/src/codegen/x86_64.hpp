@@ -37,14 +37,16 @@
 // back before the callee returns. A function value travels like a two-word
 // struct of code and environment; a call through it passes the environment
 // first after ret* and calls the code through r11. A function used as a
-// value has a thunk that drops the environment and calls it.
+// value has a thunk that drops the environment and calls it. A closure's code
+// is its function, which takes the environment as its first parameter; its
+// environment is allocated from the runtime when it captures anything.
 //
 // A failed check calls the runtime's trap entry with a Trap code in edi; the
 // entry does not return.
 
 namespace phs::x86_64 {
 
-enum class Trap : u32 { Overflow = 1, DivideByZero = 2, WriteFailed = 3 };
+enum class Trap : u32 { Overflow = 1, DivideByZero = 2, WriteFailed = 3, OutOfMemory = 4 };
 
 inline constexpr std::string_view kTrapSymbol = "__phantasos_trap";
 inline constexpr std::string_view kEntrySymbol = "_start";
@@ -57,6 +59,9 @@ inline constexpr std::string_view kPrintString = "_P$print_string";
 inline constexpr std::string_view kPrintInt = "_P$print_int";
 inline constexpr std::string_view kPrintUInt = "_P$print_uint";
 inline constexpr std::string_view kPrintBool = "_P$print_bool";
+// The runtime's allocator for closure environments: takes a size in rdi and
+// returns a 16-byte aligned, zeroed block in rax. It never frees.
+inline constexpr std::string_view kAlloc = "_P$alloc";
 
 // "_P" followed by the length-prefixed MIR name (abi.md A.7, without a package).
 [[nodiscard]] std::string symbol_name(const mir::Function& function);
@@ -66,7 +71,8 @@ inline constexpr std::string_view kPrintBool = "_P$print_bool";
 
 // Symbols 0..n-1 are the program's functions in order; the trap entry follows,
 // then the thunks of functions used as values, in function order, and, as they
-// are first used, print entries and string literals (local .rodata symbols).
+// are first used, print entries, the allocator and string literals (local
+// .rodata symbols).
 // When listing is non-null it receives a readable assembly listing.
 [[nodiscard]] obj::Object emit(const mir::Program& program, std::string* listing = nullptr);
 
@@ -75,8 +81,10 @@ inline constexpr std::string_view kPrintBool = "_P$print_bool";
 // writes "panic: <reason>" to stderr and exits with kPanicExitStatus. The
 // print entries format integers in decimal and Bool as true or false, and
 // write with retries after partial writes and EINTR; any other failure panics
-// with WriteFailed. It uses raw system calls only; main stays an undefined
-// symbol for the linker.
+// with WriteFailed. When the program creates closures that capture, it also
+// has the allocator: a bump allocator over chunks of at least 1 MiB from mmap,
+// whose state lives in .bss, panicking with OutOfMemory when mmap fails. It
+// uses raw system calls only; main stays an undefined symbol for the linker.
 [[nodiscard]] obj::Object runtime(const mir::Program& program, std::string* listing = nullptr);
 
 }  // namespace phs::x86_64

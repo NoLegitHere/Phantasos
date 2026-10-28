@@ -1,3 +1,9 @@
-gate_closures.phs:19:13: error[E0600]: stage0 code generation does not support closures yet
-   19 |     let k = { -> 42 }
-      |             ^^^^^^^^^
+gate_closures.phs:21:31: error[E0600]: stage0 code generation does not support shifts yet
+   21 |     let shifted = { x: Int -> x << 1 }
+      |                               ^^^^^^
+gate_closures.phs:22:9: error[E0600]: stage0 code generation does not support values of type 'fun() -> Float64' yet
+   22 |     let half = { -> 1.5 }
+      |         ^^^^
+gate_closures.phs:23:9: error[E0600]: stage0 code generation does not support values of type 'fun(Unit) -> Int' yet
+   23 |     let unit = { u: Unit -> 1 }
+      |         ^^^^

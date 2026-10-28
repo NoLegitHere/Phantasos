@@ -31,6 +31,7 @@
 
 #if defined(__linux__) && defined(__x86_64__)
 #include <fcntl.h>
+#include <sys/resource.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #define PHS_EXEC 1
@@ -122,11 +123,12 @@ void headers() {
 
     // .symtab names every defined symbol, locals first.
     const u64 shoff = read(image, 40, 8);
-    CHECK(read(image, 60, 2) == 6 && read(image, 62, 2) == 5);
-    const u64 rodata_section = shoff + 2 * 64, symtab = shoff + 3 * 64, strtab = shoff + 4 * 64;
+    CHECK(read(image, 60, 2) == 7 && read(image, 62, 2) == 6);
+    const u64 rodata_section = shoff + 2 * 64, bss = shoff + 3 * 64, symtab = shoff + 4 * 64, strtab = shoff + 5 * 64;
     CHECK(read(image, rodata_section + 8, 8) == 2 && read(image, rodata_section + 24, 8) == data_offset);
+    CHECK(read(image, bss + 4, 4) == 8 && read(image, bss + 32, 8) == 0);  // an empty SHT_NOBITS .bss
     CHECK(read(image, symtab + 4, 4) == 2 && read(image, strtab + 4, 4) == 3);
-    CHECK(read(image, symtab + 40, 4) == 4 && read(image, symtab + 44, 4) == 7);  // link, first global
+    CHECK(read(image, symtab + 40, 4) == 5 && read(image, symtab + 44, 4) == 7);  // link, first global
     const u64 symbols = read(image, symtab + 24, 8), strings = read(image, strtab + 24, 8);
     std::vector<std::string> names;
     std::vector<u64> info;
@@ -219,6 +221,41 @@ void runtime_listing() {
     Built unit("fun main() {}\n");
     (void)x86_64::runtime(*unit.program, &listing);
     CHECK(listing.contains("xor edi, edi") && !listing.contains("mov edi, eax"));
+    // Only programs whose closures capture get the allocator.
+    CHECK(!listing.contains("_P$alloc") && unit.objects[1].bss == 0);
+}
+
+constexpr std::string_view kAdder = R"(
+fun makeAdder(n: Int): fun(Int) -> Int = { x -> x + n }
+fun main(): Int = makeAdder(40)(2)
+)";
+
+// The allocator's state is in a writable .bss segment with no file bytes,
+// after the read-only data; the code moves to make room for its header.
+void bss() {
+    Built built(kAdder);
+    const auto& image = built.image;
+    CHECK(read(image, 56, 2) == 3);
+    const u64 text_offset = 64 + 3 * 56 + 8;
+    CHECK(read(image, 64 + 8, 8) == 0 && read(image, 80 + 8, 8) == elf::kBaseAddress);
+    const u64 data = 64 + 56, writable = 64 + 2 * 56;
+    const u64 data_end = read(image, data + 8, 8) + read(image, data + 32, 8);
+    CHECK(read(image, writable, 4) == 1 && read(image, writable + 4, 4) == 6);  // PT_LOAD, R+W
+    const u64 bss_offset = read(image, writable + 8, 8);
+    CHECK(bss_offset % 0x1000 == 0 && bss_offset >= data_end);
+    CHECK(read(image, writable + 16, 8) == elf::kBaseAddress + bss_offset);
+    CHECK(read(image, writable + 32, 8) == 0 && read(image, writable + 40, 8) == 16);  // filesz, memsz
+    const u64 shoff = read(image, 40, 8);
+    const u64 text = shoff + 64, section = shoff + 3 * 64;
+    CHECK(read(image, text + 24, 8) == text_offset);
+    CHECK(read(image, section + 4, 4) == 8 && read(image, section + 8, 8) == 3);  // SHT_NOBITS, SHF_WRITE | SHF_ALLOC
+    CHECK(read(image, section + 16, 8) == elf::kBaseAddress + bss_offset && read(image, section + 32, 8) == 16);
+    CHECK(built.objects[0].bss == 0 && built.objects[1].bss == 16);
+    std::string listing;
+    (void)x86_64::runtime(*built.program, &listing);
+    CHECK(listing.contains("_P$alloc:  ; rdi: size; returns a zeroed, 16-byte aligned block in rax"));
+    CHECK(listing.contains("mov rax, qword [rip+_P$heap]") && listing.contains("mov qword [rip+_P$heap+8], rcx"));
+    CHECK(listing.contains("mov eax, 9") && listing.contains("syscall"));
 }
 
 #ifdef PHS_EXEC
@@ -236,8 +273,9 @@ std::string drain(int fd) {
 }
 
 // Writes the image to a file, runs it and collects its exit status, stdout
-// and stderr. With full, stdout is /dev/full, so every write to it fails.
-Exit run(const std::vector<u8>& image, bool full = false) {
+// and stderr. With full, stdout is /dev/full, so every write to it fails; a
+// nonzero memory limits the process's address space to that many bytes.
+Exit run(const std::vector<u8>& image, bool full = false, rlim_t memory = 0) {
     test::TempDirectory dir;
     const auto path = dir.path / "program";
     {
@@ -251,6 +289,8 @@ Exit run(const std::vector<u8>& image, bool full = false) {
     const pid_t pid = fork();
     CHECK(pid >= 0);
     if (pid == 0) {
+        const rlimit limit{memory, memory};
+        if (memory && setrlimit(RLIMIT_AS, &limit) != 0) _exit(125);
         if (full) {
             const int device = open("/dev/full", O_WRONLY);
             if (device < 0) _exit(126);
@@ -383,6 +423,41 @@ fun main(): Int {
     // A trap inside a Unit main still panics; short-circuiting skips one.
     expect("fun boom(): Bool = 1 / 0 == 1\nfun main(): Int {\n    let a = false && boom()\n    return 5\n}\n", 5);
 }
+
+void closures() {
+    expect(kAdder, 42);
+    // Environments outlive their frames, and allocation spans several chunks.
+    prints(R"(
+struct Big(a: Int, b: Int, c: Int)
+fun keep(b: Big): fun() -> Int = { -> b.a + b.b + b.c }
+fun main(): Int {
+    var total = 0
+    var i = 0
+    while i < 100000 {
+        total += keep(Big(a: i, b: 1, c: 2))()
+        i += 1
+    }
+    print(total)
+    let name = "closure"
+    let twice = { x: Int -> { -> print(name); x * 2 } }
+    return twice(21)()
+}
+)", "5000250000\nclosure\n");
+    // Without memory to map, allocation panics.
+    Built hungry(R"(
+struct Big(a: Int, b: Int, c: Int)
+fun main(): Int {
+    var i = 0
+    loop {
+        let b = Big(a: i, b: i, c: i)
+        let f = { -> b.a }
+        i += f() - i + 1
+    }
+}
+)");
+    const auto starved = run(hungry.image, false, rlim_t{16} << 20);
+    CHECK(starved.status == 101 && starved.err == "panic: out of memory\n" && starved.out.empty());
+}
 #endif
 
 }  // namespace
@@ -393,9 +468,11 @@ int main() {
     literals();
     local_relocations();
     runtime_listing();
+    bss();
 #ifdef PHS_EXEC
     executables();
     output();
+    closures();
 #endif
     std::println("elf tests passed");
 }

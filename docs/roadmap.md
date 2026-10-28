@@ -92,7 +92,7 @@ foundation. Complete.
   - [x] Function value samples and run tests.
   - [x] Closure syntax.
   - [x] Closure checking: parameter inference and captures.
-  - [ ] Closure code generation with a stage0 heap.
+  - [x] Closure code generation with a stage0 heap.
   - [ ] Closure samples and run tests.
 - [ ] Generic base substitution and built-in traits. Instantiate
   generic base/interface graphs, derive `Copy`/`Sendable`/`Error`, and complete

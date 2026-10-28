@@ -23,14 +23,15 @@
 
 #include "support/common.hpp"
 
-// A minimal relocatable object: a code section, a read-only data section,
-// their symbols and the code's relocations. Object and executable writers
+// A minimal relocatable object: a code section, a read-only data section, a
+// zero-initialized writable data section, their symbols and the code's
+// relocations. Object and executable writers
 // consume it; keeping relocations symbolic lets the same code be linked
 // statically or loaded in memory.
 
 namespace phs::obj {
 
-enum class Section : u8 { Text, Rodata };
+enum class Section : u8 { Text, Rodata, Bss };
 
 struct Symbol {
     std::string name;
@@ -54,6 +55,7 @@ struct Object {
     std::vector<u8> rodata;
     std::vector<Symbol> symbols;
     std::vector<Relocation> relocations;
+    u64 bss = 0;  // bytes of .bss, which occupies no space in the object
 
     // Places bytes in .rodata and returns a local symbol for them. Identical
     // bytes share one symbol.
@@ -64,6 +66,15 @@ struct Object {
                            Section::Rodata, true});
         rodata.insert(rodata.end(), bytes.begin(), bytes.end());
         return found->second;
+    }
+
+    // Reserves size zeroed bytes in .bss, 16-byte aligned, and returns a local
+    // symbol for them.
+    u32 reserve(std::string name, u64 size) {
+        bss = (bss + 15) / 16 * 16;
+        symbols.push_back({std::move(name), true, bss, size, Section::Bss, true});
+        bss += size;
+        return static_cast<u32>(symbols.size() - 1);
     }
 
 private:

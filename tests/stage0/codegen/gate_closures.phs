@@ -13,9 +13,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Closures pass 'check', but stage0 cannot generate code for them yet.
+// Closures are accepted; their parameters and bodies are checked like a
+// function's, and their function types like any other.
 
 fun main(): Int {
     let k = { -> 42 }
-    return 0
+    let shifted = { x: Int -> x << 1 }
+    let half = { -> 1.5 }
+    let unit = { u: Unit -> 1 }
+    return k()
 }

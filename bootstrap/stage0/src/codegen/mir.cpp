@@ -125,6 +125,8 @@ std::string_view op_name(Op op) {
         case Op::With: return "with";
         case Op::FnRef: return "fnref";
         case Op::CallIndirect: return "call";
+        case Op::Closure: return "closure";
+        case Op::Env: return "env";
     }
     unreachable();
 }
@@ -155,7 +157,7 @@ std::string literal(std::string_view bytes) {
 std::string dump(const Program& program) {
     std::string out;
     for (const auto& layout : program.layouts) {
-        constexpr std::string_view kinds[] = {"struct", "tuple", "function"};
+        constexpr std::string_view kinds[] = {"struct", "tuple", "function", "environment"};
         out += std::format("{} @{} {{", kinds[layout.kind], layout.name);
         for (usize i = 0; i < layout.fields.size(); ++i)
             out += std::format("{} {}: {} +{}", i ? "," : "", layout.names[i], type_name(program, layout.fields[i]),
@@ -176,8 +178,8 @@ std::string dump(const Program& program) {
         if (f) out += '\n';
         out += std::format("fun @{}(", fun.name);
         for (u32 p = 0; p < fun.params; ++p)
-            out += std::format("{}{}%{}: {}", p ? ", " : "", is_inout(fun, p) ? "inout " : "", p,
-                               name_of(fun.regs[p]));
+            out += std::format("{}{}%{}: {}", p ? ", " : "", is_inout(fun, p) ? "inout " : fun.closure && !p ? "env " : "",
+                               p, name_of(fun.regs[p]));
         out += std::format(") -> {}{} {{\n", name_of(fun.result), f == program.main ? " entry" : "");
         for (usize b = 0; b < fun.blocks.size(); ++b) {
             const auto& block = fun.blocks[b];
@@ -195,6 +197,14 @@ std::string dump(const Program& program) {
                         out += ')';
                         break;
                     case Op::FnRef: out += std::format(" @{}", program.functions[inst.callee].name); break;
+                    case Op::Closure:
+                        out += std::format(" @{}(", program.functions[inst.callee].name);
+                        for (usize a = 0; a < inst.args.size(); ++a) out += (a ? ", " : "") + reg(inst.args[a]);
+                        out += ')';
+                        break;
+                    case Op::Env:
+                        out += std::format(" {}, {}", reg(inst.a), program.layouts[*fun.environment].names[inst.imm]);
+                        break;
                     case Op::CallIndirect:
                         out += ' ' + reg(inst.a) + '(';
                         for (usize a = 0; a < inst.args.size(); ++a) out += (a ? ", " : "") + reg(inst.args[a]);

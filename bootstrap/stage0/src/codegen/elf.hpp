@@ -27,8 +27,9 @@
 // objects' code and read-only data out one after another, resolves each
 // relocation against the symbols the objects define (local symbols only within
 // their own object), and writes an ET_EXEC image with a read-only, executable
-// PT_LOAD segment for the code and, when there is data, a page-aligned
-// read-only one for it. Section headers and a symbol table are included so
+// PT_LOAD segment for the code, a page-aligned read-only one for data when
+// there is some, and a page-aligned writable one for zeroed data (.bss), with
+// no file bytes, when there is some of that. Section headers and a symbol table are included so
 // that objdump, readelf and debuggers can name the code; the loader needs only
 // the program headers.
 

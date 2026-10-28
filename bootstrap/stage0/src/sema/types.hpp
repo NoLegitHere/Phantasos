@@ -18,6 +18,7 @@
 #include <span>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "sema/resolve.hpp"
@@ -258,6 +259,12 @@ public:
     std::string type_name(ScalarType type, const Resolution& resolution, const Interner& names, usize limit = TypeTable::kNameLimit) const {
         return types_.name(type, resolution, names, limit);
     }
+    // For generic instances in code generation: `type` with each type
+    // parameter, named by its binding, replaced by its argument. New types
+    // are interned, which can move descriptors, so a descriptor pointer read
+    // before a call is not used after it.
+    using TypeArgument = std::pair<BindingId, ScalarType>;
+    ScalarType substitute(ScalarType type, std::span<const TypeArgument> arguments);
 
 private:
     friend class ScalarChecker;

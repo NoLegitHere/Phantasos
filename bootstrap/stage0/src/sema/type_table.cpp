@@ -53,6 +53,34 @@ ScalarType TypeTable::intern(TypeDescriptor descriptor) {
     return {descriptors_[id].kind, 0, id};
 }
 
+ScalarType ScalarTypes::substitute(ScalarType type, std::span<const TypeArgument> arguments) {
+    const auto* found = arguments.empty() ? nullptr : types_.descriptor(type);
+    if (!found) return type;
+    if (found->kind == ScalarType::TypeParameter) {
+        for (const auto& [parameter, argument] : arguments)
+            if (parameter == found->declaration)
+                return {argument.kind, argument.optional_depth + type.optional_depth, argument.detail};
+        return type;
+    }
+    // Interning a part can move the descriptor, so the copy is changed.
+    TypeDescriptor next = *found;
+    bool changed = false;
+    const auto part = [&](ScalarType& inner) {
+        const auto replaced = substitute(inner, arguments);
+        changed |= replaced != inner;
+        inner = replaced;
+    };
+    part(next.element);
+    part(next.result);
+    part(next.error);
+    for (auto& parameter : next.parameters) part(parameter);
+    for (auto& argument : next.arguments) part(argument);
+    if (!changed) return type;
+    auto result = types_.intern(std::move(next));
+    result.optional_depth = type.optional_depth;
+    return result;
+}
+
 void TypeTable::grow() {
     // Rebuilds from the cached hashes; descriptors are never rehashed.
     std::vector<Slot> slots(slots_.empty() ? 64 : slots_.size() * 2);

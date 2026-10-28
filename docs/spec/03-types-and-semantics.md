@@ -977,14 +977,15 @@ stored-field initialization and global initialization order.
 ## 3.25 Stage0 code generation subset
 
 This section describes an implementation limit of stage0, not a language rule.
-Stage0's first native backend lowers only a subset of scalars and plain
-structs. The `gate` command
+Stage0's first native backend lowers only a subset of scalars, plain
+structs and generic functions. The `gate` command
 runs `check` first. If `check` succeeds, `gate` reports every construct outside
 the subset, so that nothing half-checked reaches code generation:
 
-- **Declarations.** Top-level functions with a body, and plain structs with
-  their methods. A function or method cannot be generic, `async`, `unsafe` or
-  throwing, and cannot carry attributes. Its parameters have no defaults
+- **Declarations.** Top-level functions with a body, generic ones included,
+  and plain structs with their methods. A method cannot be generic, and a
+  function or method cannot be `async`, `unsafe` or throwing, or carry
+  attributes. Its parameters have no defaults
   and are not `inout`; `borrow` and `own` parameters are passed like
   default ones, since stage0 values have no destructors yet. A function
   with an `own` parameter has no function value (3.18). A plain struct
@@ -1005,13 +1006,17 @@ the subset, so that nothing half-checked reaches code generation:
   non-optional, non-throwing function type whose parameters have value types
   of the subset and whose result is a type of the subset. A struct cannot
   take or return itself through a function type in its fields either.
+  Inside a generic function, its own type parameters are value types as
+  well, but not optional ones.
 - **Statements.** `let` and `var` locals, with or without an initializer;
   assignment and compound assignment to locals, to `self` in a `mut fun`,
   and to fields of either at any depth, tuple elements included; tuple
   destructuring with `let (a, b) = e` and `var (a, b) = e`; `if`, `while`, `loop`, `break`,
   `continue` and `return`.
 - **Expressions.** Integer, Boolean and string literals, `()`, local and
-  parameter names, parentheses, direct calls to top-level functions, `print`
+  parameter names, parentheses, direct calls to top-level functions, generic
+  ones with explicit or inferred type arguments that are value types of the
+  subset (not `Unit` or `Never`), `print`
   (3.27), integer conversions, primary constructors of supported structs,
   reads of their fields, calls to their methods with an explicit or implicit
   receiver, `self` and bare field names inside methods, tuple literals and
@@ -1032,9 +1037,21 @@ type is still deferred also reports `E0600` and needs an annotation. One
 `E0600` is reported per construct, and uses of a rejected local are not
 reported again.
 
-The program needs exactly one `fun main()` with no parameters. It returns
-`Int` (the exit status), nothing, or `Never`. A missing, overloaded or
-otherwise invalid `main` reports `E0601`.
+A generic function's body is checked once, with values of its type
+parameters opaque. Code generation then makes one instance of it for each
+distinct list of type arguments that a call needs, starting from the calls
+in non-generic functions and methods and following the calls inside each
+instance with its arguments substituted. A generic function that no such
+chain reaches has no instance. Polymorphic recursion, where an instance calls
+the same function with bigger type arguments, would need instances without
+end, so stage0 reports `E0602` at the call where the instances nest more
+than 64 levels deep or where the program would need more than 10,000 of
+them. Calls whose type arguments are not inferred yet, which includes calls
+to functions with bounds or `where` clauses, report `E0600`.
+
+The program needs exactly one `fun main()` with no parameters or type
+parameters. It returns `Int` (the exit status), nothing, or `Never`. A
+missing, overloaded or otherwise invalid `main` reports `E0601`.
 
 ## 3.26 Evaluation order and arithmetic traps [Core]
 
@@ -1069,7 +1086,12 @@ first. Creating the closure allocates the environment and copies each
 captured value into it, `self` included when the closure uses the receiver,
 laid out like a struct; the closure's function reads them back on entry. A
 closure that captures nothing has a null environment. Environments are never
-freed in stage0.
+freed in stage0. Each instance of a generic function (3.25) is a MIR function
+of its own, named after the function, with its type arguments in angle
+brackets, so `identity` called with an `Int` is `identity<Int>` and `pair`
+called with `Int` and `(Bool, String)` is `pair<Int, (Bool, String)>`. An
+overload's suffix comes before them, as in `pick.1<Int>`, and a closure in an
+instance is named after the instance, as in `keep<Bool>$closure0`.
 
 Stage0's first x86_64 backend checks every trapping operation inline. A
 failed check calls `__phantasos_trap` with the trap code in the first
@@ -1077,7 +1099,8 @@ argument register: 1 for overflow and 2 for division by zero. The signed
 minimum divided by `-1` is an overflow. `__phantasos_trap` does not return.
 Functions use the System V AMD64 calling convention and get the symbol
 `_P<length><name>` for their MIR name, so `fib` becomes `_P3fib` and an
-overload named `sub.1` becomes `_P5sub.1`. A method's MIR name is its struct's
+overload named `sub.1` becomes `_P5sub.1`; the instance `identity<Int>`
+becomes `_P13identity<Int>`. A method's MIR name is its struct's
 name, a dot and its own, so `Point.sum` becomes `_P9Point.sum`. Struct values
 use the layout of abi.md A.2 and are passed as A.6 describes. `phantasos-stage0 asm <file>` prints the code as a
 listing. These names and codes are a stage0 detail, not a stable ABI.

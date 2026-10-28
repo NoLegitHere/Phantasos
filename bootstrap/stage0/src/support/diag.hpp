@@ -103,6 +103,7 @@ enum class DiagCode : u16 {
     ExclusiveAccess = 506,
     UnsupportedCodegen = 600,
     InvalidEntryPoint = 601,
+    InstanceLimit = 602,
 };
 
 constexpr std::string_view diag_code(DiagCode code) {
@@ -178,6 +179,7 @@ constexpr std::string_view diag_code(DiagCode code) {
         case DiagCode::ExclusiveAccess: return "E0506";
         case DiagCode::UnsupportedCodegen: return "E0600";
         case DiagCode::InvalidEntryPoint: return "E0601";
+        case DiagCode::InstanceLimit: return "E0602";
     }
     unreachable();
 }

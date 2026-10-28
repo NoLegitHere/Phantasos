@@ -1,0 +1,39 @@
+// Copyright 2026 The Phantasos Authors
+// SPDX-License-Identifier: Apache-2.0
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// Generic functions: one instance per distinct list of type arguments, named
+// after its arguments, including an instance that only another instance
+// needs and a closure inside an instance.
+
+fun identity<T>(x: T): T = x
+
+fun swap<A, B>(p: (A, B)): (B, A) = (p.1, p.0)
+
+fun twice<T>(x: T): (T, T) = (identity(x), x)
+
+fun keep<T>(x: T): T {
+    let c = (x, 1)
+    let f = { -> c.0 }
+    return f()
+}
+
+fun main(): Int {
+    let a = identity(1)
+    let b = identity<Int>(2)
+    let p = swap((true, a + b))
+    let q = twice(p)
+    if keep(q.0.1) { return 1 }
+    return q.1.0
+}

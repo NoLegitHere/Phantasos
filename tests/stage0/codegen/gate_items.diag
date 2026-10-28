@@ -19,18 +19,15 @@ gate_items.phs:29:24: error[E0600]: stage0 code generation does not support valu
 gate_items.phs:31:14: error[E0600]: stage0 code generation does not support values of type 'Int?' yet
    31 | fun optional(x: Int?): Int = x ?? 0
       |              ^
-gate_items.phs:33:5: error[E0600]: stage0 code generation does not support generic functions yet
-   33 | fun generic<T>(x: T): T = x
-      |     ^^^^^^^
-gate_items.phs:35:5: error[E0600]: stage0 code generation does not support throwing functions yet
-   35 | fun throwing() throws {}
+gate_items.phs:33:5: error[E0600]: stage0 code generation does not support throwing functions yet
+   33 | fun throwing() throws {}
       |     ^^^^^^^^
-gate_items.phs:37:12: error[E0600]: stage0 code generation does not support 'inout' parameters yet
-   37 | fun inout_(x: inout Int) {}
+gate_items.phs:35:12: error[E0600]: stage0 code generation does not support 'inout' parameters yet
+   35 | fun inout_(x: inout Int) {}
       |            ^
-gate_items.phs:39:23: error[E0600]: stage0 code generation does not support parameter defaults yet
-   39 | fun defaults(x: Int = 1): Int = x
+gate_items.phs:37:23: error[E0600]: stage0 code generation does not support parameter defaults yet
+   37 | fun defaults(x: Int = 1): Int = x
       |                       ^
-gate_items.phs:41:11: error[E0600]: stage0 code generation does not support values of type '[Int]' yet
-   41 | fun array(xs: [Int]): Int = xs[0]
+gate_items.phs:39:11: error[E0600]: stage0 code generation does not support values of type '[Int]' yet
+   39 | fun array(xs: [Int]): Int = xs[0]
       |           ^^

@@ -508,6 +508,50 @@ fun main(): Int {
     CHECK(result("fun stop(): Never {\n    loop {}\n}\nfun main(): Int {\n    let s: fun() -> Never = { -> stop() }\n    return 4\n}\n") == 4);
 }
 
+void generic_functions() {
+    // One instance per distinct list of type arguments, named after them;
+    // generic functions nobody calls are not lowered.
+    Frontend f;
+    const auto text = f.dump(R"(
+fun identity<T>(x: T): T = x
+fun first<A, B>(a: A, b: B): A = identity(a)
+fun unused<T>(x: T): T = x
+fun main(): Int {
+    let n = first(1, true) + identity(2) + identity<Int>(3)
+    if first(false, (1, 2)) { return 0 }
+    return n
+}
+)");
+    CHECK(text.contains("fun @identity<Int>(%0: i64) -> i64 {"));
+    CHECK(text.contains("fun @identity<Bool>(%0: bool) -> bool {"));
+    CHECK(text.contains("fun @first<Int, Bool>(%0: i64, %1: bool) -> i64 {"));
+    CHECK(text.contains("fun @first<Bool, (Int, Int)>(%0: bool, %1: @(Int, Int)) -> bool {"));
+    CHECK(text.find("fun @identity<Int>(") == text.rfind("fun @identity<Int>("));
+    CHECK(!text.contains("unused"));
+    // Instances of overloads keep the overloads' suffixes.
+    Frontend overloads;
+    const auto suffixed = overloads.dump("fun pick<T>(x: T): T = x\nfun pick<T>(x: T, y: T): T = y\n"
+                                         "fun main(): Int = pick(1) + pick(2, 3)\n");
+    CHECK(suffixed.contains("fun @pick<Int>(") && suffixed.contains("fun @pick.1<Int>("));
+    // Instances run like any other function, recursion and closures included.
+    CHECK(result(R"(
+fun count<T>(x: T, n: Int): Int {
+    if n == 0 { return 0 }
+    return 1 + count(x, n - 1)
+}
+fun apply<T>(f: fun(T) -> T, x: T): T = f(x)
+fun keep<T>(x: T): fun() -> T {
+    let c = (x, 0)
+    return { -> c.0 }
+}
+fun main(): Int {
+    let n = count("s", 4) * 100 + apply({ n: Int -> n + 1 }, 9)
+    if keep(true)() { return n + keep(7)() }
+    return 0
+}
+)") == 417);
+}
+
 void rejected_files() {
     FrontendSession session;
     const auto id = session.sources().add("mir.phs", "fun main(): Float64 = 1.0\n");
@@ -548,6 +592,7 @@ int main() {
     tuples();
     function_values();
     closures();
+    generic_functions();
     rejected_files();
     long_trees();
     std::println("mir tests passed");

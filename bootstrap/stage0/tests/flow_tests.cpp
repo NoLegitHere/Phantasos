@@ -630,6 +630,10 @@ void moves() {
         // Inferred expression-body results move too.
         {"fun f() = unsafe { let a = \"a\"\ndefer { look(a) }\na }", {M}},
         {"fun f() = unsafe { let a = \"a\"\ndefer { look(a) }\nlook(a) }", {}},
+        // Global and field initializers move their value.
+        {"let g = unsafe { let a = \"a\"\ndefer { look(a) }\na }", {M}},
+        {"struct S(n: Int) { let s: String = unsafe { let a = \"a\"\ndefer { look(a) }\na } }", {M}},
+        {"let g = unsafe { let a = \"a\"\ndefer { look(a) }\nlook(a)\n1 }", {}},
         // `try` and `try?` pass their operand's result on.
         {"fun f() { let a = \"a\"\nlet b = try? unsafe { a }\nlook(a) }", {M}},
         {"fun f() throws { let a = \"a\"\nlet b = try unsafe { a }\nlook(a) }", {M}},

@@ -226,7 +226,7 @@ public:
                 // and a closure in an instance field's initializer captures `self`.
                 if (var->init) {
                     if (!has_modifier(var->mods, Modifier::Static)) capturing_receiver(owner);
-                    callable(owner ? owner->ctor_params : List<Param>{}, var->init, nullptr);
+                    callable(owner ? owner->ctor_params : List<Param>{}, var->init, nullptr, {}, true);
                     receiver(nullptr, nullptr);
                 }
             } else if (const auto* init = as<InitItem>(item)) {
@@ -572,7 +572,9 @@ private:
     }
 
     // Returns where the body may move each `own` parameter, by index, on the paths that finish.
-    ParamMoves callable(List<Param> params, const Expr* body, const FunItem* fun, const ParamMoves& moved = {}) {
+    // An initializer root's value moves into its variable or field.
+    ParamMoves callable(List<Param> params, const Expr* body, const FunItem* fun, const ParamMoves& moved = {},
+                        bool initializer = false) {
         start(body);
         for (const auto& param : params) {
             params_.emplace(param.name.span.lo, &param);
@@ -587,7 +589,7 @@ private:
                 move_sites_[bit] = *moved[i];
             }
         // An expression body's value moves out as the result (3.30).
-        if (fun && fun->expr_body && result(*fun) != ScalarType{ScalarType::Unit}) consume(body);
+        if (initializer || (fun && fun->expr_body && result(*fun) != ScalarType{ScalarType::Unit})) consume(body);
         eval(body, state);
         ParamMoves after(params.size());
         if (state.live)

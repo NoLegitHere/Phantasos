@@ -1283,7 +1283,8 @@ decides `Copy` structurally (3.29), so values of unknown types never move.
 
 An expression is consumed when it is:
 
-- the initializer of a `let` or `var`, or the value of a plain assignment;
+- the initializer of a `let` or `var` (local, global or field), or the
+  value of a plain assignment;
 - the value of a `return`, the expression body of a function with a
   result (declared or inferred), or the last expression of a closure body;
 - an argument for an `own` parameter, or for a stored field of a primary

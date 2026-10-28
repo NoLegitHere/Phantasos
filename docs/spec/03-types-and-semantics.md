@@ -1194,7 +1194,8 @@ apply({ x -> x * 2 }, 3)                          // apply(f: fun(Int) -> Int, x
 
 A closure whose parameters are all annotated needs no expected type. Its
 result is then the type that its final expression and its `return` values
-agree on, with literals taking their defaults: `{ x: Int -> x * 2 }` is a
+agree on, looking through the branches of an `if`, `match` or `unsafe` in
+either place, with literals taking their defaults: `{ x: Int -> x * 2 }` is a
 `fun(Int) -> Int`, and `{ -> 1.5 }` a `fun() -> Float64`. A body that never
 produces a value has result `Never`.
 

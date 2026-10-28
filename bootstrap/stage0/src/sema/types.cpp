@@ -2711,7 +2711,7 @@ private:
 
     // A closure's expected type, as far as stage0 can find it.
     struct Expected {
-        enum State : u8 { Known, Pending, Missing, Overloaded, Generic } state = Missing;
+        enum State : u8 { Known, Pending, Missing, Overloaded, Generic, Unmatched } state = Missing;
         Type type;
     };
     Expected expected_type(const ClosureExpr* closure) {
@@ -2747,7 +2747,7 @@ private:
         if (callee.type.kind == Type::Function && !callee.type.optional_depth) {
             const auto& parameters = types_.descriptor(callee.type)->parameters;
             const bool positional = std::ranges::all_of(call.args, [](const Arg& arg) { return arg.label.sym.empty(); });
-            if (!positional || call.args.size() != parameters.size()) return {Expected::Known, Type::Error};  // the call reports it
+            if (!positional || call.args.size() != parameters.size()) return {Expected::Unmatched};  // the call reports it
             return {Expected::Known, parameters[argument]};
         }
         const Expr* receiver = unparen(call.callee);
@@ -2786,7 +2786,7 @@ private:
             found = type;
         }
         if (generic) return {Expected::Generic};
-        if (!found) return {Expected::Known, Type::Error};  // no candidate fits; the call reports it
+        if (!found) return {Expected::Unmatched};  // no candidate fits; the call reports it
         if (*found == Type::Error || known(*found)) return {Expected::Known, *found};
         return {Expected::Pending};
     }
@@ -2801,7 +2801,8 @@ private:
     // function type. Without one the closure reports the error.
     Type closure_parameter(const ClosureExpr& closure, u32 parameter) {
         const auto expected = expected_type(&closure);
-        if (expected.state == Expected::Pending) return {};
+        // When no candidate accepts the call's shape, the call reports it.
+        if (expected.state == Expected::Pending || expected.state == Expected::Unmatched) return {};
         const auto function = expected_function(expected);
         if (!function || function->parameters.size() != closure.params.size()) return Type::Error;
         return function->parameters[parameter];
@@ -2823,7 +2824,7 @@ private:
         }
         if (const auto missing = std::ranges::find_if(closure.params, [](const ClosureParam& param) { return !param.type; });
             !function && missing != closure.params.end()) {
-            if (expected.state == Expected::Pending) return {};
+            if (expected.state == Expected::Pending || expected.state == Expected::Unmatched) return {};
             const auto why = expected.state == Expected::Overloaded ? "overloads of the function it is passed to disagree on its type"
                            : expected.state == Expected::Generic ? "it is passed to a generic function, whose parameter types are not inferred yet"
                            : "the closure is not used where a function type is expected";
@@ -2877,9 +2878,18 @@ private:
         };
         for (const auto& tail : found)
             if (!add(tail.kind == Tail::Value ? value(tail.expr) : Value{Type::Unit}, tail.expr->span)) return result ? *result : Type{};
+        // A returned `if`, `match` or `unsafe` contributes its branch tails too.
         if (const auto it = closure_returns_.find(&closure); it != closure_returns_.end())
-            for (const auto* ret : it->second)
-                if (!add(value(ret->value), ret->value ? ret->value->span : ret->span)) return result ? *result : Type{};
+            for (const auto* ret : it->second) {
+                if (!ret->value) {
+                    if (!add({Type::Unit}, ret->span)) return result ? *result : Type{};
+                    continue;
+                }
+                found.clear();
+                tails(ret->value, found);
+                for (const auto& tail : found)
+                    if (!add(tail.kind == Tail::Value ? value(tail.expr) : Value{Type::Unit}, tail.expr->span)) return result ? *result : Type{};
+            }
         return result ? *result : Type{Type::Never};
     }
     // The type a requirement's value must have, once inference is done.

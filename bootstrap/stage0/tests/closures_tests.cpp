@@ -221,6 +221,13 @@ void errors() {
         // References inside match arms are captures too.
         {"fun main(n: inout Int) { let g = { -> match 0 { _ -> n } } }", {DiagCode::InvalidCapture}},
         {"fun main() { let n: Int\nlet g = { -> match 0 { _ -> n } }\nn = 1 }", {DiagCode::UninitializedUse}},
+        // A returned branch expression gives the inferred result too.
+        {"fun main() { let f = { -> return if true { 1 } else { 2 } }\nlet n: Bool = f() }", {DiagCode::ScalarTypeMismatch}},
+        {"fun main() { let f = { -> return if true { 1 } else { 'a' } } }", {DiagCode::ScalarTypeMismatch}},
+        // When no candidate accepts the call's shape, the call reports it.
+        {"fun take(f: fun(Int) -> Int, n: Int) {}\nfun main() { take({ x -> x }) }", {DiagCode::NoMatchingCall}},
+        {"fun main(g: fun(fun(Int) -> Int, Int) -> Unit) { g({ x -> x }) }", {DiagCode::NoMatchingCall}},
+        {"struct H(run: fun(Int) -> Int, n: Int)\nfun main() { let h = H(run: { x -> x }) }", {DiagCode::NoMatchingCall}},
         // A constructor named through an alias, and overloads filtered by shape, still give parameter types.
         {"struct Handler(run: fun(Int) -> Int)\ntype Alias = Handler\nfun main() { let h = Alias(run: { x -> x }) }", {}},
         {"fun take<T>(x: T, y: Int) {}\nfun take(f: fun(Int) -> Int) {}\nfun main() { take({ x -> x }) }", {}},

@@ -40,3 +40,24 @@ exclusive_access.phs:52:19: error[E0506]: 'list[1]' may overlap 'list[0]', but '
 exclusive_access.phs:52:10: note: 'list[0]' is also passed here
    52 |     swap(list[0], list[1])
       |          ^^^^^^^
+exclusive_access.phs:60:19: error[E0506]: 'size' overlaps 'self', but 'mut fun grow' needs exclusive access to it for the whole call
+   60 |     deinit { grow(size) }
+      |                   ^^^^
+exclusive_access.phs:60:14: note: 'self' is the receiver here
+   60 |     deinit { grow(size) }
+      |              ^^^^
+exclusive_access.phs:64:5: error[E0506]: 'counter' is used twice in one call, but 'inout' parameter 'total' needs exclusive access to it
+   64 |     record(counter)
+      |     ^^^^^^
+exclusive_access.phs:64:5: note: 'counter' is the default of omitted parameter 'total'
+   64 |     record(counter)
+      |     ^^^^^^
+exclusive_access.phs:64:12: note: 'counter' is also passed here
+   64 |     record(counter)
+      |            ^^^^^^^
+exclusive_access.phs:65:30: error[E0506]: 'Registry.Slot.used' is used twice in one call, but 'inout' parameter 'b' needs exclusive access to it
+   65 |     swap(Registry.Slot.used, Registry.Slot.used)
+      |                              ^^^^^^^^^^^^^^^^^^
+exclusive_access.phs:65:10: note: 'Registry.Slot.used' is also passed here
+   65 |     swap(Registry.Slot.used, Registry.Slot.used)
+      |          ^^^^^^^^^^^^^^^^^^

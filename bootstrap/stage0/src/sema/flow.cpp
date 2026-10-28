@@ -557,8 +557,27 @@ private:
             chain.push_back(expr);
             expr = unparen(base);
         }
+        // A static field is its own storage, whatever names its type, so the
+        // qualifier before it need not be a place.
+        const auto field = [&](const Expr* projection) -> const CheckedMember* {
+            const auto* member = as<MemberExpr>(projection);
+            const auto* record = member ? types_.member(member) : nullptr;
+            if (!record || record->state != ResolutionState::Resolved || record->candidates.size() != 1 ||
+                resolution_.binding(record->candidates.front()).kind != BindingKind::Field)
+                return nullptr;
+            return record;
+        };
         Path result;
-        if (expr->kind == ExprKind::SelfValue || expr->kind == ExprKind::Super) {
+        usize start = chain.size();
+        for (usize i = 0; i < chain.size(); ++i)
+            if (const auto* record = field(chain[i]); record && record->type_receiver) {
+                result.root = root_key(record->candidates.front());
+                start = i;
+                break;
+            }
+        if (start < chain.size()) {
+            // Only the projections after the static field remain.
+        } else if (expr->kind == ExprKind::SelfValue || expr->kind == ExprKind::Super) {
             result.root = kSelfRoot;
         } else if (const auto* name = as<NameExpr>(expr)) {
             BindingId id = target(*name);
@@ -568,28 +587,26 @@ private:
             if (binding.kind == BindingKind::Field && !is_static(binding)) {
                 result.root = kSelfRoot;
                 result.steps.push_back(u64{id.value} << 2);
-            } else {
+            } else if (binding.kind == BindingKind::Field || binding.kind == BindingKind::Variable ||
+                       binding.kind == BindingKind::Parameter || binding.kind == BindingKind::Local ||
+                       binding.kind == BindingKind::Pattern) {
                 result.root = root_key(id);
+            } else {
+                return std::nullopt;
             }
         } else {
             return std::nullopt;
         }
-        for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
-            if (const auto* member = as<MemberExpr>(*it)) {
-                const auto* record = types_.member(member);
-                if (!record || record->state != ResolutionState::Resolved || record->candidates.size() != 1 ||
-                    resolution_.binding(record->candidates.front()).kind != BindingKind::Field)
-                    return std::nullopt;
-                if (record->type_receiver) {
-                    // A static field is its own storage, whatever names its type.
-                    result = Path{root_key(record->candidates.front()), {}};
-                    continue;
-                }
+        for (usize i = start; i-- > 0;) {
+            const Expr* step = chain[i];
+            if (step->kind == ExprKind::Member) {
+                const auto* record = field(step);
+                if (!record) return std::nullopt;
                 result.steps.push_back(u64{record->candidates.front().value} << 2);
-            } else if (const auto* element = as<TupleFieldExpr>(*it)) {
+            } else if (const auto* element = as<TupleFieldExpr>(step)) {
                 result.steps.push_back(u64{element->index} << 2 | 1);
             } else {
-                result.steps.push_back((*it)->kind == ExprKind::Index ? 2 : 3);
+                result.steps.push_back(step->kind == ExprKind::Index ? 2 : 3);
             }
         }
         return result;
@@ -615,6 +632,7 @@ private:
             std::string who;      // what needs exclusive access, when it does
             std::string spelled;  // the place as written, or 'self' for an implicit receiver
             bool receiver = false;
+            std::string_view by_default;  // the omitted parameter whose default names the place
         };
         const bool mut_receiver = checked.kind == CallKind::Method && has_modifier(fun.mods, Modifier::Mut);
         if (!mut_receiver && std::ranges::none_of(fun.sig.params, [](const Param& param) {
@@ -635,21 +653,51 @@ private:
                 if (auto found = path(checked.receiver))
                     accesses.push_back({checked.receiver->span, std::move(*found), who,
                                         std::string(text(checked.receiver->span)), true});
-            } else if (callee->kind == ExprKind::Name && self_.access != Access::Unknown) {
+            } else if (callee->kind == ExprKind::Name) {
+                // Also in an `init` or `deinit`, where the receiver's access is not checked.
                 accesses.push_back({callee->span, Path{kSelfRoot, {}}, who, "self", true});
             }
         }
+        const auto who = [&](const Param& param) {
+            return param.conv == Convention::Inout ? std::format("'inout' parameter '{}'", names_.str(param.name.sym))
+                                                   : std::string{};
+        };
+        std::vector<std::optional<Path>> paths(fun.sig.params.size());
+        std::vector<bool> supplied(fun.sig.params.size(), false);
         for (usize i = 0; i < checked.parameters.size() && i < call.args.size(); ++i) {
             const usize index = checked.parameters[i];
             if (index >= fun.sig.params.size()) continue;
-            const auto& param = fun.sig.params[index];
-            auto found = path(call.args[i].value);
-            if (!found) continue;
-            std::string who = param.conv == Convention::Inout
-                                  ? std::format("'inout' parameter '{}'", names_.str(param.name.sym))
-                                  : std::string{};
-            accesses.push_back({call.args[i].value->span, std::move(*found), std::move(who),
+            supplied[index] = true;
+            paths[index] = path(call.args[i].value);
+            if (!paths[index]) continue;
+            accesses.push_back({call.args[i].value->span, *paths[index], who(fun.sig.params[index]),
                                 std::string(text(call.args[i].value->span)), false});
+        }
+        // An omitted parameter's default runs in the callee, where an earlier
+        // parameter stands for the place its argument names.
+        for (usize index = 0; index < fun.sig.params.size(); ++index) {
+            const auto& param = fun.sig.params[index];
+            if (supplied[index] || !param.default_value) continue;
+            auto found = path(param.default_value);
+            if (!found) continue;
+            // `self` in a default is the callee's receiver, not the caller's.
+            if (found->root == kSelfRoot) continue;
+            const auto& binding = resolution_.binding(BindingId{static_cast<u32>((found->root >> 1) - 1)});
+            const auto earlier = std::ranges::find_if(fun.sig.params.begin(), fun.sig.params.begin() + index,
+                                                      [&](const Param& other) {
+                                                          return binding.kind == BindingKind::Parameter &&
+                                                                 other.name.span.lo == binding.name.span.lo;
+                                                      });
+            if (earlier != fun.sig.params.begin() + index) {
+                const auto& base = paths[static_cast<usize>(earlier - fun.sig.params.begin())];
+                if (!base) continue;
+                Path joined = *base;
+                for (const u64 step : found->steps) joined.steps.push_back(step);
+                found = std::move(joined);
+            }
+            paths[index] = found;
+            accesses.push_back({call.callee->span, std::move(*found), who(param), std::string(text(param.default_value->span)),
+                                false, names_.str(param.name.sym)});
         }
         for (usize b = 1; b < accesses.size(); ++b)
             for (usize a = 0; a < b; ++a) {
@@ -658,15 +706,22 @@ private:
                 const auto found = overlap(first.path, second.path);
                 if ((first.who.empty() && second.who.empty()) || found == Overlap::No) continue;
                 if (shown(DiagCode::ExclusiveAccess) && !reported_exclusive_.insert(second.span.lo)) break;
-                const auto& who = second.who.empty() ? first.who : second.who;
+                const auto& exclusive = second.who.empty() ? first.who : second.who;
+                // A default is reported at the call, with its own text in the note.
                 auto& d = first.spelled == second.spelled
                               ? error(DiagCode::ExclusiveAccess, second.span,
-                                      "'{}' is used twice in one call, but {} needs exclusive access to it", second.spelled, who)
+                                      "'{}' is used twice in one call, but {} needs exclusive access to it", second.spelled,
+                                      exclusive)
                               : error(DiagCode::ExclusiveAccess, second.span,
                                       "'{}' {} '{}', but {} needs exclusive access to it for the whole call", second.spelled,
-                                      found == Overlap::Maybe ? "may overlap" : "overlaps", first.spelled, who);
-                d.notes.push_back({first.span, first.receiver ? std::format("'{}' is the receiver here", first.spelled)
-                                                              : std::format("'{}' is also passed here", first.spelled)});
+                                      found == Overlap::Maybe ? "may overlap" : "overlaps", first.spelled, exclusive);
+                for (const Use* use : {&first, &second})
+                    if (!use->by_default.empty())
+                        d.notes.push_back({call.callee->span, std::format("'{}' is the default of omitted parameter '{}'",
+                                                                          use->spelled, use->by_default)});
+                if (first.by_default.empty())
+                    d.notes.push_back({first.span, first.receiver ? std::format("'{}' is the receiver here", first.spelled)
+                                                                  : std::format("'{}' is also passed here", first.spelled)});
                 break;
             }
     }

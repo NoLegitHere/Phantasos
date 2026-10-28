@@ -734,6 +734,15 @@ void exclusive_access() {
         {"struct Q(var n: Int) { mut fun g(other: Q) {}\nmut fun h() { g(self)\nself.g(self) } }", {E, E}},
         // A static field is its own place, bare or through its type.
         {"class S { static var n: Int = 1\nstatic fun g() { swap(n, S.n) } }", {E}},
+        {"class O { class I { static var n: Int = 0 } }\nstruct G<T>(v: T) { static var n: Int = 0 }\n"
+         "fun f() { swap(O.I.n, O.I.n)\nswap(G<Int>.n, G<Int>.n)\nswap(O.I.n, G<Int>.n) }", {E, E}},
+        // Omitted defaults are part of the call, with earlier parameters standing for their arguments.
+        {"var g: Int = 0\nfun d(a: inout Int, b: inout Int = g) {}\nfun f() { var a = 1\nd(g)\nd(a) }", {E}},
+        {"fun d(a: inout Int, b: Int = a) {}\nfun e(p: inout P, n: Int = p.x) {}\n"
+         "fun f() { var a = 1\nd(a)\nd(a, 2)\nvar p = P(x: 1, y: 2)\ne(p)\ne(p, 1) }", {E, E}},
+        // Construction and destruction have a receiver too.
+        {"class K(var x: Int) { mut fun bump(by: Int) {}\ndeinit { bump(x) } }", {E}},
+        {"struct L(var x: Int) { mut fun bump(by: Int) {}\ninit(y: Int) { x = y\nbump(x) } }", {E}},
         // A loop or cleanup reports each argument once.
         {"fun f(c: Bool) { var a = 1\nwhile c { swap(a, a) }\ndefer { swap(a, a) } }", {E, E}},
     }) {

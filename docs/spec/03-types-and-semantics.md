@@ -1383,8 +1383,12 @@ they have the same root and one path continues the other, so `p` overlaps
 `p.x` but `p.x` and `p.y` do not. Any two indexes of the same array may be
 the same element, so `swap(a[i], a[j])` is reported as a possible overlap.
 Inside a method, `self`, `super` and bare field names all start at the
-receiver, and an implicit call to a `mut fun` passes `self`. A static field
-is its own place, named bare or through its type. An argument that is not a
+receiver, also in an `init` or `deinit`, and an implicit call to a `mut fun`
+passes `self`. A static field is its own place, named bare or through any
+type expression, such as `Outer.Inner.n` or `G<Int>.n`. The default of an
+omitted parameter takes part in the call too, with an earlier parameter in
+it standing for that parameter's argument, so `f(g)` is an error when `f`'s
+omitted `inout` parameter defaults to `g`. An argument that is not a
 place, such as `a + 1` or `p.x.clone()`, is a temporary and never overlaps;
 copying a value into a local first is the usual fix. Stage0 compares places
 by how they are written, so two class references to the same instance are

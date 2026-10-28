@@ -51,3 +51,16 @@ fun overlapping(list: inout [Int]) {
     swap(t.0, t.0)
     swap(list[0], list[1])
 }
+
+var counter: Int = 0
+class Registry {
+    class Slot { static var used: Int = 0 }
+    var size: Int = 0
+    mut fun grow(by: Int) { size += by }
+    deinit { grow(size) }
+}
+fun record(a: inout Int, total: inout Int = counter) {}
+fun defaults() {
+    record(counter)
+    swap(Registry.Slot.used, Registry.Slot.used)
+}

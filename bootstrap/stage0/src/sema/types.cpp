@@ -355,7 +355,7 @@ public:
         // Free the working tables before building the result, which is when
         // memory peaks on large files.
         release(annotations_, speculative_annotations_, environments_, environment_ids_, node_declarations_, dependencies_,
-                declarations_, declaration_next_, direct_callees_, generic_bases_, function_names_, reference_contexts_, call_contexts_,
+                declarations_, declaration_next_, direct_callees_, generic_bases_, function_names_, explicit_arguments_, reference_contexts_, call_contexts_,
                 entities_, large_scope_names_, ancestry_cache_, class_intervals_, visit_marks_, ancestry_work_, ancestry_visited_, inherited_members_, walk_,
                 requirements_, expectations_, closure_returns_);
         ScalarTypes result;
@@ -2589,8 +2589,12 @@ private:
                 const auto* ref = name ? resolution_.reference(name->name.span) : nullptr;
                 if (!direct_callees_.contains(&expr) && ref && ref->state == ResolutionState::Resolved) {
                     const auto candidates = resolution_.candidates(ref->target);
-                    if (candidates.size() == 1 && function_value_candidate(candidates.front()) && generic_function(candidates.front()))
-                        depend(index, function_nodes_.at(candidates.front().value));
+                    const bool generics = !candidates.empty() && std::ranges::all_of(candidates, [&](BindingId id) {
+                        return function_value_candidate(id) && generic_function(id);
+                    });
+                    if (generics && candidates.size() == 1) depend(index, function_nodes_.at(candidates.front().value));
+                    // Overloads wait for the expected type, like plain names.
+                    else if (generics) function_names_.emplace(&expr, std::vector<BindingId>(candidates.begin(), candidates.end()));
                 }
                 break;
             }
@@ -2697,8 +2701,20 @@ private:
     }
     // Whether generic function `id` may still have the function type
     // `wanted` once its result is inferred.
-    bool may_match_generic(BindingId id, const TypeDescriptor& wanted) const {
-        return !known(nodes_[function_nodes_.at(id.value)].value.type) && generic_match(id, wanted, true).has_value();
+    bool may_match_generic(BindingId id, const TypeDescriptor& wanted, const Expr* value) const {
+        return !known(nodes_[function_nodes_.at(id.value)].value.type) && overload_match(id, wanted, value, true).has_value();
+    }
+    // generic_match for an overload named by `value`, which agrees with the
+    // type arguments written on it, if any.
+    std::optional<std::vector<Type>> overload_match(BindingId id, const TypeDescriptor& wanted, const Expr* value,
+                                                    bool parameters_only = false) const {
+        auto matched = generic_match(id, wanted, parameters_only);
+        const auto written = explicit_arguments_.find(value);
+        if (!matched || written == explicit_arguments_.end()) return matched;
+        if (written->second.size() != matched->size()) return std::nullopt;
+        for (usize i = 0; i < matched->size(); ++i)
+            if (known((*matched)[i]) && (*matched)[i] != written->second[i]) return std::nullopt;
+        return matched;
     }
     // A generic function's type for explicit type arguments, or nothing while
     // they or its result are not settled.
@@ -2762,22 +2778,24 @@ private:
     std::optional<Value> select_function(usize index, Type expected, Span span) {
         const auto* names = overloads(index);
         if (!names || expected.kind != Type::Function || !known(expected)) return std::nullopt;
+        const Expr* value = unparen(nodes_[index].expr);  // a name, or one with type arguments
         std::vector<BindingId> found;
         std::vector<Type> arguments;
         bool pending = false;
         for (BindingId id : *names) {
             if (generic_function(id)) {
-                if (auto matched = generic_match(id, *types_.descriptor(expected.scalar()))) {
+                if (auto matched = overload_match(id, *types_.descriptor(expected.scalar()), value)) {
                     found.push_back(id);
                     arguments = std::move(*matched);
-                } else pending |= may_match_generic(id, *types_.descriptor(expected.scalar()));
+                } else pending |= may_match_generic(id, *types_.descriptor(expected.scalar()), value);
                 continue;
             }
             const auto type = function_value(id);
             if (type == expected.scalar()) found.push_back(id);
             else pending |= type == Type::Deferred && may_have_type(id, *types_.descriptor(expected));
         }
-        const auto* name = cast<NameExpr>(unparen(nodes_[index].expr));
+        const auto* inst = as<GenericInstExpr>(value);
+        const auto* name = cast<NameExpr>(inst ? unparen(inst->base) : value);
         if (pending) {
             // Retried once every result has been inferred; only a cycle keeps it pending then.
             if (!inferred_) pending_selections_.push_back({index, expected, span});
@@ -2796,8 +2814,8 @@ private:
                             names_.str(name->name.sym), types_.name(expected.scalar(), resolution_, names_));
             return Value{Type::Error};
         }
-        functions_[name] = found.front();
-        if (generic_function(found.front())) function_arguments_[name] = std::move(arguments);
+        functions_[value] = found.front();
+        if (generic_function(found.front())) function_arguments_[value] = std::move(arguments);
         for (usize i = index;;) {
             nodes_[i].value = {expected.scalar()};
             const auto* paren = as<ParenExpr>(nodes_[i].expr);
@@ -2949,6 +2967,8 @@ private:
             if (constructor) {
                 if (constructed.scalar.kind != Type::Nominal) return {Expected::Pending};
                 explicit_arguments = types_.descriptor(constructed.scalar)->arguments;
+                // An alias of a non-generic type applies nothing to it.
+                if (explicit_arguments->empty()) explicit_arguments.reset();
             }
         }
         // A closure whose parameters are all annotated infers its own type,
@@ -3565,8 +3585,9 @@ private:
                 for (BindingId id : *names) {
                     if (generic_function(id)) {
                         const auto node = function_nodes_.at(id.value);
-                        if (known(nodes_[node].value.type)) found |= generic_match(id, wanted).has_value();
-                        else if (may_match_generic(id, wanted)) {
+                        const Expr* value = unparen(nodes_[index].expr);
+                        if (known(nodes_[node].value.type)) found |= overload_match(id, wanted, value).has_value();
+                        else if (may_match_generic(id, wanted, value)) {
                             pending = true;
                             if (nodes_[node].state == 0) pending_dependencies_.push_back(node);
                         }
@@ -4455,6 +4476,11 @@ private:
                         break;
                     }
                 }
+                if (function_names_.contains(expr)) {
+                    // Overloads: the expected type picks one (select_function).
+                    explicit_arguments_[expr] = std::move(args);
+                    break;
+                }
                 if (ids.size() == 1 && resolution_.binding(ids.front()).kind == BindingKind::Function && !direct_callees_.contains(expr) &&
                     function_value_candidate(ids.front()) && generic_function(ids.front())) {
                     if (cast<FunItem>(resolution_.binding(ids.front()).item)->sig.generics.size() != args.size()) {
@@ -4660,6 +4686,7 @@ private:
     NodeMap<const Expr*, CheckedMember> members_;
     NodeMap<const Expr*, bool> direct_callees_;  // a set
     std::unordered_map<const Expr*, std::vector<BindingId>> function_names_;  // candidates of names used as function values
+    std::unordered_map<const Expr*, std::vector<Type>> explicit_arguments_;   // type arguments written on overloaded names
     std::unordered_map<const Expr*, BindingId> functions_;
     std::unordered_map<const Expr*, std::vector<Type>> function_arguments_;  // of generic function values
     NodeMap<const Expr*, bool> generic_bases_;  // names given type arguments; a set

@@ -367,7 +367,13 @@ fun pick<T>(x: T): T = x
 fun pick<T>(x: T, y: T) = use(pick)
 fun use(h: fun(Int) -> Int): Int = h(1)
 let picked = use(pick)
+let explicitOne: fun(Int) -> Int = pick<Int>
+let explicitTwo: fun(Int, Int) -> Int = pick<Int>
+struct Handler(run: fun(Int) -> Int)
+type Plain<T> = Handler
+let plain = Plain<Bool>(run: { x -> x * 2 })
 )");
+    CHECK(own.name(own.value("explicitTwo")) == "fun(Int, Int) -> Int" && own.name(own.value("plain")) == "Handler");
     CHECK(own.name(own.value("nested")) == "fun(Int) -> Bool" && own.value("picked") == Type::Int);
     CHECK(own.name(own.value("flipped")) == "Pair<Bool, Int>" && own.name(own.value("flippedInferred")) == "Pair<Bool, Int>");
     CHECK(own.value("annotated") == Type::Int8 && own.value("inferred") == Type::Int8);
@@ -383,6 +389,7 @@ let picked = use(pick)
         {"fun f<T>(x: T): T = x\nlet g: fun(Int) -> Bool = f", DiagCode::ScalarTypeMismatch},
         {"fun f<T>(g: fun(T) -> T): Int = 0\nlet x = f({ s -> s })", DiagCode::ClosureInference},
         {"fun f<T>(p: *T): *T = p\nlet g: fun(*Int) -> *mut Int = f", DiagCode::ScalarTypeMismatch},
+        {"fun f<T>(x: T): T = x\nfun f<T>(x: T, y: T): T = y\nlet g: fun(Int) -> Int = f<Bool>", DiagCode::ScalarTypeMismatch},
     }) { Frontend bad; bad.check(source, {code}); }
     // Closures that would infer each other's parameter types infer neither.
     Frontend both;

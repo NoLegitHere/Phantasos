@@ -17,7 +17,8 @@
 // type or by explicit type arguments, generic functions passed to generic
 // functions, closures whose parameter types come from the other arguments
 // of a generic call or whose results infer a type argument, and closures
-// that own a generic value.
+// that own a generic value. The expected type picks among generic
+// overloads with explicit type arguments.
 
 struct Pair<A, B>(first: A, second: B)
 
@@ -32,6 +33,10 @@ fun both<A, B>(p: Pair<A, A>, f: fun(A) -> B): Pair<B, B> = Pair(f(p.first), f(p
 fun compose<A, B, C>(f: fun(A) -> B, g: fun(B) -> C): fun(A) -> C = { a -> g(f(a)) }
 
 fun keep<T>(x: own T): fun() -> T = { -> x }
+
+fun pick<T>(x: T): T = x
+
+fun pick<T>(x: T, y: T): T = y
 
 fun main(): Int {
     let f: fun(Int) -> Int = identity
@@ -48,5 +53,8 @@ fun main(): Int {
     print(h(4))
     let k = keep("kept")
     print(k())
+    let one: fun(Int) -> Int = pick<Int>
+    let two: fun(Int, Int) -> Int = pick<Int>
+    print(one(5) + two(6, 7))
     return h(0)
 }

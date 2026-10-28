@@ -582,7 +582,9 @@ Its type arguments come from explicit arguments, as in `identity<Int>`, or
 from the expected function type, which must match its parameter and result
 types with the type parameters replaced, as in
 `let f: fun(Int) -> Int = identity` or `apply(identity, 1)` for
-`apply<T>(f: fun(T) -> T, x: T)`. The wrong number of explicit arguments is
+`apply<T>(f: fun(T) -> T, x: T)`. Among generic overloads, the expected
+type picks the one it matches, and explicit arguments must agree with it,
+as in `let f: fun(Int) -> Int = pick<Int>`. The wrong number of explicit arguments is
 `E0470`; a generic function whose type cannot match the expected one is
 `E0400`. Without either, its name stays deferred. Methods, functions with a
 `where` clause or bounds and functions with an `inout` or `own` parameter do

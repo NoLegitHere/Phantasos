@@ -372,7 +372,16 @@ let explicitTwo: fun(Int, Int) -> Int = pick<Int>
 struct Handler(run: fun(Int) -> Int)
 type Plain<T> = Handler
 let plain = Plain<Bool>(run: { x -> x * 2 })
+fun mixed(x: Int): Int = x
+fun mixed<T>(x: T): T = x
+let mixedValue: fun(Bool) -> Bool = mixed<Bool>
+let mixedSingle = mixed<Int8>
+fun phantom<T, U>(x: T): T = x
+fun phantom<T, U>(x: T, y: T): T = y
+let seeded: fun(Int) -> Int = phantom<Int, Bool>
 )");
+    CHECK(own.name(own.value("mixedValue")) == "fun(Bool) -> Bool" && own.name(own.value("mixedSingle")) == "fun(Int8) -> Int8");
+    CHECK(own.name(own.value("seeded")) == "fun(Int) -> Int");
     CHECK(own.name(own.value("explicitTwo")) == "fun(Int, Int) -> Int" && own.name(own.value("plain")) == "Handler");
     CHECK(own.name(own.value("nested")) == "fun(Int) -> Bool" && own.value("picked") == Type::Int);
     CHECK(own.name(own.value("flipped")) == "Pair<Bool, Int>" && own.name(own.value("flippedInferred")) == "Pair<Bool, Int>");
@@ -390,6 +399,7 @@ let plain = Plain<Bool>(run: { x -> x * 2 })
         {"fun f<T>(g: fun(T) -> T): Int = 0\nlet x = f({ s -> s })", DiagCode::ClosureInference},
         {"fun f<T>(p: *T): *T = p\nlet g: fun(*Int) -> *mut Int = f", DiagCode::ScalarTypeMismatch},
         {"fun f<T>(x: T): T = x\nfun f<T>(x: T, y: T): T = y\nlet g: fun(Int) -> Int = f<Bool>", DiagCode::ScalarTypeMismatch},
+        {"fun f<T>(x: T): T = x\nfun f(x: Int): Int = x\nlet g = f<Int, Bool>", DiagCode::GenericArguments},
     }) { Frontend bad; bad.check(source, {code}); }
     // Closures that would infer each other's parameter types infer neither.
     Frontend both;

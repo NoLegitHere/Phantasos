@@ -2588,13 +2588,16 @@ private:
                 const auto* name = as<NameExpr>(base);
                 const auto* ref = name ? resolution_.reference(name->name.span) : nullptr;
                 if (!direct_callees_.contains(&expr) && ref && ref->state == ResolutionState::Resolved) {
-                    const auto candidates = resolution_.candidates(ref->target);
-                    const bool generics = !candidates.empty() && std::ranges::all_of(candidates, [&](BindingId id) {
-                        return function_value_candidate(id) && generic_function(id);
-                    });
-                    if (generics && candidates.size() == 1) depend(index, function_nodes_.at(candidates.front().value));
-                    // Overloads wait for the expected type, like plain names.
-                    else if (generics) function_names_.emplace(&expr, std::vector<BindingId>(candidates.begin(), candidates.end()));
+                    // The generic functions that take this many type arguments.
+                    std::vector<BindingId> eligible;
+                    for (BindingId id : resolution_.candidates(ref->target))
+                        if (function_value_candidate(id) && generic_function(id) &&
+                            cast<FunItem>(resolution_.binding(id).item)->sig.generics.size() == generic.args.size())
+                            eligible.push_back(id);
+                    // A single one has a type once its result is known; overloads
+                    // wait for the expected type, like plain names.
+                    if (eligible.size() == 1) depend(index, function_nodes_.at(eligible.front().value));
+                    if (!eligible.empty()) function_names_.emplace(&expr, std::move(eligible));
                 }
                 break;
             }
@@ -2645,13 +2648,17 @@ private:
     // part; nothing when they do not match or its result is still unknown.
     // With `parameters_only`, its result is left out and the arguments may be
     // incomplete: nothing then means it can never have that type.
-    std::optional<std::vector<Type>> generic_match(BindingId id, const TypeDescriptor& wanted, bool parameters_only = false) const {
+    // Type arguments in `seed` are fixed in advance.
+    std::optional<std::vector<Type>> generic_match(BindingId id, const TypeDescriptor& wanted, bool parameters_only = false,
+                                                   std::span<const Type> seed = {}) const {
         const auto& signature = signatures_.at(id.value);
         const auto result = nodes_[function_nodes_.at(id.value)].value.type;
         if ((!parameters_only && !known(result)) || wanted.throws || signature.parameters.size() != wanted.parameters.size())
             return std::nullopt;
         const auto generics = generic_parameters(id);
+        if (!seed.empty() && seed.size() != generics.size()) return std::nullopt;
         std::vector<Type> arguments(generics.size());
+        std::ranges::copy(seed, arguments.begin());
         std::vector<std::pair<Type, Type>> work;
         if (!parameters_only) work.push_back({result, wanted.result});
         for (usize p = 0; p < wanted.parameters.size(); ++p) work.push_back({signature.parameters[p], wanted.parameters[p]});
@@ -2708,13 +2715,9 @@ private:
     // type arguments written on it, if any.
     std::optional<std::vector<Type>> overload_match(BindingId id, const TypeDescriptor& wanted, const Expr* value,
                                                     bool parameters_only = false) const {
-        auto matched = generic_match(id, wanted, parameters_only);
         const auto written = explicit_arguments_.find(value);
-        if (!matched || written == explicit_arguments_.end()) return matched;
-        if (written->second.size() != matched->size()) return std::nullopt;
-        for (usize i = 0; i < matched->size(); ++i)
-            if (known((*matched)[i]) && (*matched)[i] != written->second[i]) return std::nullopt;
-        return matched;
+        if (written == explicit_arguments_.end()) return generic_match(id, wanted, parameters_only);
+        return generic_match(id, wanted, parameters_only, written->second);
     }
     // A generic function's type for explicit type arguments, or nothing while
     // they or its result are not settled.
@@ -4476,23 +4479,31 @@ private:
                         break;
                     }
                 }
-                if (function_names_.contains(expr)) {
-                    // Overloads: the expected type picks one (select_function).
-                    explicit_arguments_[expr] = std::move(args);
+                if (const auto eligible = function_names_.find(expr); eligible != function_names_.end()) {
+                    // Overloads: the expected type picks one (select_function),
+                    // which keeps to the written arguments.
+                    explicit_arguments_[expr] = args;
+                    if (eligible->second.size() > 1) break;
+                    const BindingId id = eligible->second.front();
+                    if (const auto type = generic_function_value(id, args, expr->span)) {
+                        node.value = {*type};
+                        functions_[expr] = id;
+                        function_arguments_[expr] = std::move(args);
+                    }
                     break;
                 }
                 if (ids.size() == 1 && resolution_.binding(ids.front()).kind == BindingKind::Function && !direct_callees_.contains(expr) &&
                     function_value_candidate(ids.front()) && generic_function(ids.front())) {
-                    if (cast<FunItem>(resolution_.binding(ids.front()).item)->sig.generics.size() != args.size()) {
-                        diag_.error(DiagCode::GenericArguments, expr->span, "type argument count does not match the generic function");
-                        node.value = {Type::Error};
-                        break;
-                    }
-                    if (const auto type = generic_function_value(ids.front(), args, expr->span)) {
-                        node.value = {*type};
-                        functions_[expr] = ids.front();
-                        function_arguments_[expr] = std::move(args);
-                    }
+                    diag_.error(DiagCode::GenericArguments, expr->span, "type argument count does not match the generic function");
+                    node.value = {Type::Error};
+                    break;
+                }
+                if (!direct_callees_.contains(expr) && ids.size() > 1 &&
+                    std::ranges::all_of(ids, [&](BindingId id) { return function_value_candidate(id); }) &&
+                    std::ranges::any_of(ids, [&](BindingId id) { return generic_function(id); })) {
+                    diag_.error(DiagCode::GenericArguments, expr->span, "no overload takes {} type argument{}", args.size(),
+                                args.size() == 1 ? "" : "s");
+                    node.value = {Type::Error};
                     break;
                 }
                 // Only generic functions take type arguments, whether or not

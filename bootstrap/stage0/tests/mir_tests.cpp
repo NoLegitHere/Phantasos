@@ -15,9 +15,9 @@
 
 #include "test_support.hpp"
 
+#include <format>
 #include <limits>
 #include <string>
-#include <format>
 #include <vector>
 
 #include "codegen/mir.hpp"
@@ -533,6 +533,21 @@ fun main(): Int {
     const auto suffixed = overloads.dump("fun pick<T>(x: T): T = x\nfun pick<T>(x: T, y: T): T = y\n"
                                          "fun main(): Int = pick(1) + pick(2, 3)\n");
     CHECK(suffixed.contains("fun @pick<Int>(") && suffixed.contains("fun @pick.1<Int>("));
+    // Types that share their parts are substituted once per part, and long
+    // type arguments are elided in names, with a suffix where two instances
+    // would share one.
+    std::string chain = "fun f0<T>() = { a: T, b: T -> 0 }\n";
+    for (int i = 1; i <= 30; ++i)
+        chain += std::format("fun f{}<T>() = f{}<fun(T, T) -> Int>()\n", i, i - 1);
+    chain += "fun main() {\n    let x = f30<Int>()\n}\n";
+    Frontend shared;
+    CHECK(shared.dump(chain).contains("fun @f30<Int>() -> @fun("));
+    std::string tags = "fun tag<T>() {}\nfun h0<T>() {\n    tag<fun(T, Int) -> Int>()\n    tag<fun(T, Bool) -> Int>()\n}\n";
+    for (int i = 1; i <= 8; ++i) tags += std::format("fun h{}<T>() {{\n    h{}<fun(T, T) -> Int>()\n}}\n", i, i - 1);
+    tags += "fun main() {\n    h8<Int>()\n}\n";
+    Frontend elided;
+    const auto names = elided.dump(tags);
+    CHECK(names.contains("...>() -> unit {") && names.contains("...>.1() -> unit {"));
     // Instances run like any other function, recursion and closures included.
     CHECK(result(R"(
 fun count<T>(x: T, n: Int): Int {

@@ -54,31 +54,42 @@ ScalarType TypeTable::intern(TypeDescriptor descriptor) {
 }
 
 ScalarType ScalarTypes::substitute(ScalarType type, std::span<const TypeArgument> arguments) {
-    const auto* found = arguments.empty() ? nullptr : types_.descriptor(type);
-    if (!found) return type;
-    if (found->kind == ScalarType::TypeParameter) {
-        for (const auto& [parameter, argument] : arguments)
-            if (parameter == found->declaration)
-                return {argument.kind, argument.optional_depth + type.optional_depth, argument.detail};
-        return type;
-    }
-    // Interning a part can move the descriptor, so the copy is changed.
-    TypeDescriptor next = *found;
-    bool changed = false;
-    const auto part = [&](ScalarType& inner) {
-        const auto replaced = substitute(inner, arguments);
-        changed |= replaced != inner;
-        inner = replaced;
+    if (arguments.empty()) return type;
+    // Types share their parts, so each distinct descriptor is substituted
+    // once, without its optional wrappers.
+    FlatMap<usize, ScalarType> done;
+    const auto visit = [&](this const auto& self, ScalarType inner) -> ScalarType {
+        const auto* found = types_.descriptor(inner);
+        if (!found) return inner;
+        auto it = done.find(inner.detail);
+        if (it == done.end()) {
+            ScalarType result = inner.scalar();
+            if (found->kind == ScalarType::TypeParameter) {
+                for (const auto& [parameter, argument] : arguments)
+                    if (parameter == found->declaration) result = argument;
+            } else {
+                // Interning a part can move the descriptor, so the copy is changed.
+                TypeDescriptor next = *found;
+                bool changed = false;
+                const auto part = [&](ScalarType& part_type) {
+                    const auto replaced = self(part_type);
+                    changed |= replaced != part_type;
+                    part_type = replaced;
+                };
+                part(next.element);
+                part(next.result);
+                part(next.error);
+                for (auto& parameter : next.parameters) part(parameter);
+                for (auto& argument : next.arguments) part(argument);
+                if (changed) result = types_.intern(std::move(next));
+            }
+            it = done.emplace(inner.detail, result).first;
+        }
+        auto result = it->second;
+        result.optional_depth += inner.optional_depth;
+        return result;
     };
-    part(next.element);
-    part(next.result);
-    part(next.error);
-    for (auto& parameter : next.parameters) part(parameter);
-    for (auto& argument : next.arguments) part(argument);
-    if (!changed) return type;
-    auto result = types_.intern(std::move(next));
-    result.optional_depth = type.optional_depth;
-    return result;
+    return visit(type);
 }
 
 void TypeTable::grow() {

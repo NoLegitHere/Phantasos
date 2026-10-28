@@ -1089,6 +1089,8 @@ private:
         return dst;
     }
 
+    // The longest type argument an instance's name spells out in full.
+    static constexpr usize kArgumentNameLimit = 256;
     // The function of a generic function's instance for a call's type
     // arguments, added the first time a call needs it. The gate has bounded
     // how many there are (E0602).
@@ -1105,10 +1107,13 @@ private:
         PendingFunction pending{&callee, static_cast<u32>(program_.functions.size()), {}};
         for (usize i = 0; i < arguments.size(); ++i) {
             if (i) name += ", ";
-            name += types_.type_name(arguments[i], resolution_, names_);
+            name += types_.type_name(arguments[i], resolution_, names_, kArgumentNameLimit);
             pending.env.emplace_back(values_.at(callee.sig.generics[i].name.span.lo), arguments[i]);
         }
         name += ">";
+        // Long arguments are elided, so distinct instances can share a name;
+        // later ones get a numeric suffix.
+        if (const u32 clash = instance_names_[name]++) name += std::format(".{}", clash);
         const auto caller = static_cast<usize>(fun_ - program_.functions.data());
         auto& out = program_.functions.emplace_back();
         fun_ = &program_.functions[caller];
@@ -1127,6 +1132,7 @@ private:
     std::unordered_map<const FunItem*, u32> functions_;  // non-generic functions
     std::unordered_map<const FunItem*, std::string> templates_;  // generic functions to their base names
     std::unordered_map<std::string, u32> instances_;  // generic function and type arguments to its instance
+    std::unordered_map<std::string, u32> instance_names_;  // instances so far with each name
     std::vector<PendingFunction> funs_;
     std::vector<ScalarTypes::TypeArgument> env_;  // the type arguments of the instance being lowered
     std::unordered_map<std::string, u64> strings_;  // literal bytes to their index in program_.strings

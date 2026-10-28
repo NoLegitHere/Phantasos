@@ -1091,7 +1091,10 @@ of its own, named after the function, with its type arguments in angle
 brackets, so `identity` called with an `Int` is `identity<Int>` and `pair`
 called with `Int` and `(Bool, String)` is `pair<Int, (Bool, String)>`. An
 overload's suffix comes before them, as in `pick.1<Int>`, and a closure in an
-instance is named after the instance, as in `keep<Bool>$closure0`.
+instance is named after the instance, as in `keep<Bool>$closure0`. A type
+argument longer than 256 bytes is cut short with `...`, and when that gives
+two instances the same name, the later one gets a numeric suffix such as
+`.1` after the closing bracket.
 
 Stage0's first x86_64 backend checks every trapping operation inline. A
 failed check calls `__phantasos_trap` with the trap code in the first

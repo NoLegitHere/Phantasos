@@ -614,6 +614,10 @@ void moves() {
         {"fun f(c: Bool) { let a = \"a\"\nwhile c { if c { continue }\ndefer { look(a) } } }", {}},
         {"fun f(c: Bool) { let a = \"a\"\ndefer { look(a) }\nif c { take(a)\nreturn }\nlook(a) }", {M}},
         {"fun f() { let a = \"a\"\ndefer { let g = { -> look(a) } } }", {}},
+        {"fun f() { var a = \"a\"\ndefer { defer { look(a) }\na = \"restored\" }\ntake(a) }", {}},
+        {"fun f() { var a = \"a\"\ndefer { defer { look(a) }\nlook(a) }\ntake(a) }", {M}},
+        {"fun f() { let a = \"a\"\nlet x = try? unsafe { defer { take(a) }\nthrow 1 }\nlook(a) }", {M}},
+        {"fun g() throws {}\nfun f() { let a = \"a\"\nlet x = try? unsafe { defer { take(a) }\ng() }\nlook(a) }", {M}},
         // A moved value is reported once until it moves again.
         {"fun f() { let a = \"a\"\ntake(a)\nlook(a)\nlook(a)\ntake(a)\nlook(a) }", {M, M}},
         // Unreachable code reports nothing.

@@ -262,12 +262,16 @@ private:
     // Diagnostics go nowhere while a loop body is evaluated only to learn
     // what an iteration moves. A cleanup is checked where it is registered,
     // and for moves again at each exit of its scope (3.30).
-    enum class Filter : u8 { All, NoMoves, OnlyMoves };
+    // A cleanup registered inside another cleanup's exit run reports nothing.
+    enum class Filter : u8 { All, NoMoves, OnlyMoves, Nothing };
+    bool shown(DiagCode code) const {
+        const bool moves = code == DiagCode::UseAfterMove;
+        if (quiet_ || filter_ == Filter::Nothing) return false;
+        return moves ? filter_ != Filter::NoMoves : filter_ != Filter::OnlyMoves;
+    }
     template <typename... Args>
     Diagnostic& error(DiagCode code, Span span, std::format_string<Args...> fmt, Args&&... args) {
-        const bool moves = code == DiagCode::UseAfterMove;
-        const bool hidden = quiet_ || (filter_ == Filter::NoMoves && moves) || (filter_ == Filter::OnlyMoves && !moves);
-        return (hidden ? scratch_ : diag_).error(code, span, fmt, std::forward<Args>(args)...);
+        return (shown(code) ? diag_ : scratch_).error(code, span, fmt, std::forward<Args>(args)...);
     }
 
     // How a place may be modified (3.3). Unknown places, including `self`
@@ -677,7 +681,7 @@ private:
         const auto bit = movable(id);
         if (!bit || !state.live) return;
         // A cleanup runs at every exit of its scope, but each use reports once.
-        if (state.moved.test(*bit) && (quiet_ || filter_ == Filter::NoMoves || reported_moves_.insert(span.lo))) {
+        if (state.moved.test(*bit) && (!shown(DiagCode::UseAfterMove) || reported_moves_.insert(span.lo))) {
             const auto& binding = resolution_.binding(id);
             const auto name = names_.str(binding.name.sym);
             auto& d = state.moved_all.test(*bit)
@@ -809,7 +813,7 @@ private:
         }
         PendingClosure pending{&closure, self_, self_storage_, self_owner_};
         // Created again when the loop is checked, or already where its cleanup was registered.
-        if (quiet_ || filter_ == Filter::OnlyMoves) return;
+        if (quiet_ || filter_ == Filter::OnlyMoves || filter_ == Filter::Nothing) return;
         if (self_storage_ != Storage::Unknown && self_owner_) {
             if (const auto use = uses_self(closure)) {
                 // `self` is a parameter too: borrowed, or `inout` in a `mut fun`.
@@ -1076,9 +1080,9 @@ private:
                 else if (const auto* array = as<ArrayExpr>(expr)) for (const Expr* elem : array->elems) consume(elem);
                 if (const auto* unary = as<UnaryExpr>(expr); unary && unary->op == UnOp::TryOpt) {
                     // A caught error resumes after the `try?` expression.
-                    caught_.push_back(dead());
+                    caught_.push_back({dead(), defers_.size()});
                     eval(unary->operand, state);
-                    merge(state, caught_.back());
+                    merge(state, caught_.back().state);
                     caught_.pop_back();
                     continue;
                 }
@@ -1096,7 +1100,7 @@ private:
                 mutating_call(*call);
                 // Any call inside `try?` may throw after its operands have run;
                 // a panic aborts instead (3.7).
-                if (!caught_.empty() && !panics(*call)) merge(caught_.back(), state);
+                if (!caught_.empty() && !panics(*call)) catch_error(state);
                 if (diverges(*call)) state = dead();
             } else if (conditional(*expr)) {
                 // The right operand runs on only some paths.
@@ -1217,6 +1221,14 @@ private:
         filter_ = filter;
     }
 
+    // An error resumes after the innermost `try?`, once the cleanups of the
+    // scopes it leaves inside that expression have run.
+    void catch_error(const State& state) {
+        State exit = state;
+        cleanups(caught_.back().defers, exit);
+        merge(caught_.back().state, exit);
+    }
+
     // One pass over a loop from its head; back receives the states that
     // return to the head, and the result is the state after the loop.
     State iteration(const Cond* cond, const BlockExpr* body, State& state, bool exits_normally, State& back) {
@@ -1263,7 +1275,7 @@ private:
                 break;
             case StmtKind::Throw:
                 eval(cast<ThrowStmt>(&stmt)->value, state);
-                if (!caught_.empty()) merge(caught_.back(), state);
+                if (!caught_.empty()) catch_error(state);
                 cleanups(0, state);
                 state = dead();
                 break;
@@ -1302,7 +1314,9 @@ private:
                 breaks_.push_back(dead());
                 continues_.push_back(dead());
                 auto caught = std::exchange(caught_, {});
-                const auto filter = std::exchange(filter_, filter_ == Filter::All ? Filter::NoMoves : filter_);
+                const auto filter = std::exchange(filter_, filter_ == Filter::All       ? Filter::NoMoves
+                                                           : filter_ == Filter::NoMoves ? Filter::NoMoves
+                                                                                        : Filter::Nothing);
                 control_flow(*cast<DeferStmt>(&stmt)->body, cleanup);
                 filter_ = filter;
                 caught_ = std::move(caught);
@@ -1351,7 +1365,11 @@ private:
     FlatSet<usize> captured_;                        // bindings the current closure captures
     std::vector<State> breaks_;
     std::vector<State> continues_;
-    std::vector<State> caught_;  // error exits of enclosing `try?` expressions
+    struct Catch {
+        State state;  // where the error exits of a `try?` resume
+        usize defers; // defers_ size when the `try?` started
+    };
+    std::vector<Catch> caught_;  // enclosing `try?` expressions
     usize tracked_ = 0;
     FlatMap<u32, usize> owned_;      // name span.lo -> move bit of an `own` parameter
     FlatSet<const Expr*> consumed_;  // names whose value is moved where they are read

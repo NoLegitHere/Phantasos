@@ -261,6 +261,55 @@ fun main(): Int {
     Frontend unit;
     unit.gate("struct B<T>(x: T)\nfun main() {\n    let b = B(x: ())\n}\n", {DiagCode::UnsupportedCodegen});
 }
+void interface_bounds() {
+    // Interfaces with method requirements are accepted as bounds, and structs
+    // that conform to them, generic ones and defaults included.
+    Frontend f;
+    f.gate(R"(
+interface Shape {
+    fun area(): Int
+    fun twice(): Int = area() * 2
+    fun larger(other: Self): Bool = area() > other.area()
+}
+interface Counter {
+    mut fun bump()
+}
+struct Square(side: Int): Shape {
+    fun area(): Int = side * side
+}
+struct Pair<T: Shape>(a: T, b: T): Shape {
+    fun area(): Int = a.area() + b.area()
+}
+struct Tally(var n: Int): Counter, Shape {
+    mut fun bump() { n += 1 }
+    fun area(): Int = n
+}
+fun measure<T: Shape>(x: T): Int = x.twice()
+fun both<T: Counter & Shape>(x: T): Int {
+    var y = x
+    y.bump()
+    return y.area()
+}
+fun main(): Int {
+    let p = Pair(a: Square(side: 1), b: Square(side: 2))
+    if p.larger(p) { return 0 }
+    return measure(p) + both(Tally(n: 1))
+}
+)");
+    // A witness that calls back through the bound on a bigger receiver
+    // nests instances without end.
+    Frontend deep;
+    deep.gate("interface Grow {\n    fun grow(n: Int): Int\n}\n"
+              "struct W<T>(x: T): Grow {\n    fun grow(n: Int): Int {\n        if n == 0 { return 0 }\n"
+              "        return deeper(W(x: (x, x)), n - 1)\n    }\n}\n"
+              "fun deeper<T: Grow>(g: T, n: Int): Int = g.grow(n)\nfun main(): Int = W(x: 1).grow(3)\n",
+              {DiagCode::InstanceLimit});
+    // Values of an interface type would need dynamic dispatch.
+    Frontend value;
+    value.gate("interface Shape {\n    fun area(): Int\n}\nstruct Square(side: Int): Shape {\n"
+               "    fun area(): Int = side * side\n}\nfun main() {\n    let s: Shape = Square(side: 1)\n}\n",
+               {DiagCode::UnsupportedCodegen});
+}
 }  // namespace
 
 int main() {
@@ -273,5 +322,6 @@ int main() {
     long_trees();
     generic_functions();
     generic_structs();
+    interface_bounds();
     std::println("gate tests passed");
 }

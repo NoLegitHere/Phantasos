@@ -99,6 +99,10 @@ ScalarType ScalarTypes::declared(BindingId declaration, std::span<const BindingI
     return types_.intern({.kind = ScalarType::Nominal, .declaration = declaration, .arguments = std::move(arguments)});
 }
 
+ScalarType ScalarTypes::parameter(BindingId declaration) {
+    return types_.intern({.kind = ScalarType::TypeParameter, .declaration = declaration});
+}
+
 void TypeTable::grow() {
     // Rebuilds from the cached hashes; descriptors are never rehashed.
     std::vector<Slot> slots(slots_.empty() ? 64 : slots_.size() * 2);

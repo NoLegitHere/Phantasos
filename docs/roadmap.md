@@ -109,7 +109,7 @@ foundation. Complete.
   - [x] Generic functions, with a limit on instances (E0602).
   - [x] Generic structs and their methods.
   - [x] Values of generic functions, and generic closures.
-  - [ ] Interfaces as bounds, through witnesses.
+  - [x] Interfaces as bounds, through witnesses.
   - [ ] Generics samples and run tests.
 - [ ] Generic base substitution and built-in traits. Instantiate
   generic base/interface graphs, derive `Copy`/`Sendable`/`Error`, and complete

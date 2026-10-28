@@ -137,8 +137,10 @@ public:
             out.span = fun.name.span;
         };
         for (const Item* item : file.items) {
-            if (item->kind == ItemKind::Struct) {
-                // Methods are named after their struct and follow it.
+            if (item->kind == ItemKind::Struct || item->kind == ItemKind::Interface) {
+                // Methods are named after their struct and follow it. An
+                // interface's methods are templates whose instances are
+                // the defaults a struct uses.
                 const auto& type = *as_type_decl(item);
                 for (const Item* member : type.members)
                     if (const auto* method = as<FunItem>(member)) {
@@ -187,6 +189,7 @@ private:
         u32 function;
         std::vector<BindingId> captures;
         std::optional<Type> self;  // the receiver's type, when the closure uses it
+        ScalarType self_type;      // the creating method's receiver type, if any
         std::vector<ScalarTypes::TypeArgument> env;  // that of the function creating it
     };
     // A local or the receiver, and the fields below it from the outside in.
@@ -328,13 +331,18 @@ private:
         return fields_.at(binding.name.span.lo);
     }
     static bool mutating(const FunItem& fun) { return has_modifier(fun.mods, Modifier::Mut); }
-    // Whether a function has instances: it is generic, or a method of a generic struct.
+    // Whether a function has instances: it is generic, or a method of a
+    // generic struct or an interface.
     bool generic(const FunItem& fun) const {
         const auto owner = owners_.find(&fun);
-        return !fun.sig.generics.empty() || (owner != owners_.end() && !owner->second->generics.empty());
+        return !fun.sig.generics.empty() ||
+               (owner != owners_.end() && (!owner->second->generics.empty() || interface(*owner->second)));
     }
-    // A struct's type as its own methods see it, such as `Box<T>`.
+    static bool interface(const TypeDeclItem& type) { return type.kind == ItemKind::Interface; }
+    // A struct's type as its own methods see it, such as `Box<T>`; an
+    // interface's methods see `Self`.
     ScalarType declared(const TypeDeclItem& type) {
+        if (interface(type)) return types_.parameter(items_.at(&type));
         std::vector<BindingId> parameters;
         for (const auto& param : type.generics) parameters.push_back(values_.at(param.name.span.lo));
         return types_.declared(items_.at(&type), parameters);
@@ -374,8 +382,10 @@ private:
         const ScalarSignature* sig = types_.signature(items_.at(&item));
         // A method's receiver is its hidden first parameter (abi.md A.6),
         // inout for a `mut fun`.
+        self_type_ = {};
         if (const auto owner = owners_.find(&item); owner != owners_.end()) {
-            self_ = reg(lower_type(concrete(declared(*owner->second))));
+            self_type_ = concrete(declared(*owner->second));
+            self_ = reg(lower_type(self_type_));
             if (mutating(item)) fun_->inout = {true};
         }
         for (const auto& param : item.sig.params)
@@ -401,6 +411,7 @@ private:
         fun_ = &program_.functions[pending.function];
         locals_.clear();
         self_ = {};
+        self_type_ = pending.self_type;
         const auto& closure = *pending.closure;
         const Reg env = reg(Type::U64);
         for (const auto& param : closure.params)
@@ -907,7 +918,7 @@ private:
     // A closure value: its function, named after the function that creates it,
     // and a new environment holding a copy of each captured value.
     Reg make_closure(const ClosureExpr& closure) {
-        PendingClosure pending{&closure, static_cast<u32>(program_.functions.size()), {}, {}, env_};
+        PendingClosure pending{&closure, static_cast<u32>(program_.functions.size()), {}, {}, self_type_, env_};
         Layout layout;
         std::vector<Reg> captured;
         for (const auto& capture : resolution_.captures(&closure)) {
@@ -1084,12 +1095,22 @@ private:
             if (type == Type::Never) end(Term::Unreachable);
             return dst;
         }
-        const auto& callee = *cast<FunItem>(resolution_.binding(checked.target).item);
-        // Arguments run in source order and are passed in parameter order,
-        // after a method's receiver.
+        const auto& target = *cast<FunItem>(resolution_.binding(checked.target).item);
         const bool method = checked.kind == CallKind::Method;
+        // A method of an interface or a generic struct takes its receiver's
+        // type; an implicit receiver is the current method's.
+        ScalarType self;
+        if (method && (interface(*owners_.at(&target)) || !owners_.at(&target)->generics.empty()))
+            self = checked.receiver ? scalar(checked.receiver) : self_type_;
+        // An interface method runs its witness for the receiver's struct: the
+        // struct's own method, or the interface's default (static dispatch).
+        const auto& callee = method && interface(*owners_.at(&target)) ? witness(target, self) : target;
+        // Arguments run in source order and are passed in parameter order,
+        // after a method's receiver. A `mut fun` requirement's receiver is a
+        // place even when its witness is a plain `fun`, which takes its value.
+        const bool at_place = method && mutating(target);
         const bool inout = method && mutating(callee);
-        const usize first = method && !inout ? 1 : 0;
+        const usize first = method && !at_place ? 1 : 0;
         std::vector<Reg> ordered(callee.sig.params.size() + (method ? 1 : 0));
         if (first) ordered.front() = args.front();
         for (usize i = first; i < args.size(); ++i) ordered[checked.parameters[i - first] + (method ? 1 : 0)] = args[i];
@@ -1098,26 +1119,34 @@ private:
             if (!arg.valid()) return {};
         Place receiver;
         std::vector<Reg> owners;
-        if (inout) {
-            // The receiver's place is read now and written back after the call.
+        if (at_place) {
+            // The receiver's place is read now, and written back after the
+            // call when the callee mutates it.
             receiver = checked.receiver ? place(checked.receiver) : Place{self_, {}, {}};
             owners = read(receiver, receiver.fields.size());
             ordered.front() = owners.back();
         }
         const Reg dst = has_value(type) ? reg(type) : Reg{};
-        u32 target;
-        if (!generic(callee)) target = functions_.at(&callee);
-        else if (!method || owners_.at(&callee)->generics.empty()) target = instance(callee, {}, checked.type_arguments);
-        else {
-            // A method of a generic struct takes the type arguments of its
-            // receiver; an implicit one is the current instance's.
-            const ScalarType self = checked.receiver ? scalar(checked.receiver) : concrete(declared(*owners_.at(&callee)));
-            target = instance(callee, self, checked.type_arguments);
-        }
-        emit({.op = Op::Call, .dst = dst, .callee = target, .args = std::move(ordered)});
+        const u32 function = !generic(callee) ? functions_.at(&callee)
+                           : !method || (!interface(*owners_.at(&callee)) && owners_.at(&callee)->generics.empty())
+                               ? instance(callee, {}, checked.type_arguments)
+                               : instance(callee, self, &callee == &target ? checked.type_arguments
+                                                                           : std::span<const ScalarType>{});
+        emit({.op = Op::Call, .dst = dst, .callee = function, .args = std::move(ordered)});
         if (type == Type::Never) end(Term::Unreachable);
         else if (inout) rebuild(receiver, owners);
         return dst;
+    }
+
+    // The method that runs for interface method `requirement` on a struct
+    // `receiver`: the struct's implementation, or the interface's default.
+    // The gate has checked that there is one.
+    const FunItem& witness(const FunItem& requirement, ScalarType receiver) const {
+        const BindingId id = items_.at(&requirement);
+        for (const auto& witness : types_.hierarchy(types_.descriptor(receiver)->declaration)->witnesses)
+            if (witness.requirement == id) return *cast<FunItem>(resolution_.binding(witness.implementation).item);
+        PHS_ASSERT(false && "a struct without a witness for an interface method");
+        unreachable();
     }
 
     // The longest type argument an instance's name spells out in full.
@@ -1130,7 +1159,11 @@ private:
     u32 instance(const FunItem& callee, ScalarType self, std::span<const ScalarType> type_arguments) {
         PendingFunction pending{&callee, static_cast<u32>(program_.functions.size()), {}};
         std::string name = templates_.at(&callee);
-        if (self.kind == ScalarType::Nominal) {
+        if (self.kind == ScalarType::Nominal && interface(*owners_.at(&callee))) {
+            // An interface's default for a struct, as in `Shape.twice<Square>`.
+            pending.env.emplace_back(items_.at(owners_.at(&callee)), self);
+            name += std::format("<{}>", types_.type_name(self, resolution_, names_, kArgumentNameLimit));
+        } else if (self.kind == ScalarType::Nominal) {
             const auto& owner = *owners_.at(&callee);
             const auto owner_arguments = types_.descriptor(self)->arguments;
             for (usize i = 0; i < owner.generics.size(); ++i)
@@ -1187,6 +1220,7 @@ private:
     std::unordered_map<u32, u32> fields_;     // field declaration offset to its declaration index
     std::unordered_map<const FunItem*, const TypeDeclItem*> owners_;  // a method's struct
     Reg self_;  // the current method's receiver
+    ScalarType self_type_;  // and its type
     Program program_;
     Function* fun_ = nullptr;
     u32 current_ = 0;

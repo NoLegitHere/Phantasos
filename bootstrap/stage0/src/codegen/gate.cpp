@@ -116,20 +116,23 @@ public:
 
     bool run(const File& file) {
         for (const auto& import : file.imports) unsupported(import.span, "imports");
+        interfaces(file);
         structs(file);
+        // Methods of supported structs and interfaces; an interface's are
+        // checked once, with `Self` opaque, like a generic function.
         std::vector<const FunItem*> methods;
         for (const Item* item : file.items)
-            if (item->kind == ItemKind::Struct && structs_.contains(items_.at(item).value))
+            if ((item->kind == ItemKind::Struct && structs_.contains(items_.at(item).value)) ||
+                (item->kind == ItemKind::Interface && interfaces_.contains(items_.at(item).value)))
                 for (const Item* member : as_type_decl(item)->members)
-                    if (const auto* method = as<FunItem>(member)) methods.push_back(method);
+                    if (const auto* method = as<FunItem>(member)) {
+                        methods.push_back(method);
+                        owners_.emplace(method, as_type_decl(item));
+                    }
         functions_.insert(methods.begin(), methods.end());
-        for (const Item* item : file.items)
-            if (item->kind == ItemKind::Struct && structs_.contains(items_.at(item).value))
-                for (const Item* member : as_type_decl(item)->members)
-                    if (const auto* method = as<FunItem>(member)) owners_.emplace(method, as_type_decl(item));
         std::vector<const FunItem*> mains;
         for (const Item* item : file.items) {
-            if (item->kind == ItemKind::Struct) continue;
+            if (item->kind == ItemKind::Struct || item->kind == ItemKind::Interface) continue;
             const auto* fun = as<FunItem>(item);
             if (!fun) {
                 unsupported(item->kind == ItemKind::Extern ? item->span : item->name.span, item_name(item->kind));
@@ -164,6 +167,70 @@ private:
             case ItemKind::TypeAlias: return "type aliases";
             default: return "this declaration";
         }
+    }
+
+    // ------------------------------------------------------------ interfaces
+
+    // An interface is supported when it is a non-generic list of instance
+    // methods, with or without default bodies. Its methods see `Self` as an
+    // opaque type, and calls to them on a struct go to its witnesses (3.25).
+    // Values of an interface type are not supported.
+    void interfaces(const File& file) {
+        for (const Item* item : file.items) {
+            if (item->kind != ItemKind::Interface) continue;
+            const auto& type = *as_type_decl(item);
+            const bool before = ok_;
+            ok_ = true;
+            if (!type.attrs.empty()) unsupported(type.attrs.front().span, "attributes");
+            if (!type.generics.empty()) unsupported(type.generics.front().name.span, "generic interfaces");
+            if (!type.supers.empty()) unsupported(type.supers.front().type->span, "interfaces that extend interfaces");
+            if (!type.where.empty()) unsupported(type.where.front().type->span, "'where' clauses");
+            for (const Item* member : type.members) {
+                if (const auto* method = as<FunItem>(member)) {
+                    if (has_modifier(method->mods, Modifier::Static)) unsupported(method->name.span, "static methods");
+                    else if (!method->sig.generics.empty())
+                        unsupported(method->sig.generics.front().name.span, "generic methods in interfaces");
+                    continue;
+                }
+                unsupported(member->name.sym.empty() ? member->span : member->name.span, member_name(member->kind));
+            }
+            if (ok_) interfaces_.insert(items_.at(item).value);
+            ok_ = ok_ && before;
+        }
+    }
+
+    // The supported interface a type expression names, if any.
+    BindingId interface(const TypeExpr& type) const {
+        if (type.kind != TypeKind::Path || type.path.parts.size() != 1 || !type.args.empty()) return {};
+        const auto* ref = resolution_.reference(type.path.parts.front().span);
+        if (!ref || ref->state != ResolutionState::Resolved) return {};
+        const auto ids = resolution_.candidates(ref->target);
+        return ids.size() == 1 && interfaces_.contains(ids.front().value) ? ids.front() : BindingId{};
+    }
+
+    // Type parameters may be bounded by supported interfaces only.
+    void bounds(std::span<const GenericParam> generics, std::span<const WhereClause> where) {
+        for (const auto& param : generics)
+            for (const TypeExpr* bound : param.bounds)
+                if (!interface(*bound).valid()) unsupported(bound->span, "bounds other than supported interfaces");
+        if (!where.empty()) unsupported(where.front().type->span, "'where' clauses");
+    }
+
+    // A struct may implement supported interfaces whose requirements the
+    // checker has matched, each to a witness.
+    void conformances(const TypeDeclItem& type) {
+        if (type.supers.empty()) return;
+        const CheckedHierarchy* hierarchy = types_.hierarchy(items_.at(&type));
+        for (const auto& super : type.supers)
+            if (!interface(*super.type).valid()) {
+                unsupported(super.type->span, "structs that implement anything but supported interfaces");
+                return;
+            }
+        const bool witnessed = hierarchy && hierarchy->conformance == ExpansionState::Resolved &&
+                               std::ranges::all_of(hierarchy->witnesses, [](const ConformanceWitness& witness) {
+                                   return witness.state == ExpansionState::Resolved && witness.implementation.valid();
+                               });
+        if (!witnessed) unsupported(type.supers.front().type->span, "conformances that are not checked yet");
     }
 
     // ------------------------------------------------------------ structs
@@ -204,7 +271,8 @@ private:
         const bool before = ok_;
         ok_ = true;
         if (!type.attrs.empty()) unsupported(type.attrs.front().span, "attributes");
-        if (!type.supers.empty()) unsupported(type.supers.front().type->span, "structs that implement interfaces");
+        conformances(type);
+        bounds(type.generics, type.where);
         if (type.ctor_params.empty()) unsupported(type.name.span, "structs without fields");
         for (const auto& param : type.ctor_params) {
             if (param.conv != Convention::Default) unsupported(param.name.span, "conventions on struct fields");
@@ -382,14 +450,20 @@ private:
         // parameters, and those of a generic struct's methods, opaque; its
         // instances are checked by instances().
         generics_.clear();
-        if (const auto owner = owners_.find(&fun); owner != owners_.end())
+        const auto owner = owners_.find(&fun);
+        const bool requirement = owner != owners_.end() && owner->second->kind == ItemKind::Interface;
+        if (requirement) generics_.insert(items_.at(owner->second).value);  // `Self`
+        else if (owner != owners_.end())
             for (const auto& param : owner->second->generics) generics_.insert(values_.at(param.name.span.lo).value);
         for (const auto& param : fun.sig.generics) generics_.insert(values_.at(param.name.span.lo).value);
         if (!fun.attrs.empty()) unsupported(fun.attrs.front().span, "attributes");
         if (has_modifier(fun.mods, Modifier::Async)) unsupported(fun.name.span, "'async' functions");
         if (has_modifier(fun.mods, Modifier::Unsafe)) unsupported(fun.name.span, "'unsafe' functions");
         if (fun.sig.throws) unsupported(fun.name.span, "throwing functions");
-        if (!fun.body) unsupported(fun.name.span, "functions without a body");
+        bounds(fun.sig.generics, fun.sig.where);
+        // An interface method without a body is a requirement that its
+        // conforming structs implement.
+        if (!fun.body && !requirement) unsupported(fun.name.span, "functions without a body");
         if (ok_) {
             for (const auto& param : fun.sig.params) {
                 if (param.conv == Convention::Inout) unsupported(param.name.span, "'inout' parameters");
@@ -405,7 +479,7 @@ private:
         }
         // Report a body only once its signature is supported, to avoid repeating
         // the same unsupported type. A block body's tail is not the result.
-        if (ok_) body(fun.body, fun.expr_body);
+        if (ok_ && fun.body) body(fun.body, fun.expr_body);
         ok_ = ok_ && before;
         generics_.clear();
     }
@@ -734,7 +808,9 @@ private:
             }
             for (const ScalarType argument : checked->type_arguments)
                 if (!stored(call.callee->span, argument, "type arguments")) return;
-            if (!fun->sig.generics.empty() || !owners_.at(fun)->generics.empty()) generic_calls_[current_].push_back(&call);
+            const auto* owner = owners_.at(fun);
+            if (!fun->sig.generics.empty() || !owner->generics.empty() || owner->kind == ItemKind::Interface)
+                generic_calls_[current_].push_back(&call);
             // A `mut fun` changes its receiver in place.
             if (has_modifier(fun->mods, Modifier::Mut) && checked->receiver && !place(checked->receiver)) {
                 unsupported(checked->receiver->span, "'mut fun' calls on anything but a local variable or its fields");
@@ -772,8 +848,10 @@ private:
         for (usize i = call.args.size(); i-- > 0;) work.push_back({call.args[i].value, true});
     }
 
-    // A struct's type as its own methods see it, such as `Box<T>`.
+    // A struct's type as its own methods see it, such as `Box<T>`; an
+    // interface's methods see `Self`.
     ScalarType declared(const TypeDeclItem& type) {
+        if (type.kind == ItemKind::Interface) return types_.parameter(items_.at(&type));
         std::vector<BindingId> parameters;
         for (const auto& param : type.generics) parameters.push_back(values_.at(param.name.span.lo));
         return types_.declared(items_.at(&type), parameters);
@@ -804,26 +882,45 @@ private:
             for (const Expr* use : it->second) {
                 const auto* call = as<CallExpr>(use);
                 const CheckedCall* checked = call ? types_.call(call) : nullptr;
-                const auto& callee =
-                    *as<FunItem>(resolution_.binding(checked ? checked->target : types_.function(use)).item);
+                const auto* target = as<FunItem>(resolution_.binding(checked ? checked->target : types_.function(use)).item);
                 const Span span = call ? call->callee->span : use->span;
-                // A method of a generic struct takes the receiver's type
-                // arguments first, then its own.
-                std::vector<BindingId> parameters;
-                std::vector<ScalarType> arguments;
-                if (const auto owner = owners_.find(&callee); owner != owners_.end() && !owner->second->generics.empty()) {
-                    const ScalarType receiver = types_.substitute(
+                // A method of an interface or a generic struct takes its
+                // receiver's type; an implicit receiver is the caller's.
+                const auto owned = [&](const FunItem* fun) {
+                    const auto owner = owners_.find(fun);
+                    return owner == owners_.end() ? nullptr : owner->second;
+                };
+                ScalarType receiver;
+                if (const auto* owner = owned(target); owner && (owner->kind == ItemKind::Interface || !owner->generics.empty()))
+                    receiver = types_.substitute(
                         checked->receiver ? types_.expression(checked->receiver) : declared(*owners_.at(from.fun)),
                         from.arguments);
-                    for (const auto& param : owner->second->generics) parameters.push_back(values_.at(param.name.span.lo));
+                // An interface method runs its witness for the receiver's
+                // struct: the struct's own method, or the interface's default.
+                const FunItem* callee = target;
+                if (const auto* owner = owned(target); owner && owner->kind == ItemKind::Interface) {
+                    callee = witness(*target, receiver);
+                    if (!callee) continue;
+                }
+                std::vector<BindingId> parameters;
+                std::vector<ScalarType> arguments;
+                if (const auto* owner = owned(callee); owner && owner->kind == ItemKind::Interface) {
+                    parameters.push_back(items_.at(owner));
+                    arguments.push_back(receiver);
+                } else if (owner && !owner->generics.empty()) {
+                    for (const auto& param : owner->generics) parameters.push_back(values_.at(param.name.span.lo));
                     const auto owner_arguments = types_.descriptor(receiver)->arguments;
                     arguments.insert(arguments.end(), owner_arguments.begin(), owner_arguments.end());
                 }
-                for (const auto& param : callee.sig.generics) parameters.push_back(values_.at(param.name.span.lo));
-                for (const ScalarType argument : checked ? std::span<const ScalarType>(checked->type_arguments)
-                                                         : types_.function_arguments(use))
-                    arguments.push_back(types_.substitute(argument, from.arguments));
-                if (!seen.insert(key(&callee, arguments)).second) continue;
+                if (callee == target) {
+                    for (const auto& param : callee->sig.generics) parameters.push_back(values_.at(param.name.span.lo));
+                    for (const ScalarType argument : checked ? std::span<const ScalarType>(checked->type_arguments)
+                                                             : types_.function_arguments(use))
+                        arguments.push_back(types_.substitute(argument, from.arguments));
+                }
+                // A witness of a plain struct is a root of its own.
+                if (parameters.empty()) continue;
+                if (!seen.insert(key(callee, arguments)).second) continue;
                 if (from.depth + 1 > kMaxDepth || seen.size() > kMaxInstances) {
                     ok_ = false;
                     auto& d = diag_.error(DiagCode::InstanceLimit, span,
@@ -835,7 +932,7 @@ private:
                                            : std::format("a program can have at most {} instances", kMaxInstances)});
                     return false;
                 }
-                Instance next{&callee, {}, from.depth + 1};
+                Instance next{callee, {}, from.depth + 1};
                 for (usize i = 0; i < arguments.size(); ++i) next.arguments.emplace_back(parameters[i], arguments[i]);
                 work.push_back(std::move(next));
             }
@@ -843,7 +940,9 @@ private:
         };
         std::vector<const FunItem*> roots;
         for (const FunItem* method : methods)
-            if (method->sig.generics.empty() && owners_.at(method)->generics.empty()) roots.push_back(method);
+            if (method->sig.generics.empty() && owners_.at(method)->generics.empty() &&
+                owners_.at(method)->kind != ItemKind::Interface)
+                roots.push_back(method);
         for (const Item* item : file.items)
             if (const auto* fun = as<FunItem>(item); fun && fun->sig.generics.empty()) roots.push_back(fun);
         for (const FunItem* fun : roots)
@@ -853,6 +952,19 @@ private:
             work.pop_back();
             if (!calls(next)) return;
         }
+    }
+
+    // The method that runs for interface method `requirement` on a struct
+    // `receiver`: the struct's implementation, or the interface's default.
+    const FunItem* witness(const FunItem& requirement, ScalarType receiver) const {
+        if (receiver.kind != ScalarType::Nominal) return nullptr;
+        const CheckedHierarchy* hierarchy = types_.hierarchy(types_.descriptor(receiver)->declaration);
+        if (!hierarchy) return nullptr;
+        const BindingId id = items_.at(&requirement);
+        for (const auto& witness : hierarchy->witnesses)
+            if (witness.requirement == id && witness.implementation.valid())
+                return as<FunItem>(resolution_.binding(witness.implementation).item);
+        return nullptr;
     }
 
     void entry(const File& file, const std::vector<const FunItem*>& mains) {
@@ -905,6 +1017,7 @@ private:
     mutable std::unordered_map<usize, bool> composites_;
     std::unordered_set<usize> rejected_;  // locals whose declaration was reported
     std::unordered_set<usize> structs_;   // binding IDs of supported structs
+    std::unordered_set<usize> interfaces_;  // binding IDs of supported interfaces
     bool ok_ = true;
 };
 

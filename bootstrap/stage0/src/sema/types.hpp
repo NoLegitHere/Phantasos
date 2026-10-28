@@ -273,6 +273,8 @@ public:
     // A nominal type as its own declaration sees it, such as `Box<T>` inside
     // `Box`: its type parameters, by binding, are its arguments.
     ScalarType declared(BindingId declaration, std::span<const BindingId> parameters);
+    // A type parameter by its binding; an interface's binding names its `Self`.
+    ScalarType parameter(BindingId declaration);
 
 private:
     friend class ScalarChecker;

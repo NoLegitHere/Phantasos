@@ -108,7 +108,7 @@ foundation. Complete.
   structs and methods, with interfaces as bounds through static dispatch.
   - [x] Generic functions, with a limit on instances (E0602).
   - [x] Generic structs and their methods.
-  - [ ] Values of generic functions, and generic closures.
+  - [x] Values of generic functions, and generic closures.
   - [ ] Interfaces as bounds, through witnesses.
   - [ ] Generics samples and run tests.
 - [ ] Generic base substitution and built-in traits. Instantiate

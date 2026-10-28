@@ -4,8 +4,8 @@ closure_inference.phs:25:19: error[E0480]: cannot infer the type of closure para
 closure_inference.phs:26:29: error[E0480]: cannot infer the type of closure parameter 'x': overloads of the function it is passed to disagree on its type; give it a type annotation
    26 |     let overloaded = over({ x -> 1 })
       |                             ^
-closure_inference.phs:27:32: error[E0480]: cannot infer the type of closure parameter 'x': it is passed to a generic function, whose parameter types are not inferred yet; give it a type annotation
-   27 |     let viaGeneric = generic({ x -> x }, 1)
+closure_inference.phs:27:32: error[E0480]: cannot infer the type of closure parameter 'x': the other arguments of the generic function it is passed to do not settle its type; give it a type annotation
+   27 |     let viaGeneric = generic({ x -> x })
       |                                ^
 closure_inference.phs:28:28: error[E0400]: expected 'Int', found a closure
    28 |     let notFunction: Int = { -> 1 }

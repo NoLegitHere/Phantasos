@@ -530,6 +530,10 @@ private:
             case ExprKind::Int: case ExprKind::Bool: case ExprKind::String: case ExprKind::Unit: case ExprKind::SelfValue:
                 return;
             case ExprKind::Name: name(*cast<NameExpr>(&expr)); return;
+            case ExprKind::GenericInst:
+                // `identity<Int>` as a value; calls check their callee themselves.
+                if (!function_value(expr)) unsupported(expr.span, expr_name(expr.kind));
+                return;
             case ExprKind::Paren: work.push_back({cast<ParenExpr>(&expr)->inner, used}); return;
             case ExprKind::Unary: work.push_back({cast<UnaryExpr>(&expr)->operand, true}); return;
             case ExprKind::Binary: {
@@ -611,7 +615,7 @@ private:
             case ExprKind::Int: case ExprKind::Bool: case ExprKind::String: case ExprKind::Unit: case ExprKind::Name:
             case ExprKind::Paren: case ExprKind::Unary: case ExprKind::Binary: case ExprKind::Call: case ExprKind::Block:
             case ExprKind::If: case ExprKind::Member: case ExprKind::SelfValue: case ExprKind::Tuple:
-            case ExprKind::TupleField: case ExprKind::Closure:
+            case ExprKind::TupleField: case ExprKind::Closure: case ExprKind::GenericInst:
                 return true;
             default:
                 unsupported(expr.span, expr_name(expr.kind));
@@ -666,17 +670,24 @@ private:
         const auto kind = id.valid() ? resolution_.binding(id).kind : BindingKind::Import;
         // A bare field name inside a method reads the receiver's field.
         if (kind == BindingKind::Local || kind == BindingKind::Parameter || kind == BindingKind::Field) return;
-        // A top-level function named as a value.
-        if (const auto function = types_.function(&name); function.valid()) {
-            const auto* fun = as<FunItem>(resolution_.binding(function).item);
-            if (fun && functions_.contains(fun) && fun->sig.generics.empty()) return;
-            if (fun && !fun->sig.generics.empty()) {
-                unsupported(name.span, "values of generic functions");
-                return;
-            }
-        }
+        if (function_value(name)) return;
         if (kind == BindingKind::Function) unsupported(name.span, "values of functions stage0 cannot compile");
         else unsupported(name.span, "this name");
+    }
+
+    // A top-level function named as a value, a generic one with type
+    // arguments the checker inferred or that were written out. Reports
+    // unstorable type arguments itself and returns true then.
+    bool function_value(const Expr& expr) {
+        const auto function = types_.function(&expr);
+        const auto* fun = function.valid() ? as<FunItem>(resolution_.binding(function).item) : nullptr;
+        if (!fun || !functions_.contains(fun) || owners_.contains(fun)) return false;
+        const auto arguments = types_.function_arguments(&expr);
+        if (arguments.size() != fun->sig.generics.size()) return false;
+        for (const ScalarType argument : arguments)
+            if (!stored(expr.span, argument, "type arguments")) return true;
+        if (!fun->sig.generics.empty()) generic_calls_[current_].push_back(&expr);
+        return true;
     }
 
     void call(const CallExpr& call, std::vector<Work>& work) {
@@ -790,29 +801,35 @@ private:
         const auto calls = [&](const Instance& from) {
             const auto it = generic_calls_.find(from.fun);
             if (it == generic_calls_.end()) return true;
-            for (const CallExpr* call : it->second) {
-                const CheckedCall& checked = *types_.call(call);
-                const auto& callee = *as<FunItem>(resolution_.binding(checked.target).item);
+            for (const Expr* use : it->second) {
+                const auto* call = as<CallExpr>(use);
+                const CheckedCall* checked = call ? types_.call(call) : nullptr;
+                const auto& callee =
+                    *as<FunItem>(resolution_.binding(checked ? checked->target : types_.function(use)).item);
+                const Span span = call ? call->callee->span : use->span;
                 // A method of a generic struct takes the receiver's type
                 // arguments first, then its own.
                 std::vector<BindingId> parameters;
                 std::vector<ScalarType> arguments;
                 if (const auto owner = owners_.find(&callee); owner != owners_.end() && !owner->second->generics.empty()) {
                     const ScalarType receiver = types_.substitute(
-                        checked.receiver ? types_.expression(checked.receiver) : declared(*owners_.at(from.fun)), from.arguments);
+                        checked->receiver ? types_.expression(checked->receiver) : declared(*owners_.at(from.fun)),
+                        from.arguments);
                     for (const auto& param : owner->second->generics) parameters.push_back(values_.at(param.name.span.lo));
                     const auto owner_arguments = types_.descriptor(receiver)->arguments;
                     arguments.insert(arguments.end(), owner_arguments.begin(), owner_arguments.end());
                 }
                 for (const auto& param : callee.sig.generics) parameters.push_back(values_.at(param.name.span.lo));
-                for (const ScalarType argument : checked.type_arguments)
+                for (const ScalarType argument : checked ? std::span<const ScalarType>(checked->type_arguments)
+                                                         : types_.function_arguments(use))
                     arguments.push_back(types_.substitute(argument, from.arguments));
                 if (!seen.insert(key(&callee, arguments)).second) continue;
                 if (from.depth + 1 > kMaxDepth || seen.size() > kMaxInstances) {
                     ok_ = false;
-                    auto& d = diag_.error(DiagCode::InstanceLimit, call->callee->span,
-                                          "this call needs more generic instances than stage0 code generation allows");
-                    d.notes.push_back({call->callee->span,
+                    auto& d = diag_.error(DiagCode::InstanceLimit, span,
+                                          "this {} needs more generic instances than stage0 code generation allows",
+                                          call ? "call" : "function value");
+                    d.notes.push_back({span,
                                        from.depth + 1 > kMaxDepth
                                            ? std::format("instances nest more than {} levels deep here", kMaxDepth)
                                            : std::format("a program can have at most {} instances", kMaxInstances)});
@@ -881,7 +898,8 @@ private:
     std::unordered_map<const FunItem*, const TypeDeclItem*> owners_;  // methods of supported structs
     const FunItem* current_ = nullptr;
     std::unordered_set<usize> generics_;  // the current function's type parameters
-    std::unordered_map<const FunItem*, std::vector<const CallExpr*>> generic_calls_;
+    // Generic calls and generic function values in each function.
+    std::unordered_map<const FunItem*, std::vector<const Expr*>> generic_calls_;
     // Whether each tuple, function and generic struct instance type is
     // supported, by descriptor; reset when a struct is rejected.
     mutable std::unordered_map<usize, bool> composites_;

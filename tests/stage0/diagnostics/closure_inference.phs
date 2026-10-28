@@ -18,13 +18,13 @@
 
 fun over(f: fun(Int) -> Int): Int = 1
 fun over(f: fun(Bool) -> Int): Int = 2
-fun generic<T>(f: fun(T) -> T, x: T): T = f(x)
+fun generic<T>(f: fun(T) -> T): Int = 0
 fun take(f: fun(Int) -> Int): Int = f(1)
 
 fun main() {
     let alone = { x -> x }
     let overloaded = over({ x -> 1 })
-    let viaGeneric = generic({ x -> x }, 1)
+    let viaGeneric = generic({ x -> x })
     let notFunction: Int = { -> 1 }
     let arity: fun(Int) -> Int = { x, y -> x }
     let annotated: fun(Int) -> Int = { x: Bool -> 1 }

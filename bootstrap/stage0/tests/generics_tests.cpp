@@ -183,7 +183,7 @@ let bounded = bound<Int>(1)
 fun inferred<T>(x: T): T = x
 let inference = inferred(1)
 let noneArgument = inferred<Int?>(none)
-extern "C" { fun deferredValue<T>(marker: borrow Bool): T }
+extern "C" { fun deferredValue<T>(marker: inout Bool): T }
 fun dependentDefault<T>(x: T = deferredValue<T>(true)): T = x
 let defaulted = dependentDefault<Int>()
 class Owner<T> { class Nested {} }
@@ -200,7 +200,7 @@ let dependent = inherited.value
 
 void omitted_default_facts() {
     const std::string declarations = R"(
-fun identity<T>(x: borrow Bool): Int = 1
+fun identity<T>(x: inout Bool): Int = 1
 fun pending<T>(x: Int = identity<T>(true)): Int = x
 class Pending<T>(x: Int = identity<T>(true)) {}
 class Owner<T> { fun read(x: Int = identity<T>(true)): Int = x }
@@ -316,6 +316,97 @@ void iterative_alias_graphs() {
     CHECK(shared.value("value").kind == Type::Function);
     CHECK(shared.name(shared.value("value")).ends_with("..."));
 }
+void generic_function_values() {
+    // A generic function as a value takes its type arguments from the
+    // expected function type or from explicit arguments, and a closure passed
+    // to a generic function takes its parameter types from the call's other
+    // arguments; its result may infer the rest.
+    Frontend f;
+    f.check(R"(
+fun identity<T>(x: T): T = x
+fun apply<T>(f: fun(T) -> T, x: T): T = f(x)
+fun map<T, U>(x: T, f: fun(T) -> U): U = f(x)
+fun compose<A, B, C>(f: fun(A) -> B, g: fun(B) -> C): fun(A) -> C = { a -> g(f(a)) }
+let expected: fun(Int8) -> Int8 = identity
+let explicit = identity<Bool>
+let passed = apply(identity, 1)
+let closure = apply({ s -> s + 1 }, 2)
+let mapped = map(3, { x -> x > 1 })
+let composed = compose({ a: Int -> a > 1 }, { b -> !b })
+)");
+    CHECK(f.name(f.value("expected")) == "fun(Int8) -> Int8" && f.name(f.value("explicit")) == "fun(Bool) -> Bool");
+    CHECK(f.value("passed") == Type::Int && f.value("closure") == Type::Int && f.value("mapped") == Type::Bool);
+    CHECK(f.name(f.value("composed")) == "fun(Int) -> Bool");
+    // Inside its own body a generic function is a value for its own type
+    // parameters, and explicit type arguments give a closure its type
+    // over literal defaults.
+    Frontend own;
+    own.check(R"(
+fun repeat<T>(x: T, n: Int): T {
+    let same: fun(T, Int) -> T = repeat
+    let pair: fun((T, Int), Int) -> (T, Int) = repeat
+    return x
+}
+fun apply<T>(f: fun(T) -> T, x: T): T = f(x)
+let annotated = apply<Int8>({ s: Int8 -> s }, 1)
+let inferred = apply<Int8>({ s -> s + 1 }, 1)
+let literal = apply({ x: Int8 -> x }, 1)
+let both = apply({ x: Int8 -> x }, { y: Int8 -> y }(2))
+struct Box<T>(value: T) {
+    fun map<U>(f: fun(T) -> U): U = f(value)
+}
+let mapped = Box(value: 1).map<Bool>({ x: Int -> x > 0 })
+let mappedInferred = Box(value: 1).map<Int>({ x -> x + 1 })
+struct Pair<A, B>(f: fun(A) -> B)
+type Flip<A, B> = Pair<B, A>
+let flipped = Flip<Int, Bool>({ x: Bool -> 1 })
+let flippedInferred = Flip<Int, Bool>({ x -> 1 })
+fun make<T, U>(x: T, f: fun(T) -> fun(Int) -> U): fun(Int) -> U = f(x)
+let nested = make(3, { x -> { y -> x > y } })
+fun pick<T>(x: T): T = x
+fun pick<T>(x: T, y: T) = use(pick)
+fun use(h: fun(Int) -> Int): Int = h(1)
+let picked = use(pick)
+let explicitOne: fun(Int) -> Int = pick<Int>
+let explicitTwo: fun(Int, Int) -> Int = pick<Int>
+struct Handler(run: fun(Int) -> Int)
+type Plain<T> = Handler
+let plain = Plain<Bool>(run: { x -> x * 2 })
+fun mixed(x: Int): Int = x
+fun mixed<T>(x: T): T = x
+let mixedValue: fun(Bool) -> Bool = mixed<Bool>
+let mixedSingle = mixed<Int8>
+fun phantom<T, U>(x: T): T = x
+fun phantom<T, U>(x: T, y: T): T = y
+let seeded: fun(Int) -> Int = phantom<Int, Bool>
+)");
+    CHECK(own.name(own.value("mixedValue")) == "fun(Bool) -> Bool" && own.name(own.value("mixedSingle")) == "fun(Int8) -> Int8");
+    CHECK(own.name(own.value("seeded")) == "fun(Int) -> Int");
+    CHECK(own.name(own.value("explicitTwo")) == "fun(Int, Int) -> Int" && own.name(own.value("plain")) == "Handler");
+    CHECK(own.name(own.value("nested")) == "fun(Int) -> Bool" && own.value("picked") == Type::Int);
+    CHECK(own.name(own.value("flipped")) == "Pair<Bool, Int>" && own.name(own.value("flippedInferred")) == "Pair<Bool, Int>");
+    CHECK(own.value("annotated") == Type::Int8 && own.value("inferred") == Type::Int8);
+    CHECK(own.value("literal") == Type::Int8 && own.value("both") == Type::Int8);
+    CHECK(own.value("mapped") == Type::Bool && own.value("mappedInferred") == Type::Int);
+    const auto* init = ast::cast<ast::VarItem>(f.result.resolution->binding(f.id("explicit")).item)->init;
+    const auto arguments = f.result.scalar_types->function_arguments(init);
+    CHECK(arguments.size() == 1 && arguments.front() == Type::Bool);
+    for (const auto& [source, code] : std::vector<std::pair<std::string_view, DiagCode>>{
+        {"fun f<T>(x: T): T = x\nlet g = f<Int, Bool>", DiagCode::GenericArguments},
+        {"fun f(x: Int): Int = x\nlet g = f<Int>", DiagCode::GenericArguments},
+        {"fun f(x: Int): Int = x\nfun f(x: Bool): Bool = x\nlet g = f<Int>", DiagCode::GenericArguments},
+        {"fun f<T>(x: T): T = x\nlet g: fun(Int) -> Bool = f", DiagCode::ScalarTypeMismatch},
+        {"fun f<T>(g: fun(T) -> T): Int = 0\nlet x = f({ s -> s })", DiagCode::ClosureInference},
+        {"fun f<T>(p: *T): *T = p\nlet g: fun(*Int) -> *mut Int = f", DiagCode::ScalarTypeMismatch},
+        {"fun f<T>(x: T): T = x\nfun f<T>(x: T, y: T): T = y\nlet g: fun(Int) -> Int = f<Bool>", DiagCode::ScalarTypeMismatch},
+        {"fun f<T>(x: T): T = x\nfun f(x: Int): Int = x\nlet g = f<Int, Bool>", DiagCode::GenericArguments},
+    }) { Frontend bad; bad.check(source, {code}); }
+    // Closures that would infer each other's parameter types infer neither.
+    Frontend both;
+    both.check("fun f<A, B>(g: fun(A) -> B, h: fun(B) -> A): Int = 0\nlet x = f({ s -> s }, { t -> t })",
+               {DiagCode::ClosureInference, DiagCode::ClosureInference});
+}
+
 } // namespace
 
 int main() {
@@ -327,5 +418,6 @@ int main() {
     explicitly_applied_functions();
     rejected_applications();
     pending_contracts();
+    generic_function_values();
     iterative_alias_graphs();
 }

@@ -1305,8 +1305,12 @@ scope (its end, `break`, `continue`, `return`, `throw`, and an error that
 `try` propagates or `try?` catches, which leaves from the call that throws
 it), so its moves happen there, and it cannot use a value that moved after
 it was registered. Arguments run left to right, so `Box(a, a == "x")` reads
-`a` after moving it. A default argument that moves an earlier `own`
-parameter may have moved it for the later defaults and the body. Assigning a `var`, or running
+`a` after moving it. A default argument is consumed like the argument it
+replaces, and one that moves an earlier `own` parameter may have moved it
+for the later defaults and the body. Construction runs the defaults, the
+superclass arguments, the instance field initializers in declaration order
+and then the primary `init` body, so a constructor parameter that one of
+them moves may have moved for the rest. Assigning a `var`, or running
 a declaration again, gives the binding a new value. Each moved binding is
 reported once until it moves again, and unreachable code reports nothing.
 

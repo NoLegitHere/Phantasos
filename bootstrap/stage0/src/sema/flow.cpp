@@ -208,9 +208,24 @@ public:
             const auto [item, owner] = work.back();
             work.pop_back();
             if (const auto* type = as_type_decl(item)) {
-                const auto moved = defaults(type->ctor_params);
+                // Construction runs the omitted defaults, the superclass arguments, the
+                // instance field initializers in order and then the primary `init`
+                // body, so a constructor parameter that one moves has possibly moved
+                // for the rest.
+                auto moved = defaults(type->ctor_params, type);
                 for (const auto& base : type->supers)
-                    for (const auto& arg : base.args) callable(type->ctor_params, arg.value, nullptr, moved);
+                    for (const auto& arg : base.args) add(moved, callable(type->ctor_params, arg.value, nullptr, moved));
+                for (const Item* member : type->members) {
+                    // Field initializers see the owner's primary-constructor parameters,
+                    // and a closure in an instance field's initializer captures `self`.
+                    const auto* var = as<VarItem>(member);
+                    if (!var || !var->init || has_modifier(var->mods, Modifier::Static)) continue;
+                    instance_fields_.insert(var);
+                    capturing_receiver(type);
+                    add(moved, callable(type->ctor_params, var->init, nullptr, moved, true));
+                    receiver(nullptr, nullptr);
+                }
+                primary_moves_.try_emplace(type, std::move(moved));
                 for (const Item* member : type->members) work.push_back({member, type});
             } else if (const auto* ext = as<ExternItem>(item)) {
                 for (const Item* nested : ext->items) work.push_back({nested, owner});
@@ -222,9 +237,7 @@ public:
                     receiver(nullptr, nullptr);
                 }
             } else if (const auto* var = as<VarItem>(item)) {
-                // Field initializers see the owner's primary-constructor parameters,
-                // and a closure in an instance field's initializer captures `self`.
-                if (var->init) {
+                if (var->init && !instance_fields_.contains(var)) {
                     if (!has_modifier(var->mods, Modifier::Static)) capturing_receiver(owner);
                     callable(owner ? owner->ctor_params : List<Param>{}, var->init, nullptr, {}, true);
                     receiver(nullptr, nullptr);
@@ -234,7 +247,7 @@ public:
                 // Construction rules for `self` are separate, but closures still capture it.
                 capturing_receiver(owner);
                 if (init->body && (init->has_params || !owner)) callable(init->params, init->body, nullptr, moved);
-                else if (init->body) callable(owner->ctor_params, init->body, nullptr);
+                else if (init->body) callable(owner->ctor_params, init->body, nullptr, primary_moves_.at(owner));
                 receiver(nullptr, nullptr);
             } else if (const auto* deinit = as<DeinitItem>(item)) {
                 capturing_receiver(owner);
@@ -560,19 +573,24 @@ private:
     // before the later defaults and the body, so the `own` parameters it may move are passed on as
     // possibly moved; the result has the move site of each, by parameter index.
     using ParamMoves = std::vector<std::optional<Span>>;
-    ParamMoves defaults(List<Param> params) {
+    // A default's value moves into an `own` parameter or a stored field of a primary constructor.
+    ParamMoves defaults(List<Param> params, const TypeDeclItem* type = nullptr) {
         ParamMoves moved(params.size());
         for (const auto& param : params) {
             if (!param.default_value) continue;
-            const auto after = callable(params, param.default_value, nullptr, moved);
-            for (usize i = 0; i < moved.size(); ++i)
-                if (!moved[i]) moved[i] = after[i];
+            const bool stored = type && (type->kind == ItemKind::Struct || param.binding != Binding::None) &&
+                                param.conv != Convention::Inout;
+            add(moved, callable(params, param.default_value, nullptr, moved, param.conv == Convention::Own || stored));
         }
         return moved;
     }
+    static void add(ParamMoves& into, const ParamMoves& from) {
+        for (usize i = 0; i < into.size() && i < from.size(); ++i)
+            if (!into[i]) into[i] = from[i];
+    }
 
     // Returns where the body may move each `own` parameter, by index, on the paths that finish.
-    // An initializer root's value moves into its variable or field.
+    // An initializer root's value moves into its variable, field or parameter.
     ParamMoves callable(List<Param> params, const Expr* body, const FunItem* fun, const ParamMoves& moved = {},
                         bool initializer = false) {
         start(body);
@@ -1441,6 +1459,8 @@ private:
     std::vector<Catch> caught_;
     usize tracked_ = 0;
     FlatMap<u32, usize> owned_;      // name span.lo -> move bit of an `own` parameter
+    FlatSet<const VarItem*> instance_fields_;                       // checked with their type
+    FlatMap<const TypeDeclItem*, ParamMoves> primary_moves_;        // into the primary `init` body
     FlatSet<const Expr*> consumed_;  // names whose value is moved where they are read
     FlatMap<const BlockExpr*, Bits> iteration_moves_;  // per loop body, while quiet
     std::vector<Span> move_sites_;   // where each movable binding last moved

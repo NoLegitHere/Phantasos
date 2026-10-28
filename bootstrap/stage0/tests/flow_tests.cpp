@@ -647,6 +647,14 @@ void moves() {
         {"fun f(a: own String, b: Int = unsafe { take(a)\n0 }, c: Int = unsafe { look(a)\n0 }) {}", {M}},
         {"fun f(a: own String, b: Int = unsafe { look(a)\n0 }) { look(a) }", {}},
         {"struct S(a: own String, b: Int = unsafe { take(a)\n0 }) { init(a: own String, b: Int = unsafe { take(a)\n0 }) { look(a) } }", {M}},
+        {"fun f(a: own String, b: own String = a) { look(a) }", {M}},
+        {"fun f(a: own String, b: String = a) { look(a) }", {}},
+        {"fun f(b: own String = unsafe { let a = \"a\"\ndefer { look(a) }\na }) {}", {M}},
+        {"struct S(a: own String, b: String = a) { init { look(a) } }", {M}},
+        // Construction runs field initializers in order, then the primary `init`.
+        {"class C(a: own String) { let x: String = a\nlet y: String = a }", {M}},
+        {"class C(a: own String) { let x: String = a\ninit { look(a) } }", {M}},
+        {"class C(a: own String) { let x: Int = unsafe { look(a)\n1 }\nlet y: String = a\ninit {} }", {}},
         // A moved value is reported once until it moves again.
         {"fun f() { let a = \"a\"\ntake(a)\nlook(a)\nlook(a)\ntake(a)\nlook(a) }", {M, M}},
         // Unreachable code reports nothing.

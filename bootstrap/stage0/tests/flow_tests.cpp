@@ -687,6 +687,18 @@ void moves() {
         {"fun f(s: String) { let g = { -> s } }", {C}},
         {"fun f(s: String) { while true { take(s) } }", {B}},
         {"fun f(s: String) { defer { take(s) } }", {B}},
+        // `super` is the borrowed receiver too, and no callable owns a static field.
+        {"open class Base {}\nclass D: Base { fun leak(): Base = super }", {B}},
+        {"class S { static let text: String = \"x\"\nstatic fun a(): String = S.text\nstatic fun b(): String = text }", {B, B}},
+        {"class S { static let n: Int = 1\nstatic fun a(): Int = S.n }", {}},
+        // A nested closure takes its own copy of what it captures.
+        {"fun f(s: own String) { let g = { -> { -> s.clone() } } }", {B}},
+        {"fun f(s: own String) { let g = { -> let c = s.clone()\n{ -> look(c) } } }", {}},
+        {"fun f(n: Int) { let g = { -> { -> n } } }", {}},
+        // Only reachable moves are reported.
+        {"fun f(s: String) { return\nlet t = s }", {}},
+        {"fun f(c: Bool, s: String): String = if c { return \"x\" } else { s }", {B}},
+        {"fun f(s: String): String { return \"x\"\nreturn s }", {}},
         // A moved value is reported once until it moves again.
         {"fun f() { let a = \"a\"\ntake(a)\nlook(a)\nlook(a)\ntake(a)\nlook(a) }", {M, M}},
         // Unreachable code reports nothing.

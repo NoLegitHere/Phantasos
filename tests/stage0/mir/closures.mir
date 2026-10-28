@@ -12,7 +12,7 @@ environment @main$closure1 { label: string +0 } size 16 align 8
 
 function @fun(Int) -> fun(Int) -> Int { code: u64 +0, env: u64 +8 } size 16 align 8 signature (i64) -> @fun(Int) -> Int
 
-environment @main$closure1$closure0 { label: string +0, a: i64 +16 } size 24 align 8
+environment @main$closure1$closure0 { copy: string +0, a: i64 +16 } size 24 align 8
 
 fun @Point.shifter(%0: @Point) -> @fun(Int) -> Point {
 bb0:
@@ -83,13 +83,14 @@ bb0:
 fun @main$closure1(env %0: u64, %1: i64) -> @fun(Int) -> Int {
 bb0:
     %2: string = env %0, label
-    %3: @fun(Int) -> Int = closure @main$closure1$closure0(%2, %1)
-    ret %3
+    %3: string = copy %2
+    %4: @fun(Int) -> Int = closure @main$closure1$closure0(%3, %1)
+    ret %4
 }
 
 fun @main$closure1$closure0(env %0: u64, %1: i64) -> i64 {
 bb0:
-    %2: string = env %0, label
+    %2: string = env %0, copy
     %3: i64 = env %0, a
     print %2
     %4: i64 = add %3, %1

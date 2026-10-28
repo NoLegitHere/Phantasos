@@ -1320,20 +1320,24 @@ non-`Copy` value is `E0505`, "cannot move out of", with a note suggesting
 
 - a parameter that is not `own`: borrowed by default, `borrow`, `inout`, or
   a closure's parameter;
-- `self` in an instance method, and a field of `self`, named bare or through
-  `self`;
+- `self` in an instance method, also viewed as its superclass through
+  `super`, and a field of `self`, named bare or through `self`;
+- a static field, named bare or through its type, which no callable owns;
 - a field of any value, even an owned local: a struct moves whole or not at
   all, so `let n = p.name` is an error and `p.name.clone()` copies it;
 - a tuple element (`t.1`) or an array element (`a[i]`);
 - inside a closure body, a value it captured, since the closure can be
-  called again; `{ -> s.clone() }` returns a copy instead.
+  called again; `{ -> s.clone() }` returns a copy instead. Creating a nested
+  closure that captures it moves it too, so `{ -> { -> s.clone() } }` is an
+  error, while cloning it into a local of the outer closure body first is
+  not.
 
 Unwrapping (`p!`) and the other forwarding forms above move their operand, so
 `let s = p!` on a borrowed `p` is the same error. A capture that is already
 `E0503`, such as `self` or a borrowed parameter, is not reported again inside
 the closure body. A type made from generic parameters or associated types
 counts as `Copy` here, because what it stands for is not known yet. Each
-place is reported once. Nothing in stage0's generated code owns memory, so a
+place is reported once, and only where a reachable use would move it. Nothing in stage0's generated code owns memory, so a
 move copies the value's words and nothing is destroyed.
 
 ## 3.31 Cloning [Core]

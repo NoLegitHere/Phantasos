@@ -49,3 +49,21 @@ fun closures(s: own String) {
     let copy = { x: String -> x.clone() }
     let moved = { x: String -> x }
 }
+fun nested(s: own String) {
+    let outer = { -> { -> s.clone() } }
+}
+fun fixed(s: own String) {
+    let fixed = { -> let c = s.clone()
+        { -> c.clone() } }
+}
+open class Base(var n: Int) {}
+class Derived(): Base(1) {
+    static let tag: String = "d"
+    fun leak(): Base = super
+    static fun qualified(): String = Derived.tag
+    static fun bare(): String = tag
+}
+fun unreachable(s: String) {
+    return
+    take(s)
+}

@@ -64,3 +64,27 @@ borrow_moves.phs:50:32: error[E0505]: cannot move out of borrowed parameter 'x'
 borrow_moves.phs:50:32: note: use 'x.clone()' to move a copy
    50 |     let moved = { x: String -> x }
       |                                ^
+borrow_moves.phs:53:27: error[E0505]: cannot move out of captured 's'
+   53 |     let outer = { -> { -> s.clone() } }
+      |                           ^
+borrow_moves.phs:53:27: note: a closure can be called more than once; capture a copy made with 's.clone()' instead
+   53 |     let outer = { -> { -> s.clone() } }
+      |                           ^
+borrow_moves.phs:62:24: error[E0505]: cannot move out of 'super'
+   62 |     fun leak(): Base = super
+      |                        ^^^^^
+borrow_moves.phs:62:24: note: use '.clone()' to move a copy
+   62 |     fun leak(): Base = super
+      |                        ^^^^^
+borrow_moves.phs:63:38: error[E0505]: cannot move out of static field 'tag'
+   63 |     static fun qualified(): String = Derived.tag
+      |                                      ^^^^^^^^^^^
+borrow_moves.phs:63:38: note: use '.clone()' to move a copy
+   63 |     static fun qualified(): String = Derived.tag
+      |                                      ^^^^^^^^^^^
+borrow_moves.phs:64:33: error[E0505]: cannot move out of static field 'tag'
+   64 |     static fun bare(): String = tag
+      |                                 ^^^
+borrow_moves.phs:64:33: note: use '.clone()' to move a copy
+   64 |     static fun bare(): String = tag
+      |                                 ^^^

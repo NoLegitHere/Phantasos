@@ -439,7 +439,10 @@ fun main(): Int {
     }
     print(total)
     let name = "closure"
-    let twice = { x: Int -> { -> print(name); x * 2 } }
+    let twice = { x: Int ->
+        let copy = name.clone()
+        { -> print(copy); x * 2 }
+    }
     return twice(21)()
 }
 )", "5000250000\nclosure\n");

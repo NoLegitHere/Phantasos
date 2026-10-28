@@ -724,7 +724,8 @@ private:
                                      names_.str(name.name.sym));
             d.notes.push_back({found->declared, "declared here without an initializer"});
         }
-        use(id, name.span, consumed_.contains(&name), "used", state);
+        // A borrowed value is reported where a reachable use would move it.
+        use(id, name.span, consumed_.contains(&name) && !(state.live && borrowed_move(name)), "used", state);
     }
 
     // The move bit of a local or `own` parameter of the current callable
@@ -790,11 +791,9 @@ private:
             work.pop_back();
             if (!expr) continue;
             switch (expr->kind) {
-                case ExprKind::Name:
-                    if (!borrowed_move(*expr)) consumed_.insert(expr);
-                    break;
-                case ExprKind::SelfValue: case ExprKind::Member: case ExprKind::TupleField: case ExprKind::Index:
-                    borrowed_move(*expr);
+                case ExprKind::Name: case ExprKind::SelfValue: case ExprKind::Super: case ExprKind::Member:
+                case ExprKind::TupleField: case ExprKind::Index:
+                    consumed_.insert(expr);
                     break;
                 case ExprKind::Tuple: for (const Expr* elem : cast<TupleExpr>(expr)->elems) work.push_back(elem); break;
                 case ExprKind::Array: for (const Expr* elem : cast<ArrayExpr>(expr)->elems) work.push_back(elem); break;
@@ -837,9 +836,10 @@ private:
         if (const auto* name = as<NameExpr>(&expr)) {
             const auto id = target(*name);
             const auto spelled = std::string(names_.str(name->name.sym));
-            if (!id.valid()) {
-                if (!implicit_field(*name)) return false;
-                subject = "field '" + spelled + "' of 'self'";
+            if (const auto* field = implicit_field(*name)) {
+                subject = is_static(*field) ? "static field '" + spelled + "'" : "field '" + spelled + "' of 'self'";
+            } else if (!id.valid()) {
+                return false;
             } else if (captured_.contains(id.value)) {
                 // A capture that is already an error is not reported again.
                 if (invalid_captures_.contains(id.value)) return true;
@@ -848,9 +848,7 @@ private:
                 fix = "a closure can be called more than once; use '" + spelled + ".clone()' to move a copy";
             } else {
                 const auto& binding = resolution_.binding(id);
-                if (binding.kind == BindingKind::Field) {
-                    subject = "field '" + spelled + "' of 'self'";
-                } else if (binding.kind == BindingKind::Parameter && !owned_.contains(binding.name.span.lo)) {
+                if (binding.kind == BindingKind::Parameter && !owned_.contains(binding.name.span.lo)) {
                     subject = "borrowed parameter '" + spelled + "'";
                     const auto param = params_.find(binding.name.span.lo);
                     const bool inout = param != params_.end() && param->second->conv == Convention::Inout;
@@ -863,36 +861,43 @@ private:
             }
             if (copyable(types_.binding(id.valid() ? id : implicit_binding(*name)), true)) return false;
         } else {
-            if (expr.kind == ExprKind::SelfValue) {
-                // Only an instance method borrows its receiver.
+            if (expr.kind == ExprKind::SelfValue || expr.kind == ExprKind::Super) {
+                // Only an instance method borrows its receiver, also viewed as its superclass.
                 if (self_.access == Access::Unknown) return false;
-                subject = "'self'";
+                subject = expr.kind == ExprKind::Super ? "'super'" : "'self'";
             } else if (const auto* member = as<MemberExpr>(&expr)) {
                 const auto* record = types_.member(member);
                 if (!record || record->state != ResolutionState::Resolved || record->candidates.size() != 1 ||
-                    record->type_receiver || resolution_.binding(record->candidates.front()).kind != BindingKind::Field)
+                    resolution_.binding(record->candidates.front()).kind != BindingKind::Field)
                     return false;
-                // Fields never move out on their own (D2).
-                subject = "field '" + std::string(names_.str(member->name.sym)) + "'";
+                // Fields never move out on their own (D2), and no callable owns a static field.
+                subject = std::string(record->type_receiver ? "static " : "") + "field '" +
+                          std::string(names_.str(member->name.sym)) + "'";
             } else {
                 subject = "an element";
             }
             if (copyable(types_.expression(&expr), true)) return false;
         }
-        if (!shown(DiagCode::MoveOutOfBorrow) || reported_borrows_.insert(expr.span.lo)) {
-            auto& d = error(DiagCode::MoveOutOfBorrow, expr.span, "cannot move out of {}", subject);
-            d.notes.push_back({expr.span, fix});
-        }
+        borrow_error(expr.span, subject, fix);
         return true;
+    }
+    void borrow_error(Span span, std::string_view subject, const std::string& fix) {
+        if (!shown(DiagCode::MoveOutOfBorrow) || reported_borrows_.insert(span.lo)) {
+            auto& d = error(DiagCode::MoveOutOfBorrow, span, "cannot move out of {}", subject);
+            d.notes.push_back({span, fix});
+        }
     }
     bool self_rooted(const Expr& expr) const {
         const Expr* root = unparen(&expr);
         while (const Expr* base = projected(*root)) root = unparen(base);
-        if (root->kind == ExprKind::SelfValue) return true;
+        if (root->kind == ExprKind::SelfValue || root->kind == ExprKind::Super) return true;
         const auto* name = as<NameExpr>(root);
         if (!name) return false;
-        const auto id = target(*name);
-        return id.valid() ? resolution_.binding(id).kind == BindingKind::Field : implicit_field(*name) != nullptr;
+        const auto* field = implicit_field(*name);
+        return field && !is_static(*field);
+    }
+    static bool is_static(const ResolvedBinding& binding) {
+        return binding.item && has_modifier(binding.item->mods, Modifier::Static);
     }
     BindingId implicit_binding(const NameExpr& name) const {
         const auto* record = types_.member(&name);
@@ -936,6 +941,12 @@ private:
             const auto name = names_.str(binding.name.sym);
             // A non-Copy local or `own` parameter moves into the closure.
             use(capture.binding, capture.use, true, "captured", state);
+            // So does a capture of the enclosing closure, which keeps it (D3).
+            if (closure_ && state.live && captured_.contains(capture.binding.value) &&
+                !invalid_captures_.contains(capture.binding.value) && !copyable(types_.binding(capture.binding), true))
+                borrow_error(capture.use, "captured '" + std::string(name) + "'",
+                             "a closure can be called more than once; capture a copy made with '" + std::string(name) +
+                                 ".clone()' instead");
             if (const auto* found = local(capture.binding)) {
                 if (found->tracked != kUntracked && state.live && !state.assigned.test(found->tracked)) {
                     auto& d = error(DiagCode::UninitializedUse, capture.use, "'{}' is captured before it is initialized", name);
@@ -1286,6 +1297,7 @@ private:
                 continue;
             }
             if (const auto* name = as<NameExpr>(expr)) read(*name, state);
+            else if (state.live && consumed_.contains(expr)) borrowed_move(*expr);
             else if (const auto* closure = as<ClosureExpr>(expr)) create(*closure, state);
             else if (const auto* call = as<CallExpr>(expr)) {
                 mutating_call(*call);

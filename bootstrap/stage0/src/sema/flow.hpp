@@ -28,7 +28,9 @@ namespace phs {
 // are checked as callables of their own, whose captures are read-only copies;
 // capturing an `inout` or non-Copy borrowed parameter is E0503 (3.29). A
 // non-Copy local or `own` parameter cannot be used after it moved (E0504,
-// 3.30). Run after scalar typing succeeds; the AST,
+// 3.30), only what the callable owns can move (E0505), and an `inout`
+// argument or `mut fun` receiver cannot overlap another argument of the same
+// call (E0506, 3.32). Run after scalar typing succeeds; the AST,
 // Resolution and ScalarTypes are unchanged.
 void check_flow(const ast::File& file, const Resolution& resolution, const ScalarTypes& types,
                 const Interner& names, DiagEngine& diag);

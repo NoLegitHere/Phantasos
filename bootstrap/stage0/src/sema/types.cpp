@@ -2821,9 +2821,11 @@ private:
                 depend(node, expression(call.callee));
                 // A generic callee's type arguments come from its other
                 // arguments, except closures that wait for their own
-                // parameter types.
-                for (const auto& arg : call.args)
-                    if (unparen(arg.value) != closure && informs(arg.value)) depend(node, expression(arg.value));
+                // parameter types. A closure with only annotated
+                // parameters needs none of them.
+                if (!informs(closure))
+                    for (const auto& arg : call.args)
+                        if (unparen(arg.value) != closure && informs(arg.value)) depend(node, expression(arg.value));
             }
             if (expectation.kind != Expectation::Result) return;
             closure = expectation.closure;
@@ -2889,7 +2891,11 @@ private:
         if (const auto* generic = as<GenericInstExpr>(receiver)) {
             explicit_arguments.emplace();
             for (auto* arg : generic->args) explicit_arguments->push_back(annotation(arg));
+            receiver = unparen(generic->base);  // its context is the base's
         }
+        // A closure whose parameters are all annotated infers its own type,
+        // which in turn is evidence for the callee's type arguments.
+        const bool annotated = informs(call.args[argument].value);
         std::optional<Type> found;
         bool generic = false;
         usize viable = 0;
@@ -2918,7 +2924,7 @@ private:
             if (symbolic) {
                 // Explicit type arguments, or the ones the other arguments
                 // infer, give the closure's parameter its type.
-                if (++viable == 1)
+                if (++viable == 1 && (explicit_arguments || !annotated))
                     inferred = GenericArgument{id, context,
                                                explicit_arguments ? Inference{Relation::Yes, context, *explicit_arguments}
                                                                   : infer_arguments(id, params, call, mapping, context),
@@ -2931,7 +2937,7 @@ private:
             if (found && *found != type) return {Expected::Overloaded};
             found = type;
         }
-        if (generic && viable == 1 && inferred->inference.state != Relation::No) {
+        if (generic && viable == 1 && inferred && inferred->inference.state != Relation::No) {
             if (const auto expected = inferred_parameter(*inferred, call.span)) return *expected;
         }
         if (generic) {

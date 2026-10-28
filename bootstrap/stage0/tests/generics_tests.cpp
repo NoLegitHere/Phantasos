@@ -350,8 +350,17 @@ fun repeat<T>(x: T, n: Int): T {
 fun apply<T>(f: fun(T) -> T, x: T): T = f(x)
 let annotated = apply<Int8>({ s: Int8 -> s }, 1)
 let inferred = apply<Int8>({ s -> s + 1 }, 1)
+let literal = apply({ x: Int8 -> x }, 1)
+let both = apply({ x: Int8 -> x }, { y: Int8 -> y }(2))
+struct Box<T>(value: T) {
+    fun map<U>(f: fun(T) -> U): U = f(value)
+}
+let mapped = Box(value: 1).map<Bool>({ x: Int -> x > 0 })
+let mappedInferred = Box(value: 1).map<Int>({ x -> x + 1 })
 )");
     CHECK(own.value("annotated") == Type::Int8 && own.value("inferred") == Type::Int8);
+    CHECK(own.value("literal") == Type::Int8 && own.value("both") == Type::Int8);
+    CHECK(own.value("mapped") == Type::Bool && own.value("mappedInferred") == Type::Int);
     const auto* init = ast::cast<ast::VarItem>(f.result.resolution->binding(f.id("explicit")).item)->init;
     const auto arguments = f.result.scalar_types->function_arguments(init);
     CHECK(arguments.size() == 1 && arguments.front() == Type::Bool);

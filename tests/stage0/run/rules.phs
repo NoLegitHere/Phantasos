@@ -27,7 +27,7 @@ fun divisibleBy(n: Int): Rule = Rule("divisible", { x -> x % n == 0 })
 
 struct Report(pass: fun() -> String, fail: fun() -> String)
 
-fun report(subject: own String): Report = Report({ -> subject }, { -> "rejected" })
+fun report(subject: own String): Report = Report({ -> subject.clone() }, { -> "rejected" })
 
 // Counts the rules that value passes, printing the name of each one.
 fun passes(value: Int, first: Rule, second: Rule, third: Rule): Int {

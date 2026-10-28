@@ -16,7 +16,7 @@
 // String values: literals (identical ones share their bytes), locals,
 // parameters and results, passed whole.
 
-fun pick(first: Bool, yes: String, no: String): String {
+fun pick(first: Bool, yes: own String, no: own String): String {
     if first { return yes }
     return no
 }

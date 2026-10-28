@@ -30,7 +30,7 @@ fun arguments(s: own String) {
     take(s)
     take(s)
     let n = Name("x")
-    let m = Name(n.text)
+    let m = Name(n.text.clone())
     let wrapped = Name(text: "y")
     let again = (wrapped, 1)
     look(wrapped.text)

@@ -574,6 +574,8 @@ void long_trees() {
 void moves() {
     constexpr std::string_view prelude = "fun take(s: own String) {}\nfun look(s: String) {}\nstruct Box(s: String, n: Int)\n";
     const auto M = DiagCode::UseAfterMove;
+    const auto B = DiagCode::MoveOutOfBorrow;
+    const auto C = DiagCode::InvalidCapture;
     for (const auto& [source, expected] : std::vector<std::pair<std::string_view, std::vector<DiagCode>>>{
         // Copy values never move; reads borrow.
         {"fun f() { let n = 1\nlet m = n\nlet p = (n, true)\nlet q = p\nlet r = p\nlet g = look\nlet h = g\nlet i = g }", {}},
@@ -663,6 +665,40 @@ void moves() {
         {"fun f() { let a = \"a\"\ntake(a)\nlet b = a.clone() }", {M}},
         {"fun f() { let p = Box(\"a\", 1)\nlet q = p.clone()\nlet r = p\nlook(q.s) }", {}},
         {"fun f() throws { let a = \"a\"\ndefer { look(a) }\nlet b = try unsafe { a.clone() } }", {}},
+        // Only what the callable owns can move (E0505): not a borrowed or
+        // `inout` parameter, a field, an element, `self` or a capture.
+        {"fun f(s: String) { take(s) }", {B}},
+        {"fun f(s: String): String = s", {B}},
+        {"fun f(s: borrow String) { let t = s }", {B}},
+        {"fun f(s: inout String) { let t = s }", {B}},
+        {"fun f(c: Bool, s: String): String = if c { s } else { \"x\" }", {B}},
+        {"fun f(o: String?) { let s = o! }", {B}},
+        {"fun f(s: String) { take(s.clone())\nlook(s)\nlet n = 1\nlet m = n }", {}},
+        {"fun f(b: Box) { let n = b.n\nlet s = b.s }", {B}},
+        {"fun f() { let b = Box(\"a\", 1)\nlet s = b.s\nlet t = b.s.clone() }", {B}},
+        {"fun f(t: (Int, String)) { let n = t.0\nlet s = t.1 }", {B}},
+        {"fun f(a: [String]) { let s = a[0] }", {B}},
+        {"struct S(name: String) { fun get(): String = name\nfun me(): S = self\nfun other(): String = self.name }", {B, B, B}},
+        {"struct P(x: Int) { fun me(): P = self }\nfun f(p: P): P = p", {}},
+        {"fun f<T>(x: T): T = x", {}},
+        {"fun f(s: own String) { let g = { -> s }\nlet h = { -> s.clone() } }", {B, M}},
+        {"fun f(s: own String) { let g = { -> look(s) } }", {}},
+        {"fun f() { let g = { x: String -> take(x) } }", {B}},
+        {"fun f(s: String) { let g = { -> s } }", {C}},
+        {"fun f(s: String) { while true { take(s) } }", {B}},
+        {"fun f(s: String) { defer { take(s) } }", {B}},
+        // `super` is the borrowed receiver too, and no callable owns a static field.
+        {"open class Base {}\nclass D: Base { fun leak(): Base = super }", {B}},
+        {"class S { static let text: String = \"x\"\nstatic fun a(): String = S.text\nstatic fun b(): String = text }", {B, B}},
+        {"class S { static let n: Int = 1\nstatic fun a(): Int = S.n }", {}},
+        // A nested closure takes its own copy of what it captures.
+        {"fun f(s: own String) { let g = { -> { -> s.clone() } } }", {B}},
+        {"fun f(s: own String) { let g = { -> let c = s.clone()\n{ -> look(c) } } }", {}},
+        {"fun f(n: Int) { let g = { -> { -> n } } }", {}},
+        // Only reachable moves are reported.
+        {"fun f(s: String) { return\nlet t = s }", {}},
+        {"fun f(c: Bool, s: String): String = if c { return \"x\" } else { s }", {B}},
+        {"fun f(s: String): String { return \"x\"\nreturn s }", {}},
         // A moved value is reported once until it moves again.
         {"fun f() { let a = \"a\"\ntake(a)\nlook(a)\nlook(a)\ntake(a)\nlook(a) }", {M, M}},
         // Unreachable code reports nothing.

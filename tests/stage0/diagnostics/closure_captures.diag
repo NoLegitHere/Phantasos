@@ -14,7 +14,7 @@ closure_captures.phs:29:13: note: declared 'inout' here
    29 | fun capture(n: inout Int, text: String, owned: own String, k: Int): Int {
       |             ^
 closure_captures.phs:34:18: error[E0503]: a closure cannot capture borrowed parameter 'text' of type 'String', which is not Copy; declare it 'own' to move it into the closure
-   34 |     let b = { -> text }
+   34 |     let b = { -> text.clone() }
       |                  ^^^^
 closure_captures.phs:29:27: note: parameters are borrowed unless declared 'own'
    29 | fun capture(n: inout Int, text: String, owned: own String, k: Int): Int {

@@ -23,7 +23,7 @@ fun inout_(x: inout Int) {}
 
 fun take(text: own String): String = text
 
-fun peek(text: borrow String): String = text
+fun peek(text: borrow String): String = text.clone()
 
 fun main() {
     print(take("a"))

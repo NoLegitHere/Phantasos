@@ -28,10 +28,13 @@ fun makeAdder(n: Int): fun(Int) -> Int = { x -> x + n }
 fun main(): Int {
     let twice = { x: Int -> x * 2 }
     let label = "sum"
-    let sum = { a: Int -> { b: Int ->
-        print(label)
-        a + b
-    } }
+    let sum = { a: Int ->
+        let copy = label.clone()
+        { b: Int ->
+            print(copy)
+            a + b
+        }
+    }
     let moved = Point(x: 1, y: 2).shifter()(3)
     return twice(makeAdder(1)(2)) + sum(3)(4) + moved.x
 }

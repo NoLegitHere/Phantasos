@@ -23,7 +23,7 @@ struct Counter(var count: Int) {
 
 fun pair(a: Int8, b: Bool): (Int8, Bool) = (a, b)
 
-fun swap(t: (Int, String)): (String, Int) = (t.1, t.0)
+fun swap(t: (Int, String)): (String, Int) = (t.1.clone(), t.0)
 
 fun wide(a: Int, b: Int, c: Int): (Int, (Int, Int), UInt8) = (a, (b, c), 7)
 

@@ -21,7 +21,7 @@ class Box<T>(let value: T) {
 }
 fun forward(x: Int) = overloaded(x)
 fun overloaded(x: Int) = x
-fun overloaded(x: String) = x
+fun overloaded(x: String) = x.clone()
 extern "C" { fun foreign(x: Int): Int }
 let nested: Box.Nested = Box.Nested()
 let saved = Box<Int>(1)

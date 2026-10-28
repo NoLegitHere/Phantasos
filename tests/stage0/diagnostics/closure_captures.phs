@@ -31,8 +31,8 @@ fun capture(n: inout Int, text: String, owned: own String, k: Int): Int {
     let point = Point(x: 1)
     let later: Int
     let a = { -> n }
-    let b = { -> text }
-    let c = { -> owned }
+    let b = { -> text.clone() }
+    let c = { -> owned.clone() }
     let d = { -> k + later }
     let e: fun() -> Unit = { -> count = 1 }
     let f: fun() -> Unit = { -> point.x = 2 }

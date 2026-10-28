@@ -29,7 +29,7 @@ fun odd(n: Int): Odd = Odd(x: n * 2, tag: 7)
 
 fun grow(b: Big, by: Int): Big = Big(a: b.a + by, b: b.b + by, c: b.c + by, d: b.d)
 
-fun swap(t: Text): Text = Text(label: t.next, next: t.label)
+fun swap(t: Text): Text = Text(label: t.next.clone(), next: t.label.clone())
 
 // Two registers are left for t after five words, so it goes on the stack and
 // the next word still takes the sixth register.

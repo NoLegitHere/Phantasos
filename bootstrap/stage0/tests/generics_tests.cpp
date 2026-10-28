@@ -64,6 +64,7 @@ struct Frontend {
 
 void applications_and_substituted_members() {
     Frontend f;
+    // `itself` and `items` move out of a borrow (3.30), which typing ignores.
     f.check(R"(
 type List<T> = [T]
 type Rows<T> = List<List<T>>
@@ -76,7 +77,7 @@ class Box<T>(let value: T) {
     fun take(x: T): T = x
     fun other<U>(x: U): U = x
     fun shadow<T>(x: T): T = x
-    fun values(x: Values): Values = x
+    fun values(x: own Values): Values = x
     fun itself(): Self = self
     static fun staticValue<U>(x: U): U = x
 }
@@ -98,7 +99,7 @@ let rows: Rows<Int8> = [[1], []]
 let callback: Callable<Int, Bool>
 let converted = Identity<Int8>(1)
 let applied: Applied = 1
-)");
+)", {DiagCode::MoveOutOfBorrow, DiagCode::MoveOutOfBorrow});
     CHECK(f.name(f.value("number")) == "Box<Int8>" && f.name(f.value("flag")) == "Box<Bool>");
     CHECK(f.value("field") == Type::Int8 && f.value("flagField") == Type::Bool);
     CHECK(f.value("method") == Type::Int8 && f.value("argument") == Type::Int8);
@@ -116,6 +117,7 @@ let applied: Applied = 1
 
 void explicitly_applied_functions() {
     Frontend f;
+    // `elements` moves an array out of a borrowed parameter (3.30), which typing ignores.
     f.check(R"(
 fun identity<T>(x: T): T = x
 fun elements<T>(x: [T]): [T] = x
@@ -132,7 +134,7 @@ let reordered = twice<Int, Bool>(second: true, first: 1)
 let overloadOne = overload<Int>(1)
 let overloadTwo = overload<Int, Bool>(1)
 let inferredReturn = constant<Int>()
-)");
+)", {DiagCode::MoveOutOfBorrow});
     CHECK(f.value("integer") == Type::Int8 && f.value("boolean") == Type::Bool);
     CHECK(f.value("optional") == Type{Type::Int}.optional() && f.name(f.value("array")) == "[Int8]");
     CHECK(f.value("reordered") == Type::Int && f.call("reordered").parameters == (std::vector<usize>{1, 0}));

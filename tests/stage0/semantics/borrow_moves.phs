@@ -1,0 +1,69 @@
+// Copyright 2026 The Phantasos Authors
+// SPDX-License-Identifier: Apache-2.0
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+
+// Moving out of a borrow (E0505): only a local or an `own` parameter can
+// move. Borrowed and `inout` parameters, `self`, fields, elements and the
+// captures of a closure stay where they are; `.clone()` moves a copy.
+
+struct Name(text: String, n: Int) {
+    fun label(): String = text
+    fun whole(): Name = self
+    fun copied(): String = text.clone()
+}
+
+fun take(s: own String) {}
+
+fun parameters(a: String, b: inout String, c: own String) {
+    take(a)
+    let x = b
+    take(c)
+    take(a.clone())
+}
+fun parts(name: Name, pair: (Int, String), list: [String], maybe: String?) {
+    let n = name.n
+    let t = name.text
+    let s = pair.1
+    let e = list[0]
+    let m = maybe!
+}
+fun owned() {
+    let name = Name("x", 1)
+    let t = name.text
+    let whole = name
+}
+fun closures(s: own String) {
+    let again = { -> s }
+    let copy = { x: String -> x.clone() }
+    let moved = { x: String -> x }
+}
+fun nested(s: own String) {
+    let outer = { -> { -> s.clone() } }
+}
+fun fixed(s: own String) {
+    let fixed = { -> let c = s.clone()
+        { -> c.clone() } }
+}
+open class Base(var n: Int) {}
+class Derived(): Base(1) {
+    static let tag: String = "d"
+    fun leak(): Base = super
+    static fun qualified(): String = Derived.tag
+    static fun bare(): String = tag
+}
+fun unreachable(s: String) {
+    return
+    take(s)
+}

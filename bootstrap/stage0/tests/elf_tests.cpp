@@ -362,7 +362,7 @@ fun main() {
 )", "0\n7\n-7\n10\n-1000000\n9223372036854775807\n-9223372036854775808\n0\n18446744073709551615\ntrue\nfalse\n");
     // Arguments evaluate before the write, left to right with other calls.
     prints(R"(
-fun shout(text: String): String {
+fun shout(text: own String): String {
     print("evaluating")
     return text
 }
@@ -439,7 +439,10 @@ fun main(): Int {
     }
     print(total)
     let name = "closure"
-    let twice = { x: Int -> { -> print(name); x * 2 } }
+    let twice = { x: Int ->
+        let copy = name.clone()
+        { -> print(copy); x * 2 }
+    }
     return twice(21)()
 }
 )", "5000250000\nclosure\n");

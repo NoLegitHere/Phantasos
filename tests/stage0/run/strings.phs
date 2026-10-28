@@ -17,9 +17,9 @@
 // register is left, and back as results. The exit status comes from which
 // one arrives.
 
-fun choose(n: Int, a: String, b: String): String = if n == 0 { a } else { b }
+fun choose(n: Int, a: String, b: String): String = if n == 0 { a.clone() } else { b.clone() }
 
-fun late(a: Int, b: Int, c: Int, d: Int, e: Int, text: String, f: Int): String = text
+fun late(a: Int, b: Int, c: Int, d: Int, e: Int, text: String, f: Int): String = text.clone()
 
 fun same(a: String, b: String): Bool = true
 

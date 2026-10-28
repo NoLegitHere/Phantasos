@@ -457,7 +457,10 @@ void closures() {
 fun main(): Int {
     var k = 1
     let label = "seen"
-    let add = { x: Int -> { y: Int -> print(label); x + y + k } }
+    let add = { x: Int ->
+        let copy = label.clone()
+        { y: Int -> print(copy); x + y + k }
+    }
     k = 100
     let inner = add(10)
     k = 1000

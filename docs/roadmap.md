@@ -101,7 +101,7 @@ foundation. Complete.
   borrow, and exclusive `inout` arguments.
   - [x] Use after move for locals and `own` parameters (E0504).
   - [x] A built-in `.clone()` for String and structurally clonable values.
-  - [ ] Moving out of borrowed parameters, `self`, fields and captures (E0505).
+  - [x] Moving out of borrowed parameters, `self`, fields and captures (E0505).
   - [ ] Exclusive `inout` arguments (E0506).
   - [ ] Move samples and run tests.
 - [ ] Generic base substitution and built-in traits. Instantiate

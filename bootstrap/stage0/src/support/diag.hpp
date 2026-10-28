@@ -99,6 +99,7 @@ enum class DiagCode : u16 {
     ImmutableAssignment = 502,
     InvalidCapture = 503,
     UseAfterMove = 504,
+    MoveOutOfBorrow = 505,
     UnsupportedCodegen = 600,
     InvalidEntryPoint = 601,
 };
@@ -172,6 +173,7 @@ constexpr std::string_view diag_code(DiagCode code) {
         case DiagCode::ImmutableAssignment: return "E0502";
         case DiagCode::InvalidCapture: return "E0503";
         case DiagCode::UseAfterMove: return "E0504";
+        case DiagCode::MoveOutOfBorrow: return "E0505";
         case DiagCode::UnsupportedCodegen: return "E0600";
         case DiagCode::InvalidEntryPoint: return "E0601";
     }

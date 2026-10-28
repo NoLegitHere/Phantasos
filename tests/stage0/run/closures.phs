@@ -31,7 +31,10 @@ fun main(): Int {
     count = 50
     print(snapshot())
     let word = "hello"
-    let greet = { times: Int -> { -> print(word); times } }
+    let greet = { times: Int ->
+        let copy = word.clone()
+        { -> print(copy); times }
+    }
     let hello = greet(2)
     print(hello() + hello())
     return applyTwice({ x -> x * 2 }, 10)

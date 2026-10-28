@@ -1240,7 +1240,9 @@ never holds a borrow:
   unless its type is `Copy`. Declaring the parameter `own` moves it into the
   closure instead;
 - `self` is captured when the closure uses it, explicitly or through a bare
-  instance field or method name, in a method, initializer or destructor. It follows the same rules: in a `mut fun`
+  instance field or method name, in a method, initializer, destructor or
+  instance field initializer. A call uses it when the overload it selects is
+  an instance method. It follows the same rules: in a `mut fun`
   it is `inout` and cannot be captured, and elsewhere its type must be
   `Copy` (`E0503`). The captured `self` is read-only.
 

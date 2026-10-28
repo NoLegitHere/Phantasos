@@ -217,8 +217,13 @@ public:
                     receiver(nullptr, nullptr);
                 }
             } else if (const auto* var = as<VarItem>(item)) {
-                // Field initializers see the owner's primary-constructor parameters.
-                if (var->init) callable(owner ? owner->ctor_params : List<Param>{}, var->init, nullptr);
+                // Field initializers see the owner's primary-constructor parameters,
+                // and a closure in an instance field's initializer captures `self`.
+                if (var->init) {
+                    if (!has_modifier(var->mods, Modifier::Static)) capturing_receiver(owner);
+                    callable(owner ? owner->ctor_params : List<Param>{}, var->init, nullptr);
+                    receiver(nullptr, nullptr);
+                }
             } else if (const auto* init = as<InitItem>(item)) {
                 defaults(init->params);
                 // Construction rules for `self` are separate, but closures still capture it.
@@ -666,22 +671,34 @@ private:
 
     // Where a closure, or a closure inside it, uses `self`: explicitly, or
     // through a bare instance field or method name.
+    // A direct call is decided by the overload it selected, not by any candidate.
     std::optional<Span> uses_self(const ClosureExpr& closure) const {
         std::optional<Span> found;
+        SmallVec<const Expr*, 8> selected;  // callees already decided by their call
         each_node(closure.body, true, [](const Stmt&) {}, [&](const Expr& expr) {
             if (found) return;
-            if (expr.kind == ExprKind::SelfValue || expr.kind == ExprKind::Super) found = expr.span;
-            else if (const auto* name = as<NameExpr>(&expr); name && instance_member(*name)) found = expr.span;
+            if (expr.kind == ExprKind::SelfValue || expr.kind == ExprKind::Super) {
+                found = expr.span;
+            } else if (const auto* call = as<CallExpr>(&expr); call && as<NameExpr>(call->callee)) {
+                const auto* checked = types_.call(call);
+                if (!checked || checked->state != CallState::Resolved || !checked->target.valid()) return;
+                selected.push_back(call->callee);
+                if (instance_member(checked->target)) found = call->callee->span;
+            } else if (const auto* name = as<NameExpr>(&expr);
+                       name && std::ranges::find(selected, &expr) == selected.end() && instance_member(*name)) {
+                found = expr.span;
+            }
         });
         return found;
     }
+    bool instance_member(BindingId id) const {
+        const auto& binding = resolution_.binding(id);
+        if (binding.kind != BindingKind::Field && binding.kind != BindingKind::Function) return false;
+        if (resolution_.scopes()[binding.scope.value].kind != ScopeKind::Members) return false;
+        return !binding.item || !has_modifier(binding.item->mods, Modifier::Static);
+    }
     bool instance_member(const NameExpr& name) const {
-        const auto instance = [&](BindingId id) {
-            const auto& binding = resolution_.binding(id);
-            if (binding.kind != BindingKind::Field && binding.kind != BindingKind::Function) return false;
-            if (resolution_.scopes()[binding.scope.value].kind != ScopeKind::Members) return false;
-            return !binding.item || !has_modifier(binding.item->mods, Modifier::Static);
-        };
+        const auto instance = [&](BindingId id) { return instance_member(id); };
         if (const auto id = target(name); id.valid()) return instance(id);
         const auto* record = types_.member(&name);
         return record && record->state == ResolutionState::Resolved && std::ranges::any_of(record->candidates, instance);

@@ -210,6 +210,14 @@ void errors() {
         // Promoted constructor parameters are parameters in defaults and field initializers.
         {"class C(let text: String, let read: fun() -> String = { -> text })", {DiagCode::InvalidCapture}},
         {"class C(let count: Int, let read: fun() -> Int = { -> count })", {}},
+        // So do instance field initializers.
+        {"class C {\nvar n: Int = 0\nlet read: fun() -> Int = { -> n }\n}", {DiagCode::InvalidCapture}},
+        {"struct S {\nvar n: Int = 0\nlet read: fun() -> Int = { -> n }\n}", {}},
+        {"struct S {\nvar n: Int = 0\nlet set: fun() -> Unit = { -> n = 1 }\n}", {DiagCode::ImmutableAssignment}},
+        // A direct call uses `self` only when the overload it selected is an instance method.
+        {"class C {\nfun pick(x: Int) {}\nstatic fun pick(x: Bool) {}\nfun test() { let f = { -> pick(true) } }\n}", {}},
+        {"class C {\nfun pick(x: Int) {}\nstatic fun pick(x: Bool) {}\nfun test() { let f = { -> pick(1) } }\n}",
+         {DiagCode::InvalidCapture}},
         // References inside match arms are captures too.
         {"fun main(n: inout Int) { let g = { -> match 0 { _ -> n } } }", {DiagCode::InvalidCapture}},
         {"fun main() { let n: Int\nlet g = { -> match 0 { _ -> n } }\nn = 1 }", {DiagCode::UninitializedUse}},

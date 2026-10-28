@@ -1,3 +1,0 @@
-resolve_import.phs:16:1: error[E0304]: imports require package loading, which stage0 does not yet support
-   16 | import geometry.shapes as s
-      | ^^^^^^^^^^^^^^^^^^^^^^^^^^^

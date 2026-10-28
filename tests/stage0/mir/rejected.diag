@@ -1,3 +1,0 @@
-rejected.phs:18:13: error[E0600]: stage0 code generation does not support values of type 'Float64' yet
-   18 | fun main(): Float64 = 1.5
-      |             ^^^^^^^

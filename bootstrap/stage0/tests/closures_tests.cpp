@@ -198,6 +198,14 @@ void errors() {
          {DiagCode::ImmutableAssignment}},
         {"struct S(var v: String) {\nfun f() { let g = { -> v } }\n}", {DiagCode::InvalidCapture}},
         {"struct Box<T>(value: T) {\nfun f() { let g = { -> self.value } }\n}", {DiagCode::InvalidCapture}},
+        // Instances substitute their arguments, also inside composite field types.
+        {"struct PairBox<T>(value: (T, Int))\nfun main(b: PairBox<Int>, c: PairBox<String>) { let f = { -> b }\nlet g = { -> c } }",
+         {DiagCode::InvalidCapture}},
+        {"struct Box<T>(value: T)\nstruct Outer<U>(inner: Box<U>)\nfun main(o: Outer<Int>, p: Outer<String>) { let f = { -> o }\nlet g = { -> p } }",
+         {DiagCode::InvalidCapture}},
+        // Constructors and destructors capture `self` under the same rules.
+        {"class C(var n: Int) {\ndeinit { let f = { -> self } }\n}", {DiagCode::InvalidCapture}},
+        {"struct S(var n: Int) {\ninit(m: Int) { n = m\nlet f = { -> n } }\n}", {}},
         // References inside match arms are captures too.
         {"fun main(n: inout Int) { let g = { -> match 0 { _ -> n } } }", {DiagCode::InvalidCapture}},
         {"fun main() { let n: Int\nlet g = { -> match 0 { _ -> n } }\nn = 1 }", {DiagCode::UninitializedUse}},

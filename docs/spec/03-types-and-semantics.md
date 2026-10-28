@@ -1240,14 +1240,16 @@ never holds a borrow:
   unless its type is `Copy`. Declaring the parameter `own` moves it into the
   closure instead;
 - `self` is captured when the closure uses it, explicitly or through a bare
-  instance field or method name. It follows the same rules: in a `mut fun`
+  instance field or method name, in a method, initializer or destructor. It follows the same rules: in a `mut fun`
   it is `inout` and cannot be captured, and elsewhere its type must be
   `Copy` (`E0503`). The captured `self` is read-only.
 
 Until `Copy` derivation is checked, stage0 decides it structurally: integer,
 floating-point, `Bool`, `Char` and `Unit` values, function values and raw
 pointers are `Copy`, and so are tuples, optionals and structs whose elements
-or stored fields are all `Copy`, and enums whose cases carry no payload.
+or stored fields are all `Copy`, and enums whose cases carry no payload. A
+generic instance's fields are checked with its arguments in place, so
+`Box<Int>` can be `Copy` while `Box<String>` is not.
 `String`, arrays, `shared` and `weak` handles, classes, actors, generic type
 parameters and enums with payloads are not. Locals and `own` parameters of
 other types are moved into the closure; moves are checked with ownership.

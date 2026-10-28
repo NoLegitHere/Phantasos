@@ -221,9 +221,14 @@ public:
                 if (var->init) callable(owner ? owner->ctor_params : List<Param>{}, var->init, nullptr);
             } else if (const auto* init = as<InitItem>(item)) {
                 defaults(init->params);
+                // Construction rules for `self` are separate, but closures still capture it.
+                capturing_receiver(owner);
                 if (init->body) callable(init->has_params || !owner ? init->params : owner->ctor_params, init->body, nullptr);
+                receiver(nullptr, nullptr);
             } else if (const auto* deinit = as<DeinitItem>(item)) {
+                capturing_receiver(owner);
                 if (deinit->body) callable({}, deinit->body, nullptr);
+                receiver(nullptr, nullptr);
             }
         }
     }
@@ -308,6 +313,15 @@ private:
         self_owner_ = owner;
         if (has_modifier(fun->mods, Modifier::Mut)) self_ = {Access::Mutable, "'self'", {}, {}};
         else self_ = {Access::ReadOnly, "'self'", fun->name.span, "'self' is read-only in a method without 'mut'"};
+    }
+
+    // In an `init` or `deinit`, `self` stays unchecked for assignments, but a
+    // closure that uses it captures it.
+    void capturing_receiver(const TypeDeclItem* owner) {
+        receiver(nullptr, nullptr);
+        if (!owner) return;
+        self_storage_ = storage(owner->kind);
+        self_owner_ = owner;
     }
 
     Place field_place(const ResolvedBinding& binding, const Place& base, Storage storage) const {
@@ -675,26 +689,46 @@ private:
     // are later work, so stage0 decides it structurally: scalars, function
     // values and raw pointers are Copy, as are tuples, optionals, structs and
     // payload-free enums made of Copy parts. Unknown types do not report.
+    // A generic parameter is Copy when the argument it stands for is; outside
+    // an instance, such as in a declaration's own `self`, it may not be.
     bool copyable(ScalarType root) const {
-        std::vector<ScalarType> work{root};
-        FlatSet<usize> seen;
-        while (!work.empty()) {
-            const auto type = work.back().scalar();
+        struct Part { ScalarType type; u32 env; };  // env: the instance whose arguments it sees
+        std::vector<std::vector<std::pair<usize, Part>>> envs(1);
+        std::vector<Part> work{{root, 0}};
+        for (usize steps = 0; !work.empty(); ++steps) {
+            if (steps > kCopyableSteps) return true;  // undecided; ownership checks decide later
+            const auto [raw, env] = work.back();
             work.pop_back();
+            const auto type = raw.scalar();
             switch (type.kind) {
                 case ScalarType::String: case ScalarType::Array: case ScalarType::Shared: case ScalarType::Weak:
-                case ScalarType::TypeParameter: case ScalarType::Projection:
+                case ScalarType::Projection:
                     return false;
+                case ScalarType::TypeParameter: {
+                    const auto declaration = types_.descriptor(type)->declaration.value;
+                    const auto& bound = envs[env];
+                    const auto it = std::ranges::find(bound, declaration, &std::pair<usize, Part>::first);
+                    if (it == bound.end()) return false;
+                    work.push_back(it->second);
+                    break;
+                }
                 case ScalarType::Tuple:
-                    for (const auto element : types_.descriptor(type)->parameters) work.push_back(element);
+                    for (const auto element : types_.descriptor(type)->parameters) work.push_back({element, env});
                     break;
                 case ScalarType::Nominal: {
-                    if (!seen.insert(type.detail)) break;
                     const auto* descriptor = types_.descriptor(type);
                     const Item* item = resolution_.binding(descriptor->declaration).item;
                     const auto* decl = item ? as_type_decl(item) : nullptr;
-                    if (!decl || !copyable(*decl, work, true)) return false;
-                    for (const auto argument : descriptor->arguments) work.push_back(argument);
+                    std::vector<ScalarType> fields;
+                    if (!decl || !stored_fields(*decl, fields)) return false;
+                    if (fields.empty()) break;
+                    // The fields see this instance's arguments, as seen from where it is named.
+                    std::vector<std::pair<usize, Part>> arguments;
+                    const auto parameters = generic_parameters(*decl);
+                    for (usize i = 0; i < parameters.size() && i < descriptor->arguments.size(); ++i)
+                        arguments.push_back({parameters[i].value, {descriptor->arguments[i], env}});
+                    envs.push_back(std::move(arguments));
+                    for (const auto field : fields) work.push_back({field, static_cast<u32>(envs.size() - 1)});
                     break;
                 }
                 default: break;
@@ -702,16 +736,16 @@ private:
         }
         return true;
     }
+    static constexpr usize kCopyableSteps = 4096;
     // A declaration's own `self`, whose generic fields stay symbolic.
     bool copyable(const TypeDeclItem& decl) const {
-        std::vector<ScalarType> work;
-        if (!copyable(decl, work, false)) return false;
-        return std::ranges::all_of(work, [&](ScalarType type) { return copyable(type); });
+        std::vector<ScalarType> fields;
+        if (!stored_fields(decl, fields)) return false;
+        return std::ranges::all_of(fields, [&](ScalarType type) { return copyable(type); });
     }
-    // Queues the stored field types of a struct; enums are Copy without payloads.
-    // An instance's generic fields are covered by its arguments; otherwise a
-    // field of a generic parameter's type may not be Copy.
-    bool copyable(const TypeDeclItem& decl, std::vector<ScalarType>& fields, bool instance) const {
+    // The stored field types of a struct, or false when the declaration is
+    // never Copy. Enums are Copy without payloads, and have no fields to check.
+    bool stored_fields(const TypeDeclItem& decl, std::vector<ScalarType>& fields) const {
         if (decl.kind == ItemKind::Enum)
             return std::ranges::all_of(decl.members, [](const Item* member) {
                 const auto* entry = as<EnumCaseItem>(member);
@@ -723,10 +757,19 @@ private:
         for (const BindingId id : resolution_.scopes()[resolution_.binding(owner->second).members.value].bindings) {
             const auto& binding = resolution_.binding(id);
             if (binding.kind != BindingKind::Field || (binding.item && has_modifier(binding.item->mods, Modifier::Static))) continue;
-            const auto type = types_.binding(id);
-            if (!instance || (type.kind != ScalarType::TypeParameter && type.kind != ScalarType::Projection)) fields.push_back(type);
+            fields.push_back(types_.binding(id));
         }
         return true;
+    }
+    // A type's generic parameters in declaration order, from the scope around its members.
+    std::vector<BindingId> generic_parameters(const TypeDeclItem& decl) const {
+        std::vector<BindingId> result;
+        const auto owner = items_.find(&decl);
+        if (owner == items_.end()) return result;
+        const auto generics = resolution_.scopes()[resolution_.binding(owner->second).members.value].parent;
+        for (const BindingId id : resolution_.scopes()[generics.value].bindings)
+            if (resolution_.binding(id).kind == BindingKind::GenericParameter) result.push_back(id);
+        return result;
     }
     std::string type_name(ScalarType type) const { return types_.type_name(type, resolution_, names_, 1024); }
 

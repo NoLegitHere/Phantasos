@@ -339,6 +339,17 @@ void long_hierarchies_and_diamonds() {
     Frontend branches;
     branches.check(tree, {}, false);
     CHECK(branches.value("root").kind == Type::Nominal && branches.value("viaSuper").kind == Type::Nominal);
+    // Interface walks cache failures for every class they pass, so later
+    // queries from deeper classes stop early and must still find the answer.
+    std::string interfaces = "interface I {}\ninterface J {}\ninterface K: J {}\nopen class L0: I {}\n";
+    for (int i = 1; i <= 40; ++i) interfaces += std::format("open class L{}: L{}{} {{}}\n", i, i - 1, i == 20 ? ", K" : "");
+    interfaces += "let low: I = L40()\nlet mid: J = L25()\nlet top: I = L0()\n";
+    Frontend walks;
+    walks.check(interfaces, {}, false);
+    for (const auto* invalid : {"let above: J = L19()", "let rootward: K = L3()"}) {
+        Frontend f3;
+        f3.check(interfaces + "let warm: J = L40()\nlet unrelated: J = L10()\n" + invalid, {DiagCode::ScalarTypeMismatch, DiagCode::ScalarTypeMismatch});
+    }
     for (const auto* invalid : {"let sibling: B = A2()", "let down: A2 = A()", "let unrelated: I = B()"}) {
         Frontend f2;
         f2.check(tree + invalid, {DiagCode::ScalarTypeMismatch});

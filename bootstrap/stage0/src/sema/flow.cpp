@@ -23,6 +23,9 @@
 #include <variant>
 #include <vector>
 
+#include "support/flat_map.hpp"
+#include "support/small_vec.hpp"
+
 namespace phs {
 namespace {
 using namespace ast;
@@ -79,7 +82,9 @@ bool conditional(const Expr& expr) {
 
 // Direct expression operands in evaluation order (left to right). Statements
 // inside blocks and the branches of control expressions are not included.
-void operands(const Expr& expr, std::vector<const Expr*>& out) {
+using ExprList = SmallVec<const Expr*, 8>;
+
+void operands(const Expr& expr, ExprList& out) {
     switch (expr.kind) {
         case ExprKind::Paren: out.push_back(cast<ParenExpr>(&expr)->inner); break;
         case ExprKind::Array: for (const Expr* e : cast<ArrayExpr>(&expr)->elems) out.push_back(e); break;
@@ -126,8 +131,8 @@ void operands(const Expr& expr, std::vector<const Expr*>& out) {
 // Visits every statement nested anywhere inside root, without the C++ stack.
 template <typename F>
 void each_stmt(const Expr* root, F&& visit) {
-    std::vector<std::variant<const Expr*, const Stmt*>> work{root};
-    std::vector<const Expr*> exprs;
+    SmallVec<std::variant<const Expr*, const Stmt*>, 16> work{root};
+    ExprList exprs;
     while (!work.empty()) {
         const auto next = work.back();
         work.pop_back();
@@ -368,7 +373,7 @@ private:
     // Member, index, tuple element and unwrap chains are walked iteratively from
     // their root. Elements and unwrapped optionals keep the access of their container.
     Place place(const Expr* expr) const {
-        std::vector<const Expr*> chain;
+        ExprList chain;
         expr = unparen(expr);
         while (const Expr* base = projected(*expr)) {
             chain.push_back(expr);
@@ -645,8 +650,8 @@ private:
     void eval(const Expr* root, State& state) {
         if (!root) return;
         struct Frame { const Expr* expr; bool done; };
-        std::vector<Frame> stack{{root, false}};
-        std::vector<const Expr*> children;
+        SmallVec<Frame, 16> stack{{root, false}};
+        ExprList children;
         while (!stack.empty()) {
             const auto [expr, done] = stack.back();
             stack.pop_back();
@@ -811,10 +816,10 @@ private:
     const ScalarTypes& types_;
     const Interner& names_;
     DiagEngine& diag_;
-    std::unordered_map<const Item*, BindingId> items_;
-    std::unordered_map<u32, const Param*> params_;
-    std::unordered_map<u32, Local> locals_;
-    std::unordered_map<u32, Field> fields_;
+    FlatMap<const Item*, BindingId> items_;
+    FlatMap<u32, const Param*> params_;  // name span.lo -> parameter of the current callable
+    FlatMap<u32, Local> locals_;         // filled before each callable is evaluated
+    FlatMap<u32, Field> fields_;
     Place self_;
     Storage self_storage_ = Storage::Unknown;
     std::vector<State> breaks_;

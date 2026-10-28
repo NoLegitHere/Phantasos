@@ -17,17 +17,13 @@
 
 #include <algorithm>
 #include <ranges>
-#include <unordered_map>
 #include <variant>
+
+#include "support/flat_map.hpp"
 
 namespace phs {
 namespace {
 using namespace ast;
-using Names = std::unordered_map<u32, BindingSetId>;
-struct ScopeNames {
-    Names types, values;
-    bool inherited = false;
-};
 struct Context {
     ScopeId scope;
     BindingId owner;
@@ -71,7 +67,7 @@ public:
         for (const Import& import : file.imports) {
             const Name name = import.alias.sym.empty() ? import.path.parts.back() : import.alias;
             const auto id = declare(root, name, BindingKind::Import, NameSpace::Type);
-            scope_names_[root.value].values.emplace(name.sym.id, binding_sets_[id.value]);
+            names_table_.try_emplace(name_key(root, name.sym, NameSpace::Value), binding_sets_[id.value]);
             diag_.error(DiagCode::ImportUnavailable, import.span,
                         "imports require package loading, which stage0 does not yet support");
         }
@@ -93,21 +89,22 @@ private:
     // Packs scope bindings and overload sets into flat storage and sorts
     // references for binary search.
     void finish() {
-        const auto pack = [](const std::vector<std::vector<BindingId>>& groups, std::vector<BindingId>& items) {
-            usize total = 0;
-            for (const auto& group : groups) total += group.size();
-            items.reserve(total);  // no reallocation: the spans below point into it
+        // A stable counting sort by group keeps each group in declaration order.
+        const auto pack = [](const std::vector<Entry>& entries, usize groups, std::vector<BindingId>& items) {
+            std::vector<usize> starts(groups + 1);
+            for (const auto& entry : entries) ++starts[entry.group + 1];
+            for (usize g = 0; g < groups; ++g) starts[g + 1] += starts[g];
+            items.resize(entries.size());  // no reallocation later: the spans below point into it
+            std::vector<usize> next(starts.begin(), starts.end() - 1);
+            for (const auto& entry : entries) items[next[entry.group]++] = entry.binding;
             std::vector<std::span<const BindingId>> spans;
-            spans.reserve(groups.size());
-            for (const auto& group : groups) {
-                spans.emplace_back(items.data() + items.size(), group.size());
-                items.insert(items.end(), group.begin(), group.end());
-            }
+            spans.reserve(groups);
+            for (usize g = 0; g < groups; ++g) spans.emplace_back(items.data() + starts[g], starts[g + 1] - starts[g]);
             return spans;
         };
-        const auto scopes = pack(scope_bindings_, result_.scope_items_);
+        const auto scopes = pack(scope_entries_, result_.scopes_.size(), result_.scope_items_);
         for (usize i = 0; i < scopes.size(); ++i) result_.scopes_[i].bindings = scopes[i];
-        result_.sets_ = pack(sets_, result_.set_items_);
+        result_.sets_ = pack(set_entries_, set_info_.size(), result_.set_items_);
         auto& refs = result_.references_;
         std::ranges::sort(refs, {}, [](const NameReference& r) { return r.span.lo; });
         for (usize i = 1; i < refs.size(); ++i) PHS_ASSERT(refs[i - 1].span.lo != refs[i].span.lo);
@@ -127,8 +124,8 @@ private:
     ScopeId scope(ScopeId parent, ScopeKind kind) {
         const ScopeId id{result_.scopes_.size()};
         result_.scopes_.push_back({parent, kind, {}});
-        scope_bindings_.emplace_back();
-        scope_names_.emplace_back();
+        PHS_ASSERT(id.value < (usize{1} << 31));  // fits name_key()
+        scope_inherited_.push_back(false);
         return id;
     }
 
@@ -136,28 +133,27 @@ private:
         PHS_ASSERT(!name.sym.empty());
         const BindingId id{result_.bindings_.size()};
         result_.bindings_.push_back({name, kind, into, item, {}});
-        scope_bindings_[into.value].push_back(id);
-        Names& table = space == NameSpace::Type ? scope_names_[into.value].types : scope_names_[into.value].values;
-        const auto [entry, inserted] = table.try_emplace(name.sym.id, BindingSetId{sets_.size()});
-        if (inserted) sets_.emplace_back();
-        auto& group = sets_[entry->second.value];
-        if (!group.empty() && (kind != BindingKind::Function ||
-                             result_.binding(group.front()).kind != BindingKind::Function)) {
+        scope_entries_.push_back({into.value, id});
+        const auto [entry, inserted] = names_table_.try_emplace(name_key(into, name.sym, space), BindingSetId{set_info_.size()});
+        const BindingSetId set = entry->second;  // entry is invalidated by later inserts
+        if (inserted) set_info_.emplace_back();
+        auto& group = set_info_[set.value];
+        if (group.size && (kind != BindingKind::Function ||
+                           result_.binding(group.first).kind != BindingKind::Function)) {
             auto& d = diag_.error(DiagCode::ConflictingDeclaration, name.span,
                                   "conflicting declaration of '{}'", names_.str(name.sym));
-            d.notes.push_back({result_.binding(group.front()).name.span, "first declared here"});
+            d.notes.push_back({result_.binding(group.first).name.span, "first declared here"});
         }
-        group.push_back(id);
-        binding_sets_.push_back(entry->second);
+        if (!group.size++) group.first = id;
+        set_entries_.push_back({set.value, id});
+        binding_sets_.push_back(set);
         return id;
     }
 
     BindingSetId direct(ScopeId in, Symbol name, NameSpace space, bool constructor = false) const {
-        const auto& tables = scope_names_[in.value];
-        const auto& table = space == NameSpace::Type ? tables.types : tables.values;
-        if (const auto it = table.find(name.id); it != table.end()) return it->second;
+        if (const auto it = names_table_.find(name_key(in, name, space)); it != names_table_.end()) return it->second;
         if (constructor) {
-            if (const auto it = tables.types.find(name.id); it != tables.types.end()) return it->second;
+            if (const auto it = names_table_.find(name_key(in, name, NameSpace::Type)); it != names_table_.end()) return it->second;
         }
         return {};
     }
@@ -166,7 +162,7 @@ private:
         while (in.valid()) {
             const auto found = direct(in, name, space, space == NameSpace::Value);
             if (found.valid()) return {ResolutionState::Resolved, found};
-            if (scope_names_[in.value].inherited) {
+            if (scope_inherited_[in.value]) {
                 // A type's own generic parameters precede inherited lookup.
                 // A base member may shadow an outer declaration: do not commit
                 // to the outer binding until inheritance has been checked.
@@ -197,9 +193,8 @@ private:
     Target qualified(Name name, Context context, NameSpace space, Target base) {
         if (base.state == ResolutionState::Unresolved)
             return record(name.span, context, space, {ResolutionState::Unresolved, {}});
-        const auto candidates = base.set.valid() ? std::span<const BindingId>(sets_[base.set.value]) : std::span<const BindingId>{};
-        if (base.state == ResolutionState::Resolved && candidates.size() == 1) {
-            const auto& binding = result_.binding(candidates.front());
+        if (base.state == ResolutionState::Resolved && base.set.valid() && set_info_[base.set.value].size == 1) {
+            const auto& binding = result_.binding(set_info_[base.set.value].first);
             if (binding.members.valid()) {
                 const auto found = direct(binding.members, name.sym, space, space == NameSpace::Value);
                 if (found.valid()) return record(name.span, context, space, {ResolutionState::Resolved, found});
@@ -249,7 +244,7 @@ private:
                 const auto generic = scope(target, ScopeKind::Generics);
                 generics(type->generics, generic);
                 const auto members = scope(generic, ScopeKind::Members);
-                scope_names_[members.value].inherited = !type->supers.empty();
+                scope_inherited_[members.value] = !type->supers.empty();
                 const auto ctor = scope(members, ScopeKind::Parameters);
                 type_scopes_.emplace(type, TypeScopes{generic, members, ctor, id});
                 result_.bindings_[id.value].members = members;
@@ -302,8 +297,8 @@ private:
 
     void visit(ExposeParameter expose, Context context) {
         const auto& binding = result_.binding(expose.binding);
-        scope_names_[context.scope.value].values.emplace(binding.name.sym.id, binding_sets_[expose.binding.value]);
-        scope_bindings_[context.scope.value].push_back(expose.binding);
+        names_table_.try_emplace(name_key(context.scope, binding.name.sym, NameSpace::Value), binding_sets_[expose.binding.value]);
+        scope_entries_.push_back({context.scope.value, expose.binding});
     }
 
     void visit(const Item& item, Context context) {
@@ -604,12 +599,21 @@ private:
     Interner& names_;
     DiagEngine& diag_;
     Resolution result_;
-    std::vector<ScopeNames> scope_names_;
+    // Every scope's names in one table, so a scope costs no allocation.
+    static u64 name_key(ScopeId scope, Symbol name, NameSpace space) {
+        return u64(scope.value) << 33 | u64(space == NameSpace::Value) << 32 | name.id;
+    }
+    FlatMap<u64, BindingSetId> names_table_;
+    std::vector<u8> scope_inherited_;  // scope id -> members scope of a type with bases
     std::vector<BindingSetId> binding_sets_;
-    std::vector<std::vector<BindingId>> scope_bindings_, sets_;  // packed into result_ by finish()
-    std::unordered_map<const TypeDeclItem*, TypeScopes> type_scopes_;
-    std::unordered_map<const Param*, BindingId> constructor_params_;
-    std::unordered_map<const Expr*, Target> expression_targets_;
+    // (scope or set, binding) in declaration order, packed into result_ by finish().
+    struct Entry { usize group; BindingId binding; };
+    std::vector<Entry> scope_entries_, set_entries_;
+    struct SetInfo { BindingId first; u32 size = 0; };
+    std::vector<SetInfo> set_info_;
+    FlatMap<const TypeDeclItem*, TypeScopes> type_scopes_;
+    FlatMap<const Param*, BindingId> constructor_params_;
+    FlatMap<const Expr*, Target> expression_targets_;
     std::vector<Work> work_;
 };
 

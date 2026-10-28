@@ -49,12 +49,10 @@ AliasExpansion::Lookup AliasExpansion::path(std::span<const Name> parts, NameSpa
             const auto& owner = resolution.binding(result.type.target);
             if (!owner.members.valid()) return {};
             if (space == NameSpace::Value) {
-                const auto& values = member_values_.at(owner.members.value);
-                if (std::binary_search(values.begin(), values.end(), parts[p].sym.id)) return {};
+                if (member_values_.contains(member_key(owner.members.value, parts[p].sym.id))) return {};
             }
-            const auto& members = member_types_.at(owner.members.value);
-            const auto it = members.find(parts[p].sym.id);
-            if (it == members.end()) {
+            const auto it = member_types_.find(member_key(owner.members.value, parts[p].sym.id));
+            if (it == member_types_.end()) {
                 if (space == NameSpace::Type && cast_type_decl(owner.item)->supers.empty())
                     return {failed(), {}, parts[p], result.type.target};
                 return {};
@@ -130,14 +128,12 @@ public:
             }
             if (!b.members.valid()) continue;
             if (b.item->kind == ItemKind::Interface) interfaces.insert(b.members.value);
-            auto& types = result_.member_types_[b.members.value];
-            auto& values = result_.member_values_[b.members.value];
             for (BindingId member : resolution_.scopes()[b.members.value].bindings) {
                 const auto& child = resolution_.binding(member);
-                if (child.kind == BindingKind::Type || child.kind == BindingKind::TypeAlias) types.emplace(child.name.sym.id, member);
-                else values.push_back(child.name.sym.id);
+                const u64 key = AliasExpansion::member_key(b.members.value, child.name.sym.id);
+                if (child.kind == BindingKind::Type || child.kind == BindingKind::TypeAlias) result_.member_types_.try_emplace(key, member);
+                else result_.member_values_.insert(key);
             }
-            std::sort(values.begin(), values.end());
         }
         for (usize i = 0; i < bindings.size(); ++i) {
             if (bindings[i].kind != BindingKind::TypeAlias) continue;

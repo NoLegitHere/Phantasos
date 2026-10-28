@@ -15,6 +15,7 @@
 
 #include "sema/types.hpp"
 #include "support/scoped_value.hpp"
+#include "support/small_vec.hpp"
 
 #include <algorithm>
 #include <limits>
@@ -22,6 +23,7 @@
 #include <optional>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <variant>
 
 namespace phs {
@@ -169,6 +171,9 @@ std::string scalar_type_name(ScalarType type) {
     return result;
 }
 
+// Candidate lists are almost always one or two bindings long.
+using BindingIds = SmallVec<BindingId, 2>;
+
 class ScalarChecker {
 public:
     ScalarChecker(const Resolution& resolution, const Interner& names, DiagEngine& diag)
@@ -210,10 +215,17 @@ public:
         expressions_.reserve_ids(file.expr_ids);
         members_.reserve_ids(file.expr_ids);
         reference_contexts_.reserve_ids(file.expr_ids);
+        // Chains the bindings declared at each name position; walking the
+        // bindings backward keeps each chain in binding order.
+        declaration_next_.assign(resolution_.bindings().size(), kNoDeclaration);
+        for (usize i = resolution_.bindings().size(); i-- > 0;) {
+            const auto& b = resolution_.bindings()[i];
+            if (b.kind == BindingKind::BuiltinType || b.kind == BindingKind::BuiltinValue) continue;
+            const auto [head, fresh] = declarations_.try_emplace(b.name.span.lo, static_cast<u32>(i));
+            if (!fresh) { declaration_next_[i] = head->second; head->second = static_cast<u32>(i); }
+        }
         for (usize i = 0; i < resolution_.bindings().size(); ++i) {
             const auto& b = resolution_.bindings()[i];
-            if (b.kind != BindingKind::BuiltinType && b.kind != BindingKind::BuiltinValue)
-                declarations_.emplace(b.name.span.lo, i);
             if (b.kind == BindingKind::Function) {
                 const auto* fun = cast<FunItem>(b.item);
                 function_nodes_.emplace(i, nodes_.size());
@@ -221,10 +233,8 @@ public:
                                   .value = {fun->sig.ret ? annotation(fun->sig.ret) : fun->expr_body ? Type{Type::Deferred} : Type{Type::Unit}}});
                 if (fun->expr_body && !fun->sig.ret) declaration(nodes_.size() - 1).init = fun->body;
                 ScalarSignature sig;
-                parameter_indices_.try_emplace(fun);
                 for (usize p = 0; p < fun->sig.params.size(); ++p) {
                     sig.parameters.push_back(annotation(fun->sig.params[p].type));
-                    parameter_indices_[fun].emplace(fun->sig.params[p].name.sym.id, p);
                 }
                 sig.generic = !fun->sig.generics.empty();
                 signatures_.emplace(i, std::move(sig));
@@ -325,8 +335,8 @@ public:
         // Free the working tables before building the result, which is when
         // memory peaks on large files.
         release(annotations_, speculative_annotations_, environments_, environment_ids_, node_declarations_, dependencies_,
-                declarations_, parameter_indices_, direct_callees_, function_names_, reference_contexts_, call_contexts_,
-                entities_, large_scope_names_, ancestry_cache_, class_intervals_, visit_marks_, ancestry_work_, inherited_members_, walk_,
+                declarations_, declaration_next_, direct_callees_, function_names_, reference_contexts_, call_contexts_,
+                entities_, large_scope_names_, ancestry_cache_, class_intervals_, visit_marks_, ancestry_work_, ancestry_visited_, inherited_members_, walk_,
                 requirements_);
         ScalarTypes result;
         for (const auto& [expr, index] : expressions_) result.expressions_.emplace(expr, nodes_[index].value.type);
@@ -497,6 +507,7 @@ private:
         std::vector<Type> arguments;
         usize parent = 0;
         Type self;
+        usize next = std::numeric_limits<usize>::max();  // older environment with the same identity hash
     };
     Type substituted(BindingId parameter, usize context) const {
         while (context) {
@@ -520,14 +531,17 @@ private:
         if (resolution_.scopes()[resolution_.binding(id).scope.value].kind == ScopeKind::File) parent = 0;
         if (args.empty() && !known(self)) return {ExpansionState::Resolved, parent};
         // Hash the identity once; the environments themselves hold the keys.
-        const usize hash = TypeDescriptorHash{}({.kind = Type::Nominal, .element = self, .declaration = id, .arguments = args}) * 31 + parent;
-        for (auto [it, last] = environment_ids_.equal_range(hash); it != last; ++it) {
-            const auto& env = environments_[it->second];
-            if (env.declaration == id && env.parent == parent && env.self == self && env.arguments == args) return {ExpansionState::Resolved, it->second};
+        usize hash = TypeDescriptorHash{}({.kind = Type::Nominal, .element = self, .declaration = id, .arguments = args}) * 31 + parent;
+        if (hash == FlatMap<usize, usize>::empty_key()) --hash;
+        const auto head = environment_ids_.find(hash);
+        for (usize e = head == environment_ids_.end() ? kNoEnvironment : head->second; e != kNoEnvironment; e = environments_[e].next) {
+            const auto& env = environments_[e];
+            if (env.declaration == id && env.parent == parent && env.self == self && env.arguments == args) return {ExpansionState::Resolved, e};
         }
         const auto context = environments_.size();
-        environment_ids_.emplace(hash, context);
-        environments_.push_back({id, std::move(args), parent, self});
+        const auto [slot, fresh] = environment_ids_.try_emplace(hash, context);
+        const usize next = fresh ? kNoEnvironment : std::exchange(slot->second, context);
+        environments_.push_back({id, std::move(args), parent, self, next});
         return {ExpansionState::Resolved, context};
     }
     Type context_self(usize context, BindingId owner = {}) {
@@ -959,8 +973,9 @@ private:
             usize redirect_context = 0;
             BindingId alias;
         };
-        std::vector<Frame> work{{type, context}};
-        std::unordered_set<usize> active_aliases;
+        if (const auto* found = cache(context).find(type)) return *found;  // most calls hit; skip the work stack
+        SmallVec<Frame, 8> work{{type, context}};
+        FlatSet<usize> active_aliases;
         while (!work.empty()) {
             auto& frame = work.back();
             const auto* syntax = frame.syntax;
@@ -1066,7 +1081,7 @@ private:
                     }
                     const auto* alias = cast<TypeAliasItem>(resolution_.binding(id).item);
                     if (!alias->type || associated_alias(id) || constrained(id)) { cache(env)[syntax] = Type::Deferred; continue; }
-                    if (!active_aliases.insert(id.value).second) {
+                    if (!active_aliases.insert(id.value)) {
                         diag_.error(DiagCode::AliasCycle, syntax->span, "cyclic generic type alias expansion");
                         for (const auto& entry : work) cache(entry.context)[entry.syntax] = Type::Error;
                         continue;
@@ -1342,32 +1357,52 @@ private:
 
     Relation ancestry(BindingId source, BindingId target) const {
         if (source == target) return Relation::Yes;
-        const auto fact = hierarchies_.find(source.value);
-        if (fact == hierarchies_.end() || fact->second.state != ExpansionState::Resolved) return Relation::Deferred;
         // Every base reachable from a resolved type is resolved, and only
         // classes have class bases, so a class target is an ancestor exactly
-        // when its superclass-tree interval contains the source's.
-        if (target.value < class_intervals_.size() && class_intervals_[target.value].pre) {
+        // when its superclass-tree interval contains the source's. Numbered
+        // classes are resolved, so this needs no hierarchy lookup.
+        const bool class_target = target.value < class_intervals_.size() && class_intervals_[target.value].pre;
+        if (class_target && class_intervals_[source.value].pre) {
             const auto inner = class_intervals_[source.value], outer = class_intervals_[target.value];
-            return inner.pre && outer.pre <= inner.pre && inner.post <= outer.post ? Relation::Yes : Relation::No;
+            return outer.pre <= inner.pre && inner.post <= outer.post ? Relation::Yes : Relation::No;
         }
-        const u64 key = static_cast<u64>(source.value) << 32 | target.value;
-        if (const auto it = ancestry_cache_.find(key); it != ancestry_cache_.end()) return it->second;
+        const auto fact = hierarchies_.find(source.value);
+        if (fact == hierarchies_.end() || fact->second.state != ExpansionState::Resolved) return Relation::Deferred;
+        if (class_target) return Relation::No;  // a resolved non-class has no class bases
+        // Otherwise only a resolved interface can be reached: other bases are
+        // invalid, and built-in ones keep the source from resolving.
+        const auto& declared = resolution_.binding(target);
+        const auto goal = hierarchies_.find(target.value);
+        if (declared.kind != BindingKind::Type || declared.item->kind != ItemKind::Interface ||
+            goal == hierarchies_.end() || goal->second.state != ExpansionState::Resolved) return Relation::No;
+        const auto key = [&](BindingId from) { return static_cast<u64>(from.value) << 32 | target.value; };
+        if (const auto it = ancestry_cache_.find(key(source)); it != ancestry_cache_.end()) return it->second;
         if (++visit_epoch_ == 0) { std::ranges::fill(visit_marks_, 0); visit_epoch_ = 1; }
         visit_marks_.resize(resolution_.bindings().size());
         auto& work = ancestry_work_;
+        auto& visited = ancestry_visited_;
         work.assign(1, source);
+        visited.clear();
         Relation result = Relation::No;
         while (!work.empty()) {
             const auto next = work.back(); work.pop_back();
             if (next == target) { result = Relation::Yes; break; }
             if (visit_marks_[next.value] == visit_epoch_) continue;
             visit_marks_[next.value] = visit_epoch_;
+            if (const auto it = ancestry_cache_.find(key(next)); it != ancestry_cache_.end()) {
+                if (it->second == Relation::Yes) { result = Relation::Yes; break; }
+                continue;  // an earlier walk already explored everything above next
+            }
             const auto it = hierarchies_.find(next.value);
             if (it == hierarchies_.end() || it->second.state != ExpansionState::Resolved) { result = Relation::Deferred; continue; }
+            visited.push_back(next);
             for (const auto base : it->second.bases) work.push_back(base);
         }
-        ancestry_cache_.try_emplace(key, result);
+        // A failed walk explored every ancestor of each node it visited, so
+        // none of them reaches the target either; later walks stop there.
+        // (Resolved sources only reach resolved bases, so Deferred is defensive.)
+        if (result == Relation::No) for (const auto id : visited) ancestry_cache_.try_emplace(key(id), Relation::No);
+        else ancestry_cache_.try_emplace(key(source), result);
         return result;
     }
 
@@ -1433,39 +1468,39 @@ private:
         ExpansionState state = ExpansionState::Resolved;
         // Keep reabstracting declarations even when a peer default supplies
         // the visible implementation. Descendants still need their blockers.
-        std::vector<BindingId> declarations;
-        std::vector<BindingId> ids;
+        BindingIds declarations;
+        BindingIds ids;
     };
     static u64 scope_name_key(ScopeId scope, Symbol name) { return u64(scope.value) << 32 | name.id; }
     // The bindings named `name` in `scope`, in the scope's order. Most scopes
     // are small enough to scan; large ones are indexed by name up front.
-    std::vector<BindingId> scope_bindings(ScopeId scope, Symbol name) const {
+    BindingIds scope_bindings(ScopeId scope, Symbol name) const {
         const auto& bindings = resolution_.scopes()[scope.value].bindings;
         if (bindings.size() >= kIndexedScope) {
             const auto it = large_scope_names_.find(scope_name_key(scope, name));
-            return it == large_scope_names_.end() ? std::vector<BindingId>{} : it->second;
+            return it == large_scope_names_.end() ? BindingIds{} : BindingIds(std::span<const BindingId>(it->second));
         }
-        std::vector<BindingId> result;
+        BindingIds result;
         for (const auto id : bindings)
             if (resolution_.binding(id).name.sym == name) result.push_back(id);
         return result;
     }
-    std::vector<BindingId> direct_members(BindingId owner, Symbol name, bool types_only) const {
+    BindingIds direct_members(BindingId owner, Symbol name, bool types_only) const {
         const auto scope = resolution_.binding(owner).members;
         if (!scope.valid()) return {};
         if (!types_only) {
             auto values = scope_bindings(scope, name);
-            std::erase_if(values, [&](BindingId id) {
+            erase_if(values, [&](BindingId id) {
                 const auto kind = resolution_.binding(id).kind;
                 return kind == BindingKind::Type || kind == BindingKind::TypeAlias;
             });
             if (!values.empty()) return values;
         }
-        const auto& types = aliases_.member_types_.at(scope.value);
-        if (const auto it = types.find(name.id); it != types.end()) return {it->second};
+        if (const auto it = aliases_.member_types_.find(AliasExpansion::member_key(scope.value, name.id)); it != aliases_.member_types_.end())
+            return {it->second};
         return {};
     }
-    void merge_members(std::vector<BindingId>& result, std::span<const BindingId> incoming, Type receiver = {}) {
+    void merge_members(BindingIds& result, std::span<const BindingId> incoming, Type receiver = {}) {
         const auto hides = [&](BindingId a, BindingId b) {
             if (a == b) return true;
             const auto& x = resolution_.binding(a);
@@ -1477,12 +1512,12 @@ private:
         };
         for (const auto candidate : incoming) {
             if (std::ranges::any_of(result, [&](BindingId id) { return hides(id, candidate); })) continue;
-            std::erase_if(result, [&](BindingId id) { return hides(candidate, id); });
+            erase_if(result, [&](BindingId id) { return hides(candidate, id); });
             result.push_back(candidate);
         }
     }
-    std::vector<BindingId> preferred_members(std::span<const BindingId> declarations, Type receiver = {}) {
-        std::vector<BindingId> result;
+    BindingIds preferred_members(std::span<const BindingId> declarations, Type receiver = {}) {
+        BindingIds result;
         for (const auto candidate : declarations) {
             const bool hidden = std::ranges::any_of(declarations, [&](BindingId other) {
                 if (candidate == other || resolution_.binding(candidate).kind != BindingKind::Function ||
@@ -1499,7 +1534,7 @@ private:
     std::shared_ptr<const MemberLookup> lookup_member(BindingId owner, Symbol name, bool types_only = false) {
         // One flat map for every name; the view keys it by owner for this name.
         struct View {
-            std::unordered_map<u64, std::shared_ptr<const MemberLookup>>& members;
+            FlatMap<u64, std::shared_ptr<const MemberLookup>>& members;
             u64 prefix;
             u64 key(usize owner) const { PHS_ASSERT(owner < (usize{1} << 31)); return prefix | static_cast<u64>(owner) << 1; }
             auto find(usize owner) const { return members.find(key(owner)); }
@@ -1510,7 +1545,7 @@ private:
         } cache{inherited_members_, static_cast<u64>(name.id) << 32 | types_only};
         if (const auto it = cache.find(owner.value); it != cache.end()) return it->second;
         struct Frame { BindingId id; usize next = 0; };
-        std::vector<Frame> stack{{owner}};
+        SmallVec<Frame, 8> stack{{owner}};
         while (!stack.empty()) {
             auto& frame = stack.back();
             const auto hierarchy = hierarchies_.find(frame.id.value);
@@ -1921,8 +1956,6 @@ private:
             if (fact.state != ExpansionState::Resolved || !fact.superclass.valid()) continue;
             const auto* parent = cast_type_decl(resolution_.binding(fact.superclass).item);
             if (std::ranges::any_of(parent->members, [](const Item* item) { const auto* init = as<InitItem>(item); return init && init->has_params; })) continue;
-            std::unordered_map<u32, usize> labels;
-            for (usize p = 0; p < parent->ctor_params.size(); ++p) labels.emplace(parent->ctor_params[p].name.sym.id, p);
             for (const auto& base : cast_type_decl(resolution_.binding(owner).item)->supers) {
                 if (!base.has_args) continue; // an explicit super(...) body can delegate later
                 const auto type = annotation(base.type);
@@ -1931,7 +1964,7 @@ private:
                 CallExpr arguments;
                 arguments.args = base.args;
                 std::vector<usize> mapping;
-                bool matches = argument_mapping(arguments, parent->ctor_params, labels, mapping);
+                bool matches = argument_mapping(arguments, parent->ctor_params, mapping);
                 if (matches) for (usize a = 0; a < base.args.size(); ++a)
                     matches &= probe(expressions_.at(base.args[a].value), annotation(parent->ctor_params[mapping[a]].type)).matches;
                 if (!matches) diag_.error(DiagCode::NoMatchingCall, base.type->span, "arguments do not match superclass constructor");
@@ -2069,7 +2102,7 @@ private:
                 if (found->state != ExpansionState::Resolved || !found->ids.empty()) return *found;
             } else {
                 MemberLookup result;
-                std::vector<BindingId> types;
+                BindingIds types;
                 for (const auto id : scope_bindings(scope, name)) {
                     const auto& b = resolution_.binding(id);
                     if (b.kind == BindingKind::Type || b.kind == BindingKind::TypeAlias || b.kind == BindingKind::GenericParameter || b.kind == BindingKind::BuiltinType) types.push_back(id);
@@ -2087,7 +2120,7 @@ private:
             if (p && current.optional_depth) return {};
             const auto name = syntax->path.parts[p];
             const auto* reference = resolution_.reference(name.span);
-            std::vector<BindingId> ids;
+            BindingIds ids;
             if (reference && reference->state == ResolutionState::Resolved) {
                 const auto candidates = resolution_.candidates(reference->target);
                 ids.assign(candidates.begin(), candidates.end());
@@ -2131,7 +2164,7 @@ private:
         const auto* member = as<MemberExpr>(expr);
         const Name name = name_expr ? name_expr->name : member->name;
         CheckedMember record;
-        std::vector<BindingId> candidates;
+        BindingIds candidates;
         const auto* reference = resolution_.reference(name.span);
         if (name_expr) {
             if (!reference) return std::nullopt;
@@ -2185,7 +2218,7 @@ private:
         }
         if (found.state != ExpansionState::Resolved) {
             record.state = found.state == ExpansionState::Error ? ResolutionState::Unresolved : ResolutionState::Deferred;
-            record.candidates = std::move(found.ids);
+            record.candidates.assign(found.ids.begin(), found.ids.end());
             members_[expr] = std::move(record);
             return std::nullopt;
         }
@@ -2279,9 +2312,9 @@ private:
         return expr ? nodes_[expressions_.at(expr)].value : Value{Type::Unit};
     }
     void declare(Name name, const TypeExpr* type, const Expr* init) {
-        const auto [first, last] = declarations_.equal_range(name.span.lo);
-        for (auto it = first; it != last; ++it) {
-            auto& declared = declaration(it->second);
+        const auto head = declarations_.find(name.span.lo);
+        for (u32 i = head == declarations_.end() ? kNoDeclaration : head->second; i != kNoDeclaration; i = declaration_next_[i]) {
+            auto& declared = declaration(i);
             declared.annotation = type;
             declared.init = init;
         }
@@ -2291,12 +2324,12 @@ private:
         nodes_.emplace_back();
         declaration(whole) = {.annotation = var.type, .init = var.init, .destructuring = &var};
         for (usize i = 0; i < var.names.size(); ++i) {
-            const auto [first, last] = declarations_.equal_range(var.names[i].span.lo);
-            for (auto it = first; it != last; ++it) {
-                auto& declared = declaration(it->second);
+            const auto head = declarations_.find(var.names[i].span.lo);
+            for (u32 b = head == declarations_.end() ? kNoDeclaration : head->second; b != kNoDeclaration; b = declaration_next_[b]) {
+                auto& declared = declaration(b);
                 declared.source = static_cast<u32>(whole);
                 declared.element = static_cast<u32>(i);
-                depend(it->second, whole);
+                depend(b, whole);
             }
         }
     }
@@ -3059,9 +3092,23 @@ private:
         return result;
     }
 
-    bool argument_mapping(const CallExpr& expr, List<Param> params, const std::unordered_map<u32, usize>& labels,
-                          std::vector<usize>& mapping) const {
-        std::vector<u8> used(params.size());
+    bool argument_mapping(const CallExpr& expr, List<Param> params, std::vector<usize>& mapping) const {
+        // Parameter lists are short, so labels are found by scanning; long
+        // ones get a table so a call stays linear.
+        static constexpr usize kIndexedParams = 32;
+        FlatMap<u32, usize> labels;
+        if (params.size() >= kIndexedParams)
+            for (usize p = 0; p < params.size(); ++p) labels.try_emplace(params[p].name.sym.id, p);
+        const auto label_index = [&](Symbol label) -> std::optional<usize> {
+            if (params.size() >= kIndexedParams) {
+                const auto it = labels.find(label.id);
+                return it == labels.end() ? std::nullopt : std::optional<usize>(it->second);
+            }
+            for (usize p = 0; p < params.size(); ++p) if (params[p].name.sym == label) return p;
+            return std::nullopt;
+        };
+        SmallVec<u8, 16> used;
+        for (usize p = 0; p < params.size(); ++p) used.push_back(0);
         usize positional = 0;
         bool labeled = false;
         for (const auto& arg : expr.args) {
@@ -3071,9 +3118,9 @@ private:
                 index = positional++;
             } else {
                 labeled = true;
-                const auto it = labels.find(arg.label.sym.id);
-                if (it == labels.end()) return false;
-                index = it->second;
+                const auto found = label_index(arg.label.sym);
+                if (!found) return false;
+                index = *found;
             }
             if (used[index]) return false;
             used[index] = 1;
@@ -3280,9 +3327,7 @@ private:
         if (item->kind == ItemKind::Enum) return Value{};
         for (const Item* member : item->members)
             if (const auto* init = as<InitItem>(member); init && init->has_params) return Value{};
-        std::unordered_map<u32, usize> labels;
-        for (usize p = 0; p < item->ctor_params.size(); ++p) labels.emplace(item->ctor_params[p].name.sym.id, p);
-        bool matches = argument_mapping(expr, item->ctor_params, labels, record.parameters), deferred = false, fits = true, pending_arguments = false;
+        bool matches = argument_mapping(expr, item->ctor_params, record.parameters), deferred = false, fits = true, pending_arguments = false;
         usize context = 0;
         std::vector<Type> arguments;
         if (inferred && matches) {
@@ -3433,7 +3478,7 @@ private:
             if (const auto member = members_.find(receiver); member != members_.end() && known(member->second.receiver_type))
                 context = owner_context(member_owner(id), member->second.receiver_type);
             Match match{.id = id, .arguments = type_arguments};
-            if (!argument_mapping(expr, fun->sig.params, parameter_indices_.at(fun), match.parameters)) continue;
+            if (!argument_mapping(expr, fun->sig.params, match.parameters)) continue;
             bool pending = false;
             if (generic) {
                 const auto applied = application(id, type_arguments, context, generic->span);
@@ -3892,7 +3937,7 @@ private:
     // id; the others are keyed by environment and id.
     struct AnnotationCache {
         std::vector<std::optional<Type>> plain;
-        std::unordered_map<u64, Type> substituted;
+        FlatMap<u64, Type> substituted;  // env << 32 | syntax id
         struct View {
             AnnotationCache& cache;
             usize env;
@@ -3915,7 +3960,7 @@ private:
         View in(usize env) { return {*this, env}; }
         void erase_deferred() {
             for (auto& slot : plain) if (slot == Type::Deferred) slot.reset();
-            std::erase_if(substituted, [](const auto& entry) { return entry.second == Type::Deferred; });
+            substituted.erase_if([](const auto& entry) { return entry.second == Type::Deferred; });
         }
     };
     AnnotationCache annotations_;
@@ -3932,9 +3977,10 @@ private:
     bool bounds_ready_ = false;
     usize projection_depth_ = 0;
     std::unordered_map<usize, CheckedBody> bodies_;
-    std::unordered_map<u32, BindingId> generic_bindings_;
+    FlatMap<u32, BindingId> generic_bindings_;  // name span.lo -> generic parameter
     std::vector<Environment> environments_{{}};
-    std::unordered_multimap<usize, usize> environment_ids_;  // identity hash -> environment
+    static constexpr usize kNoEnvironment = std::numeric_limits<usize>::max();
+    FlatMap<usize, usize> environment_ids_;  // identity hash -> newest environment with it
     bool probing_constraints_ = false;
     std::unordered_set<u32> reported_applications_;
     std::vector<Node> nodes_;
@@ -3943,10 +3989,11 @@ private:
     NodeMap<const Expr*, usize> expressions_;
     // A promoted constructor field and its parameter have separate binding
     // IDs at the same name span. Both inherit the declaration's annotation.
-    std::unordered_multimap<u32, usize> declarations_;
-    std::unordered_map<usize, usize> function_nodes_;
+    static constexpr u32 kNoDeclaration = std::numeric_limits<u32>::max();
+    FlatMap<u32, u32> declarations_;   // name span.lo -> first binding declared there
+    std::vector<u32> declaration_next_;  // binding -> next binding at the same position
+    FlatMap<usize, usize> function_nodes_;
     std::unordered_map<usize, ScalarSignature> signatures_;
-    std::unordered_map<const FunItem*, std::unordered_map<u32, usize>> parameter_indices_;
     NodeMap<const ast::CallExpr*, CheckedCall> calls_;
     std::unordered_map<const ast::CallExpr*, CheckedConversion> conversions_;
     NodeMap<const Expr*, CheckedMember> members_;
@@ -3960,10 +4007,10 @@ private:
     NodeMap<const Expr*, usize> reference_contexts_;
     NodeMap<const CallExpr*, usize> call_contexts_;
     std::unordered_map<const Expr*, ExpandedType> entities_;
-    std::unordered_map<usize, BindingId> member_owners_;
+    FlatMap<usize, BindingId> member_owners_;  // members scope -> type
     static constexpr usize kIndexedScope = 32;  // scopes with at least this many bindings are indexed by name
     std::unordered_map<u64, std::vector<BindingId>> large_scope_names_;  // scope_name_key -> bindings
-    std::unordered_map<usize, CheckedHierarchy> hierarchies_;
+    IdMap<CheckedHierarchy> hierarchies_;  // binding id -> fact; only build_hierarchies() inserts
     std::vector<BindingId> hierarchy_order_;
     bool hierarchy_ready_ = false;
     std::unordered_set<const TypeExpr*> reported_bases_;
@@ -3973,8 +4020,8 @@ private:
     mutable FlatMap<u64, Relation> ancestry_cache_;  // source << 32 | target, for non-class targets
     mutable std::vector<u32> visit_marks_;  // binding id -> epoch of the ancestry walk that last visited it
     mutable u32 visit_epoch_ = 0;
-    mutable std::vector<BindingId> ancestry_work_;
-    std::unordered_map<u64, std::shared_ptr<const MemberLookup>> inherited_members_;  // name << 32 | owner << 1 | types_only
+    mutable std::vector<BindingId> ancestry_work_, ancestry_visited_;
+    FlatMap<u64, std::shared_ptr<const MemberLookup>> inherited_members_;  // name << 32 | owner << 1 | types_only
     std::vector<Walk> walk_;
     std::vector<Requirement> requirements_;
     struct ConstraintUse {

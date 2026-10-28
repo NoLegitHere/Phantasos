@@ -16,6 +16,10 @@
 #pragma once
 
 #include <concepts>
+#include <cstddef>
+#include <cstdint>
+#include <iterator>
+#include <type_traits>
 #include <limits>
 #include <utility>
 #include <vector>
@@ -36,33 +40,46 @@ constexpr u64 mix_key(u64 key) {
     return key;
 }
 
-// An open-addressing hash map from unsigned integers to values: one flat
-// array of (key, value) slots with linear probing, so a lookup touches one
-// or two cache lines and an insert never allocates a node. The largest key
-// value marks an empty slot and cannot be stored.
+template <typename K>
+concept FlatKey = std::unsigned_integral<K> || std::is_pointer_v<K>;
+
+// An open-addressing hash map from unsigned integers or pointers to values:
+// one flat array of (key, value) slots with linear probing, so a lookup
+// touches one or two cache lines and an insert never allocates a node. The
+// all-ones key marks an empty slot and cannot be stored.
 //
 // Unlike std::unordered_map, inserting may move every value, so references
 // and iterators are invalidated by insertion; erase() also moves entries.
 // Iteration order follows the slots and is deterministic for a given
 // sequence of operations.
-template <std::unsigned_integral K, typename V>
+template <FlatKey K, typename V>
 class FlatMap {
 public:
     using value_type = std::pair<K, V>;
-    static constexpr K kEmpty = std::numeric_limits<K>::max();
+    static K empty_key() {
+        if constexpr (std::is_pointer_v<K>) return reinterpret_cast<K>(~std::uintptr_t{0});
+        else return std::numeric_limits<K>::max();
+    }
 
     template <typename Slot>
     class Iterator {
     public:
+        using iterator_category = std::forward_iterator_tag;
+        using value_type = std::remove_const_t<Slot>;
+        using difference_type = std::ptrdiff_t;
+        using pointer = Slot*;
+        using reference = Slot&;
+        Iterator() = default;
         Iterator(Slot* slot, Slot* last) : slot_(slot), last_(last) { skip(); }
         Slot& operator*() const { return *slot_; }
         Slot* operator->() const { return slot_; }
         Iterator& operator++() { ++slot_; skip(); return *this; }
+        Iterator operator++(int) { auto old = *this; ++*this; return old; }
         friend bool operator==(const Iterator& a, const Iterator& b) { return a.slot_ == b.slot_; }
     private:
-        void skip() { while (slot_ != last_ && slot_->first == kEmpty) ++slot_; }
-        Slot* slot_;
-        Slot* last_;
+        void skip() { while (slot_ != last_ && slot_->first == empty_key()) ++slot_; }
+        Slot* slot_ = nullptr;
+        Slot* last_ = nullptr;
     };
     using iterator = Iterator<value_type>;
     using const_iterator = Iterator<const value_type>;
@@ -75,10 +92,13 @@ public:
     usize size() const { return size_; }
     bool empty() const { return size_ == 0; }
     bool contains(K key) const { return probe(key).second; }
-    // Keeps the slot array, so a reused map does not allocate again.
+    // Keeps the slot array, so a reused map does not allocate again, unless
+    // it is mostly empty: then clearing it on every reuse would cost more
+    // than the entries, so it shrinks.
     void clear() {
         if (!size_) return;
-        for (auto& slot : slots_) slot = value_type{kEmpty, V{}};
+        if (slots_.size() > kShrinkSlots && size_ * 8 < slots_.size()) slots_.assign(kShrinkSlots, value_type{empty_key(), V{}});
+        else for (auto& slot : slots_) slot = value_type{empty_key(), V{}};
         size_ = 0;
     }
     void reserve(usize count) {
@@ -108,7 +128,7 @@ public:
 
     template <typename... Args>
     std::pair<iterator, bool> try_emplace(K key, Args&&... args) {
-        PHS_ASSERT(key != kEmpty);
+        PHS_ASSERT(key != empty_key());
         if ((size_ + 1) * 4 > slots_.size() * 3) rehash(slots_.empty() ? 16 : slots_.size() * 2);
         const auto [index, found] = probe(key);
         if (found) return {at_slot(index), false};
@@ -121,53 +141,66 @@ public:
     std::pair<iterator, bool> emplace(K key, Args&&... args) { return try_emplace(key, std::forward<Args>(args)...); }
     V& operator[](K key) { return try_emplace(key).first->second; }
 
+    template <typename Pred>
+    usize erase_if(Pred pred) {
+        std::vector<K> doomed;
+        for (const auto& entry : *this) if (pred(entry)) doomed.push_back(entry.first);
+        for (const auto key : doomed) erase(key);
+        return doomed.size();
+    }
+
     // Backward-shift deletion: no tombstones, so probes stay short.
     usize erase(K key) {
         auto [index, found] = probe(key);
         if (!found) return 0;
         const usize mask = slots_.size() - 1;
-        for (usize next = (index + 1) & mask; slots_[next].first != kEmpty; next = (next + 1) & mask) {
-            const usize home = mix_key(slots_[next].first) & mask;
+        for (usize next = (index + 1) & mask; slots_[next].first != empty_key(); next = (next + 1) & mask) {
+            const usize home = hash(slots_[next].first) & mask;
             // Move the entry back if its home is not cyclically in (index, next].
             if (((next - home) & mask) >= ((next - index) & mask)) {
                 slots_[index] = std::move(slots_[next]);
                 index = next;
             }
         }
-        slots_[index] = value_type{kEmpty, V{}};
+        slots_[index] = value_type{empty_key(), V{}};
         --size_;
         return 1;
     }
 
 private:
+    static u64 hash(K key) {
+        if constexpr (std::is_pointer_v<K>) return mix_key(reinterpret_cast<std::uintptr_t>(key));
+        else return mix_key(key);
+    }
     // The slot holding key, or the empty slot where it would be inserted.
     std::pair<usize, bool> probe(K key) const {
         if (slots_.empty()) return {0, false};
         const usize mask = slots_.size() - 1;
-        for (usize index = mix_key(key) & mask;; index = (index + 1) & mask) {
+        for (usize index = hash(key) & mask;; index = (index + 1) & mask) {
             if (slots_[index].first == key) return {index, true};
-            if (slots_[index].first == kEmpty) return {index, false};
+            if (slots_[index].first == empty_key()) return {index, false};
         }
     }
     iterator at_slot(usize index) { return {slots_.data() + index, slots_.data() + slots_.size()}; }
     void rehash(usize capacity) {
-        std::vector<value_type> old(capacity, value_type{kEmpty, V{}});
+        std::vector<value_type> old(capacity, value_type{empty_key(), V{}});
         old.swap(slots_);
         const usize mask = capacity - 1;
         for (auto& slot : old) {
-            if (slot.first == kEmpty) continue;
-            usize index = mix_key(slot.first) & mask;
-            while (slots_[index].first != kEmpty) index = (index + 1) & mask;
+            if (slot.first == empty_key()) continue;
+            usize index = hash(slot.first) & mask;
+            while (slots_[index].first != empty_key()) index = (index + 1) & mask;
             slots_[index] = std::move(slot);
         }
     }
 
+    static constexpr usize kShrinkSlots = 64;
     std::vector<value_type> slots_;  // size is zero or a power of two
     usize size_ = 0;
 };
 
 // A FlatMap used as a set.
-template <std::unsigned_integral K>
+template <FlatKey K>
 class FlatSet {
 public:
     bool insert(K key) { return map_.try_emplace(key).second; }

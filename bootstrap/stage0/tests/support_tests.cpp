@@ -20,13 +20,17 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <ranges>
+#include <span>
 #include <string>
 #include <vector>
 
 #include "support/arena.hpp"
 #include "support/interner.hpp"
 #include "support/flat_map.hpp"
+#include "support/id_map.hpp"
 #include "support/node_map.hpp"
+#include "support/small_vec.hpp"
 #include "support/scoped_value.hpp"
 #include "support/source.hpp"
 
@@ -226,6 +230,60 @@ void flat_map_storage() {
     CHECK(set.insert(3) && !set.insert(3) && set.contains(3) && set.erase(3) == 1 && set.empty());
 }
 
+void flat_map_pointer_keys_and_shrinking() {
+    std::array<int, 3> targets{};
+    FlatMap<const int*, int> map;
+    for (int i = 0; i < 3; ++i) map[&targets[i]] = i;
+    CHECK(map.size() == 3 && map.at(&targets[2]) == 2 && !map.contains(nullptr));
+    CHECK(map.erase_if([](const auto& entry) { return entry.second != 1; }) == 2 && map.size() == 1 && map.contains(&targets[1]));
+    CHECK(std::ranges::distance(map) == 1);  // a forward range
+
+    // A map reused after holding many entries shrinks instead of clearing a
+    // large array on every reuse.
+    FlatMap<u32, int> reused;
+    for (u32 key = 0; key < 4096; ++key) reused[key] = 1;
+    reused.clear();
+    reused[7] = 7;
+    reused.clear();
+    CHECK(reused.empty() && !reused.contains(7));
+    reused[9] = 9;
+    CHECK(reused.at(9) == 9 && reused.size() == 1);
+}
+
+void id_map_storage() {
+    IdMap<std::vector<int>> map;
+    CHECK(map.empty() && map.find(4) == map.end() && !map.contains(0));
+    map[4].push_back(1);
+    map[0].push_back(2);
+    map[4].push_back(3);
+    CHECK(map.size() == 2 && map.at(4) == (std::vector<int>{1, 3}) && map.find(0)->second.front() == 2);
+    std::vector<usize> order;
+    for (const auto& [key, value] : map) order.push_back(key);
+    CHECK((order == std::vector<usize>{4, 0}));  // insertion order
+    map.clear();
+    CHECK(map.empty() && !map.contains(4));
+}
+
+void small_vec_storage() {
+    SmallVec<u32, 2> values{1, 2};
+    const u32* inline_data = values.data();
+    values.push_back(3);  // spills to the heap
+    CHECK(values.size() == 3 && values.data() != inline_data && values.back() == 3);
+    SmallVec<u32, 2> copy = values;
+    SmallVec<u32, 2> moved = std::move(copy);
+    CHECK(moved == values && copy.empty());
+    const u32 more[] = {7, 8};
+    moved.insert(moved.begin() + 1, std::begin(more), std::end(more));
+    CHECK((moved == SmallVec<u32, 2>{1, 7, 8, 2, 3}));
+    CHECK(erase_if(moved, [](u32 v) { return v > 6; }) == 2 && (moved == SmallVec<u32, 2>{1, 2, 3}));
+    moved.erase(moved.begin());
+    CHECK((moved == SmallVec<u32, 2>{2, 3}) && *moved.rbegin() == 3);
+    SmallVec<u32, 2> small{5};
+    moved = small;  // a heap vector assigned a short one keeps working
+    moved.push_back(6);
+    CHECK((moved == SmallVec<u32, 2>{5, 6}) && std::span<const u32>(moved).size() == 2);
+}
+
 }  // namespace
 
 int main() {
@@ -235,4 +293,7 @@ int main() {
     interner_and_scoped_state();
     node_map_storage();
     flat_map_storage();
+    flat_map_pointer_keys_and_shrinking();
+    id_map_storage();
+    small_vec_storage();
 }

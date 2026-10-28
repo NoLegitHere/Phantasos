@@ -1,0 +1,92 @@
+// Copyright 2026 The Phantasos Authors
+// SPDX-License-Identifier: Apache-2.0
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// Use after move (E0504): a non-Copy local or `own` parameter cannot be used
+// once its value has moved.
+
+struct Name(text: String)
+fun take(s: own String) {}
+fun look(s: String) {}
+fun pair(a: own String, b: Int) {}
+
+fun straight() {
+    let a = "a"
+    let b = a
+    look(a)
+}
+fun arguments(s: own String) {
+    take(s)
+    take(s)
+    let n = Name("x")
+    let m = Name(n.text)
+    let wrapped = Name(text: "y")
+    let again = (wrapped, 1)
+    look(wrapped.text)
+}
+fun branches(c: Bool) {
+    let a = "a"
+    if c { take(a) }
+    look(a)
+    let b = "b"
+    if c { take(b) } else { take(b) }
+    look(b)
+}
+fun loops(c: Bool) {
+    let a = "a"
+    while c { take(a) }
+    var b = "b"
+    loop {
+        take(b)
+        b = "again"
+        if c { break }
+    }
+    look(b)
+    let d = "d"
+    var i = 0
+    while i < 3 {
+        i += 1
+        if c { continue }
+        let e = d
+    }
+}
+fun results(c: Bool): String {
+    let a = "a"
+    let b = if c { a } else { "b" }
+    look(a)
+    let x = "x"
+    let y = (x, 1)
+    look(x)
+    return a
+}
+fun closures() {
+    let a = "a"
+    let f = { -> look(a) }
+    look(a)
+}
+fun fine(c: Bool): String {
+    let a = "a"
+    look(a)
+    look(a)
+    var b = "b"
+    take(b)
+    b = "c"
+    take(b)
+    let n = 1
+    let m = n
+    pair("p", n)
+    if c { return a }
+    let t = a
+    return t
+}

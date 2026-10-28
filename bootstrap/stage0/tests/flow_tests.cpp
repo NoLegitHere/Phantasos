@@ -31,7 +31,7 @@ struct Frontend {
     FrontendSession session;
     CheckResult result{};
 
-    void check(std::string_view source, std::initializer_list<DiagCode> expected = {}, bool dump = true) {
+    void check(std::string_view source, const std::vector<DiagCode>& expected = {}, bool dump = true) {
         const auto id = session.sources().add("flow.phs", source);
         CHECK(id);
         const auto* syntax = session.parse(*id);
@@ -571,6 +571,104 @@ void long_trees() {
 }
 }  // namespace
 
+void moves() {
+    constexpr std::string_view prelude = "fun take(s: own String) {}\nfun look(s: String) {}\nstruct Box(s: String, n: Int)\n";
+    const auto M = DiagCode::UseAfterMove;
+    for (const auto& [source, expected] : std::vector<std::pair<std::string_view, std::vector<DiagCode>>>{
+        // Copy values never move; reads borrow.
+        {"fun f() { let n = 1\nlet m = n\nlet p = (n, true)\nlet q = p\nlet r = p\nlet g = look\nlet h = g\nlet i = g }", {}},
+        {"fun f() { let a = \"a\"\nlook(a)\nlook(a)\nprint(a)\nlet n = Box(a, 1).n }", {}},
+        // Moves through results of blocks, `match`, `??`, `!`, tuples and constructors.
+        {"fun f(c: Int) { let a = \"a\"\nlet b = match c { 0 -> a, _ -> \"z\" }\nlook(a) }", {M}},
+        {"fun f(o: String?) { let a: String? = \"a\"\nlet b = a ?? \"z\"\nlook(a!) }", {M}},
+        {"fun f() { let a: String? = \"a\"\nlet b = a!\nlet c = a }", {M}},
+        {"fun f() { let a = \"a\"\nlet b = Box(s: a, n: 1)\nlet c = Box(a, 2) }", {M}},
+        {"fun f() { let a = \"a\"\nlet t = (1, a)\nlet u = (a, 2) }", {M}},
+        {"fun f(): String { let a = \"a\"\nlook(a)\nreturn a }", {}},
+        {"fun f(): String { let a = \"a\"\ntake(a)\nreturn a }", {M}},
+        {"fun f(c: Bool, a: own String): String = if c { a } else { take(a)\n\"b\" }", {}},
+        {"fun f(a: own String): Box = Box(a, if a == \"x\" { 1 } else { 2 })", {M}},
+        {"fun f(): String { let a = \"a\"\nlet b = a\nreturn a }", {M}},
+        // Arguments move only into `own` parameters.
+        {"fun g(a: own String, b: String) {}\nfun f() { let a = \"a\"\ng(\"x\", a)\ng(a, a) }", {M}},
+        {"fun f(s: own String) { let t = s\ntake(s) }", {M}},
+        {"fun f(s: own String) { let g = { -> look(s) }\nlook(s) }", {M}},
+        // Paths, loops and reassignment.
+        {"fun f(c: Bool) { var a = \"a\"\nif c { take(a)\na = \"b\" }\nlook(a) }", {}},
+        {"fun f(c: Bool) { let a = \"a\"\nif c { take(a)\nreturn }\nlook(a) }", {}},
+        {"fun f(c: Bool) { let a = \"a\"\nwhile c { while c { take(a) } } }", {M}},
+        {"fun f(c: Bool) { let a = \"a\"\nfor i in 0..<3 { let b = \"b\"\ntake(b) } }", {}},
+        {"fun f(c: Bool) { let a = \"a\"\nloop { if c { take(a)\nbreak } } }", {}},
+        {"fun f(c: Bool) { let a = \"a\"\nloop { take(a)\nif c { break } }\n}", {M}},
+        {"fun f(c: Bool) { let a = \"a\"\nwhile c { let f = { -> look(a) } } }", {M}},
+        // An inner loop that gives the value back on every exit leaves it usable.
+        {"fun f(c: Bool) { var a = \"a\"\nwhile c { look(a)\nloop { a = \"new\"\ntake(a)\nif c { a = \"exit\"\nbreak } } } }", {}},
+        {"fun f(c: Bool) { var a = \"a\"\nwhile c { look(a)\nwhile c { take(a)\nif c { a = \"exit\"\nbreak } } } }", {M, M}},
+        {"fun f(c: Bool) { var a = \"a\"\nwhile c { look(a)\nwhile c { while c { take(a) }\na = \"b\" } } }", {M}},
+        {"fun f(c: Bool) { var a = \"a\"\nwhile c { look(a)\nwhile c { a = \"b\"\nwhile c { take(a) } } } }", {M, M}},
+        // Cleanups move at the exits of their scope: the end, `break`, `continue` and `return`.
+        {"fun f(c: Bool) { let a = \"a\"\nif c { defer { take(a) } }\nlook(a) }", {M}},
+        {"fun f() { let a = \"a\"\ndefer { look(a) }\ntake(a) }", {M}},
+        {"fun f() { let a = \"a\"\ndefer { take(a) }\nlook(a) }", {}},
+        {"fun f(c: Bool) { let a = \"a\"\nwhile c { defer { take(a) }\nif c { break } } }", {M}},
+        {"fun f(c: Bool) { let a = \"a\"\nwhile c { if c { continue }\ndefer { look(a) } } }", {}},
+        {"fun f(c: Bool) { let a = \"a\"\ndefer { look(a) }\nif c { take(a)\nreturn }\nlook(a) }", {M}},
+        {"fun f() { let a = \"a\"\ndefer { let g = { -> look(a) } } }", {}},
+        {"fun f() { var a = \"a\"\ndefer { defer { look(a) }\na = \"restored\" }\ntake(a) }", {}},
+        {"fun f() { var a = \"a\"\ndefer { defer { look(a) }\nlook(a) }\ntake(a) }", {M}},
+        {"fun f() { let a = \"a\"\nlet x = try? unsafe { defer { take(a) }\nthrow 1 }\nlook(a) }", {M}},
+        {"fun g() throws {}\nfun f() { let a = \"a\"\nlet x = try? unsafe { defer { take(a) }\ng() }\nlook(a) }", {M}},
+        {"fun f() { defer { let x = try? unsafe { throw 1 } } }", {}},
+        {"fun f() { let a = \"a\"\ndefer { look(a) }\ndefer { panic(\"stop\") }\ntake(a) }", {}},
+        {"fun f() { let a = \"a\"\ndefer { panic(\"stop\") }\ndefer { look(a) }\ntake(a) }", {M}},
+        {"fun f() { var a = \"a\"\ntake(a)\ndefer { defer { look(a) } }\na = \"restored\" }", {}},
+        {"fun f() { var a = \"a\"\ndefer { defer { look(a) } }\ntake(a) }", {M}},
+        {"fun g() throws {}\nfun f() throws { var a = \"a\"\ndefer { look(a) }\ntake(a)\ntry g()\na = \"restored\" }", {M}},
+        {"fun g() throws {}\nfun f() throws { var a = \"a\"\ndefer { look(a) }\ntry g()\ntake(a)\na = \"restored\" }", {}},
+        {"fun f() { let g = { -> let a = \"a\"\ndefer { look(a) }\na } }", {M}},
+        {"fun f() { let g = { -> let a = \"a\"\nlook(a)\na } }", {}},
+        // Inferred expression-body results move too.
+        {"fun f() = unsafe { let a = \"a\"\ndefer { look(a) }\na }", {M}},
+        {"fun f() = unsafe { let a = \"a\"\ndefer { look(a) }\nlook(a) }", {}},
+        // Global and field initializers move their value.
+        {"let g = unsafe { let a = \"a\"\ndefer { look(a) }\na }", {M}},
+        {"struct S(n: Int) { let s: String = unsafe { let a = \"a\"\ndefer { look(a) }\na } }", {M}},
+        {"let g = unsafe { let a = \"a\"\ndefer { look(a) }\nlook(a)\n1 }", {}},
+        // `try` and `try?` pass their operand's result on.
+        {"fun f() { let a = \"a\"\nlet b = try? unsafe { a }\nlook(a) }", {M}},
+        {"fun f() throws { let a = \"a\"\nlet b = try unsafe { a }\nlook(a) }", {M}},
+        // A propagated error leaves from the call that throws it.
+        {"fun g() throws {}\nfun f() throws { var a = \"a\"\ndefer { look(a) }\ntake(a)\ntry unsafe { g()\na = \"restored\" } }", {M}},
+        {"fun g() throws {}\nfun f() throws { var a = \"a\"\ndefer { look(a) }\ntry unsafe { g()\ntake(a) }\na = \"x\" }", {}},
+        {"fun g() throws {}\nfun f() { var a = \"a\"\nlet x = try? unsafe { defer { look(a) }\ng()\ntake(a)\n1 }\na = \"x\" }", {M}},
+        {"fun g() throws {}\nfun f() { var a = \"a\"\nlet x = try? unsafe { g()\ntake(a)\na = \"b\"\n1 }\nlook(a) }", {}},
+        // A default runs before the later defaults and the body.
+        {"fun f(a: own String, b: Int = unsafe { take(a)\n0 }) { look(a) }", {M}},
+        {"fun f(a: own String, b: Int = unsafe { take(a)\n0 }, c: Int = unsafe { look(a)\n0 }) {}", {M}},
+        {"fun f(a: own String, b: Int = unsafe { look(a)\n0 }) { look(a) }", {}},
+        {"struct S(a: own String, b: Int = unsafe { take(a)\n0 }) { init(a: own String, b: Int = unsafe { take(a)\n0 }) { look(a) } }", {M}},
+        {"fun f(a: own String, b: own String = a) { look(a) }", {M}},
+        {"fun f(a: own String, b: String = a) { look(a) }", {}},
+        {"fun f(b: own String = unsafe { let a = \"a\"\ndefer { look(a) }\na }) {}", {M}},
+        {"struct S(a: own String, b: String = a) { init { look(a) } }", {M}},
+        // Construction runs field initializers in order, then the primary `init`.
+        {"open class Base(s: own String)\nclass D(a: own String): Base(a) { init { look(a) } }", {M}},
+        {"open class Base(s: own String, n: Int)\nclass D(a: own String): Base(n: 1, s: a) { let x: String = a }", {M}},
+        {"open class Base(s: String)\nclass D(a: own String): Base(a) { init { look(a) } }", {}},
+        {"class C(a: own String) { let x: String = a\nlet y: String = a }", {M}},
+        {"class C(a: own String) { let x: String = a\ninit { look(a) } }", {M}},
+        {"class C(a: own String) { let x: Int = unsafe { look(a)\n1 }\nlet y: String = a\ninit {} }", {}},
+        // A moved value is reported once until it moves again.
+        {"fun f() { let a = \"a\"\ntake(a)\nlook(a)\nlook(a)\ntake(a)\nlook(a) }", {M, M}},
+        // Unreachable code reports nothing.
+        {"fun f() { let a = \"a\"\ntake(a)\nreturn\nlook(a) }", {}},
+    }) {
+        Frontend f;
+        const std::string program = std::string(prelude) + std::string(source);
+        f.check(program, expected, false);
+    }
+}
+
 int main() {
     accepted_paths();
     missing_returns();
@@ -581,4 +679,5 @@ int main() {
     gated_by_type_errors();
     caught_errors_guards_and_conditions();
     long_trees();
+    moves();
 }

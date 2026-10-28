@@ -32,9 +32,10 @@ namespace phs {
 namespace {
 using namespace ast;
 
-// One bit per local that is declared without an initializer in the current callable.
+// One bit per tracked local or parameter of the current callable.
 class Bits {
 public:
+    Bits() = default;
     Bits(usize size, bool value) : words_((size + 63) / 64, value ? ~u64{0} : u64{0}) {}
     bool test(usize i) const { return (words_[i / 64] >> (i % 64)) & 1; }
     void set(usize i, bool value) {
@@ -57,6 +58,8 @@ private:
 struct State {
     Bits assigned;  // definitely assigned on every path reaching this point
     Bits maybe;     // assigned on at least one path
+    Bits moved;     // moved on at least one path (one bit per movable binding)
+    Bits moved_all; // moved on every path
     bool live = true;
 };
 
@@ -65,6 +68,8 @@ void merge(State& into, const State& from) {
     if (!into.live) { into = from; return; }
     into.assigned.intersect(from.assigned);
     into.maybe.unite(from.maybe);
+    into.moved.unite(from.moved);
+    into.moved_all.intersect(from.moved_all);
 }
 
 const Expr* unparen(const Expr* expr) {
@@ -189,7 +194,7 @@ void each_stmt(const Expr* root, F&& visit) {
 class FlowChecker {
 public:
     FlowChecker(const Resolution& resolution, const ScalarTypes& types, const Interner& names, DiagEngine& diag)
-        : resolution_(resolution), types_(types), names_(names), diag_(diag) {
+        : resolution_(resolution), types_(types), names_(names), diag_(diag), scratch_(diag.sources()) {
         for (usize id = 0; id < resolution.bindings().size(); ++id)
             if (const Item* item = resolution.bindings()[id].item) items_.emplace(item, BindingId{id});
     }
@@ -203,32 +208,53 @@ public:
             const auto [item, owner] = work.back();
             work.pop_back();
             if (const auto* type = as_type_decl(item)) {
-                defaults(type->ctor_params);
+                // Construction runs the omitted defaults, the superclass arguments, the
+                // instance field initializers in order and then the primary `init`
+                // body, so a constructor parameter that one moves has possibly moved
+                // for the rest.
+                auto moved = defaults(type->ctor_params, type);
+                const auto* parent = superclass(*type);
                 for (const auto& base : type->supers)
-                    for (const auto& arg : base.args) callable(type->ctor_params, arg.value, nullptr);
+                    for (usize a = 0; a < base.args.size(); ++a) {
+                        // A superclass argument moves like a constructor call's argument.
+                        const Param* param = parent ? super_parameter(*parent, base.args, a) : nullptr;
+                        const bool consumes = param && param->conv != Convention::Inout &&
+                                              (param->conv == Convention::Own || param->binding != Binding::None);
+                        add(moved, callable(type->ctor_params, base.args[a].value, nullptr, moved, consumes));
+                    }
+                for (const Item* member : type->members) {
+                    // Field initializers see the owner's primary-constructor parameters,
+                    // and a closure in an instance field's initializer captures `self`.
+                    const auto* var = as<VarItem>(member);
+                    if (!var || !var->init || has_modifier(var->mods, Modifier::Static)) continue;
+                    instance_fields_.insert(var);
+                    capturing_receiver(type);
+                    add(moved, callable(type->ctor_params, var->init, nullptr, moved, true));
+                    receiver(nullptr, nullptr);
+                }
+                primary_moves_.try_emplace(type, std::move(moved));
                 for (const Item* member : type->members) work.push_back({member, type});
             } else if (const auto* ext = as<ExternItem>(item)) {
                 for (const Item* nested : ext->items) work.push_back({nested, owner});
             } else if (const auto* fun = as<FunItem>(item)) {
-                defaults(fun->sig.params);
+                const auto moved = defaults(fun->sig.params);
                 if (fun->body) {
                     receiver(owner, fun);
-                    callable(fun->sig.params, fun->body, fun);
+                    callable(fun->sig.params, fun->body, fun, moved);
                     receiver(nullptr, nullptr);
                 }
             } else if (const auto* var = as<VarItem>(item)) {
-                // Field initializers see the owner's primary-constructor parameters,
-                // and a closure in an instance field's initializer captures `self`.
-                if (var->init) {
+                if (var->init && !instance_fields_.contains(var)) {
                     if (!has_modifier(var->mods, Modifier::Static)) capturing_receiver(owner);
-                    callable(owner ? owner->ctor_params : List<Param>{}, var->init, nullptr);
+                    callable(owner ? owner->ctor_params : List<Param>{}, var->init, nullptr, {}, true);
                     receiver(nullptr, nullptr);
                 }
             } else if (const auto* init = as<InitItem>(item)) {
-                defaults(init->params);
+                const auto moved = defaults(init->params);
                 // Construction rules for `self` are separate, but closures still capture it.
                 capturing_receiver(owner);
-                if (init->body) callable(init->has_params || !owner ? init->params : owner->ctor_params, init->body, nullptr);
+                if (init->body && (init->has_params || !owner)) callable(init->params, init->body, nullptr, moved);
+                else if (init->body) callable(owner->ctor_params, init->body, nullptr, primary_moves_.at(owner));
                 receiver(nullptr, nullptr);
             } else if (const auto* deinit = as<DeinitItem>(item)) {
                 capturing_receiver(owner);
@@ -243,10 +269,30 @@ private:
         const VarStmt* decl;
         usize tracked;  // bit index, or kUntracked for locals with an initializer
         Span declared;  // the name, which is one of decl->names when destructuring
+        usize movable;  // bit index among the bindings that can be moved
     };
     static constexpr usize kUntracked = static_cast<usize>(-1);
 
-    State dead() const { return {Bits(tracked_, true), Bits(tracked_, false), false}; }
+    State live() const {
+        return {Bits(tracked_, false), Bits(tracked_, false), Bits(movables_, false), Bits(movables_, false), true};
+    }
+    State dead() const {
+        return {Bits(tracked_, true), Bits(tracked_, false), Bits(movables_, false), Bits(movables_, true), false};
+    }
+
+    // Diagnostics go nowhere while a loop body is evaluated only to learn
+    // what an iteration moves. A cleanup is checked where it is registered,
+    // and for moves again at each exit of its scope (3.30).
+    enum class Filter : u8 { All, NoMoves, OnlyMoves };
+    bool shown(DiagCode code) const {
+        const bool moves = code == DiagCode::UseAfterMove;
+        if (quiet_) return false;
+        return moves ? filter_ != Filter::NoMoves : filter_ != Filter::OnlyMoves;
+    }
+    template <typename... Args>
+    Diagnostic& error(DiagCode code, Span span, std::format_string<Args...> fmt, Args&&... args) {
+        return (shown(code) ? diag_ : scratch_).error(code, span, fmt, std::forward<Args>(args)...);
+    }
 
     // How a place may be modified (3.3). Unknown places, including `self`
     // during construction, are not checked.
@@ -437,7 +483,7 @@ private:
         return access == Access::ReadOnly ? "read-only" : access == Access::Temporary ? "temporary" : "immutable";
     }
     void restricted(Span span, std::string message, const Place& place) {
-        auto& d = diag_.error(DiagCode::ImmutableAssignment, span, "{}", message);
+        auto& d = error(DiagCode::ImmutableAssignment, span, "{}", message);
         if (!place.note.empty()) d.notes.push_back({place.declared, place.note});
     }
 
@@ -530,20 +576,69 @@ private:
     }
 
     // Defaults and initializers are separate roots with their own locals. Defaults keep the parameter
-    // list so that writes to earlier parameters are still checked.
-    void defaults(List<Param> params) {
-        for (const auto& param : params)
-            if (param.default_value) callable(params, param.default_value, nullptr);
+    // list so that writes to earlier parameters are still checked. An omitted argument's default runs
+    // before the later defaults and the body, so the `own` parameters it may move are passed on as
+    // possibly moved; the result has the move site of each, by parameter index.
+    using ParamMoves = std::vector<std::optional<Span>>;
+    // A default's value moves into an `own` parameter or a stored field of a primary constructor.
+    ParamMoves defaults(List<Param> params, const TypeDeclItem* type = nullptr) {
+        ParamMoves moved(params.size());
+        for (const auto& param : params) {
+            if (!param.default_value) continue;
+            const bool stored = type && (type->kind == ItemKind::Struct || param.binding != Binding::None) &&
+                                param.conv != Convention::Inout;
+            add(moved, callable(params, param.default_value, nullptr, moved, param.conv == Convention::Own || stored));
+        }
+        return moved;
+    }
+    const TypeDeclItem* superclass(const TypeDeclItem& type) const {
+        const auto it = items_.find(&type);
+        const auto* hierarchy = it == items_.end() ? nullptr : types_.hierarchy(it->second);
+        if (!hierarchy || !hierarchy->superclass.valid()) return nullptr;
+        const Item* item = resolution_.binding(hierarchy->superclass).item;
+        return item ? as_type_decl(item) : nullptr;
+    }
+    // The primary-constructor parameter that superclass argument a initializes:
+    // positional arguments first, then labels.
+    static const Param* super_parameter(const TypeDeclItem& parent, List<Arg> args, usize a) {
+        if (args[a].label.sym.empty()) return a < parent.ctor_params.size() ? &parent.ctor_params[a] : nullptr;
+        for (const auto& param : parent.ctor_params)
+            if (param.name.sym == args[a].label.sym) return &param;
+        return nullptr;
+    }
+    static void add(ParamMoves& into, const ParamMoves& from) {
+        for (usize i = 0; i < into.size() && i < from.size(); ++i)
+            if (!into[i]) into[i] = from[i];
     }
 
-    void callable(List<Param> params, const Expr* body, const FunItem* fun) {
+    // Returns where the body may move each `own` parameter, by index, on the paths that finish.
+    // An initializer root's value moves into its variable, field or parameter.
+    ParamMoves callable(List<Param> params, const Expr* body, const FunItem* fun, const ParamMoves& moved = {},
+                        bool initializer = false) {
         start(body);
-        for (const auto& param : params) params_.emplace(param.name.span.lo, &param);
-        State state{Bits(tracked_, false), Bits(tracked_, false), true};
+        for (const auto& param : params) {
+            params_.emplace(param.name.span.lo, &param);
+            if (param.conv == Convention::Own) owned_.emplace(param.name.span.lo, movables_++);
+        }
+        move_sites_.assign(movables_, Span{});
+        State state = live();
+        for (usize i = 0; i < moved.size(); ++i)
+            if (moved[i]) {
+                const usize bit = owned_.find(params[i].name.span.lo)->second;
+                state.moved.set(bit, true);
+                move_sites_[bit] = *moved[i];
+            }
+        // An expression body's value moves out as the result (3.30).
+        if (initializer || (fun && fun->expr_body && result(*fun) != ScalarType{ScalarType::Unit})) consume(body);
         eval(body, state);
+        ParamMoves after(params.size());
+        if (state.live)
+            for (usize i = 0; i < params.size(); ++i)
+                if (const auto it = owned_.find(params[i].name.span.lo); it != owned_.end() && state.moved.test(it->second))
+                    after[i] = move_sites_[it->second];
         if (fun && !fun->expr_body && state.live && returns_value(*fun)) {
             const Span end{body->span.file, body->span.hi - 1, body->span.hi};
-            auto& d = diag_.error(DiagCode::MissingReturn, end, "function '{}' must return '{}' on every path",
+            auto& d = error(DiagCode::MissingReturn, end, "function '{}' must return '{}' on every path",
                                   names_.str(fun->name.sym), result_name(*fun));
             d.notes.push_back({fun->name.span, "the end of the body is reachable without a 'return'"});
         }
@@ -558,9 +653,13 @@ private:
             self_ = next.self;
             self_storage_ = next.storage;
             self_owner_ = next.owner;
-            State closure_state{Bits(tracked_, false), Bits(tracked_, false), true};
+            move_sites_.assign(movables_, Span{});
+            State closure_state = live();
+            // The last expression of a closure body is its result.
+            consume(next.closure->body);
             eval(next.closure->body, closure_state);
         }
+        return after;
     }
 
     // Resets the per-callable tables and registers the locals of body.
@@ -569,12 +668,20 @@ private:
         closure_params_.clear();
         captured_.clear();
         locals_.clear();
+        owned_.clear();
+        consumed_.clear();
+        iteration_moves_.clear();
+        reported_moves_.clear();
+        defers_.clear();
         tracked_ = 0;
+        movables_ = 0;
         each_stmt(body, [&](const Stmt& stmt) {
             if (const auto* var = as<VarStmt>(&stmt); var && var->names.empty())
-                locals_.emplace(var->name.span.lo, Local{var, var->init ? kUntracked : tracked_++, var->name.span});
+                locals_.emplace(var->name.span.lo,
+                                Local{var, var->init ? kUntracked : tracked_++, var->name.span, movables_++});
             else if (var)
-                for (const Name& name : var->names) locals_.emplace(name.span.lo, Local{var, kUntracked, name.span});
+                for (const Name& name : var->names)
+                    locals_.emplace(name.span.lo, Local{var, kUntracked, name.span, movables_++});
         });
     }
 
@@ -605,23 +712,151 @@ private:
         return it == locals_.end() ? nullptr : &it->second;
     }
 
-    void read(const NameExpr& name, const State& state) {
-        const auto* found = local(target(name));
-        if (!found || found->tracked == kUntracked || !state.live || state.assigned.test(found->tracked)) return;
-        auto& d = diag_.error(DiagCode::UninitializedUse, name.span, "'{}' is used before it is initialized",
-                              names_.str(name.name.sym));
-        d.notes.push_back({found->declared, "declared here without an initializer"});
+    void read(const NameExpr& name, State& state) {
+        const auto id = target(name);
+        const auto* found = local(id);
+        if (found && found->tracked != kUntracked && state.live && !state.assigned.test(found->tracked)) {
+            auto& d = error(DiagCode::UninitializedUse, name.span, "'{}' is used before it is initialized",
+                                     names_.str(name.name.sym));
+            d.notes.push_back({found->declared, "declared here without an initializer"});
+        }
+        use(id, name.span, consumed_.contains(&name), "used", state);
+    }
+
+    // The move bit of a local or `own` parameter of the current callable
+    // whose type is known not to be Copy (3.30). Captures, borrowed
+    // parameters and fields are not tracked.
+    std::optional<usize> movable(BindingId id) const {
+        if (!id.valid()) return std::nullopt;
+        const auto& binding = resolution_.binding(id);
+        usize bit = 0;
+        if (const auto* found = local(id)) {
+            bit = found->movable;
+        } else if (const auto it = owned_.find(binding.name.span.lo);
+                   binding.kind == BindingKind::Parameter && it != owned_.end()) {
+            bit = it->second;
+        } else {
+            return std::nullopt;
+        }
+        if (copyable(types_.binding(id))) return std::nullopt;
+        return bit;
+    }
+
+    // Reading a moved value is E0504; a consuming use moves it.
+    void use(BindingId id, Span span, bool moves, std::string_view verb, State& state) {
+        const auto bit = movable(id);
+        if (!bit || !state.live) return;
+        // A cleanup runs at every exit of its scope, but each use reports once.
+        if (state.moved.test(*bit) && (!shown(DiagCode::UseAfterMove) || reported_moves_.insert(span.lo))) {
+            const auto& binding = resolution_.binding(id);
+            const auto name = names_.str(binding.name.sym);
+            auto& d = state.moved_all.test(*bit)
+                          ? error(DiagCode::UseAfterMove, span, "'{}' is {} after it was moved", name, verb)
+                          : error(DiagCode::UseAfterMove, span,
+                                           "'{}' is {} after it may have been moved", name, verb);
+            d.notes.push_back({move_sites_[*bit], "moved here"});
+            d.notes.push_back({binding.name.span, std::format("declared here with type '{}', which is not Copy",
+                                                              type_name(types_.binding(id)))});
+            // Report a moved value once, until it moves again. A quiet pass
+            // keeps the move, since it only learns what reaches a back edge.
+            if (!quiet_) unmove(*bit, state);
+        }
+        if (!moves) return;
+        state.moved.set(*bit, true);
+        state.moved_all.set(*bit, true);
+        move_sites_[*bit] = span;
+    }
+    void unmove(usize bit, State& state) {
+        state.moved.set(bit, false);
+        state.moved_all.set(bit, false);
+    }
+
+    // Marks the names whose value an expression's result takes (3.30): the
+    // expression itself, the elements of tuple and array literals, both sides
+    // of `??`, the operand of `!`, `shared` and `as`, and the results of
+    // blocks, `if` and `match`.
+    void consume(const Expr* root) {
+        SmallVec<const Expr*, 8> work{root};
+        const auto tail = [&](const BlockExpr* block) {
+            if (block && !block->stmts.empty())
+                if (const auto* last = as<ExprStmt>(block->stmts[block->stmts.size() - 1])) work.push_back(last->expr);
+        };
+        while (!work.empty()) {
+            const Expr* expr = unparen(work.back());
+            work.pop_back();
+            if (!expr) continue;
+            switch (expr->kind) {
+                case ExprKind::Name: consumed_.insert(expr); break;
+                case ExprKind::Tuple: for (const Expr* elem : cast<TupleExpr>(expr)->elems) work.push_back(elem); break;
+                case ExprKind::Array: for (const Expr* elem : cast<ArrayExpr>(expr)->elems) work.push_back(elem); break;
+                case ExprKind::Unwrap: work.push_back(cast<UnwrapExpr>(expr)->operand); break;
+                case ExprKind::Unary:
+                    if (const auto op = cast<UnaryExpr>(expr)->op; op == UnOp::Share || op == UnOp::Try || op == UnOp::TryOpt)
+                        work.push_back(cast<UnaryExpr>(expr)->operand);
+                    break;
+                case ExprKind::Cast:
+                    if (cast<CastExpr>(expr)->op != CastOp::Is) work.push_back(cast<CastExpr>(expr)->operand);
+                    break;
+                case ExprKind::Binary:
+                    if (const auto* binary = cast<BinaryExpr>(expr); binary->op == BinOp::Coalesce) {
+                        work.push_back(binary->lhs);
+                        work.push_back(binary->rhs);
+                    }
+                    break;
+                case ExprKind::Block: tail(cast<BlockExpr>(expr)); break;
+                case ExprKind::Unsafe: tail(cast<UnsafeExpr>(expr)->block); break;
+                case ExprKind::If:
+                    tail(cast<IfExpr>(expr)->then_block);
+                    work.push_back(cast<IfExpr>(expr)->else_branch);
+                    break;
+                case ExprKind::Match:
+                    for (const auto& arm : cast<MatchExpr>(expr)->arms) work.push_back(arm.body);
+                    break;
+                default: break;
+            }
+        }
+    }
+
+    // Arguments move into `own` parameters and into the stored fields of a
+    // primary constructor.
+    void consume_arguments(const CallExpr& call) {
+        const auto* checked = types_.call(&call);
+        if (!checked || checked->state != CallState::Resolved || !checked->target.valid()) return;
+        const Item* item = resolution_.binding(checked->target).item;
+        if (!item) return;
+        if (checked->kind == CallKind::NominalConstructor) {
+            const auto* type = as_type_decl(item);
+            if (!type) return;
+            for (usize i = 0; i < checked->parameters.size() && i < call.args.size(); ++i) {
+                const usize index = checked->parameters[i];
+                if (index >= type->ctor_params.size()) continue;
+                const auto& param = type->ctor_params[index];
+                const bool stored = type->kind == ItemKind::Struct || param.binding != Binding::None;
+                if (param.conv == Convention::Own || (stored && param.conv != Convention::Inout))
+                    consume(call.args[i].value);
+            }
+        } else if (checked->kind == CallKind::Function || checked->kind == CallKind::Method) {
+            const auto* fun = as<FunItem>(item);
+            if (!fun) return;
+            for (usize i = 0; i < checked->parameters.size() && i < call.args.size(); ++i) {
+                const usize index = checked->parameters[i];
+                if (index < fun->sig.params.size() && fun->sig.params[index].conv == Convention::Own)
+                    consume(call.args[i].value);
+            }
+        }
     }
 
     // Creating a closure reads what it captures and copies it (3.29). Its body
     // is checked once the enclosing body is done.
-    void create(const ClosureExpr& closure, const State& state) {
+    void create(const ClosureExpr& closure, State& state) {
         for (const auto& capture : resolution_.captures(&closure)) {
             const auto& binding = resolution_.binding(capture.binding);
             const auto name = names_.str(binding.name.sym);
+            // A non-Copy local or `own` parameter moves into the closure.
+            use(capture.binding, capture.use, true, "captured", state);
             if (const auto* found = local(capture.binding)) {
                 if (found->tracked != kUntracked && state.live && !state.assigned.test(found->tracked)) {
-                    auto& d = diag_.error(DiagCode::UninitializedUse, capture.use, "'{}' is captured before it is initialized", name);
+                    auto& d = error(DiagCode::UninitializedUse, capture.use, "'{}' is captured before it is initialized", name);
                     d.notes.push_back({found->declared, "declared here without an initializer"});
                 }
                 continue;
@@ -633,26 +868,28 @@ private:
             // as one: in defaults, field initializers and the primary `init`.
             if (const auto it = params_.find(binding.name.span.lo); it != params_.end()) convention = it->second->conv; else if (!closure_params_.contains(binding.name.span.lo)) continue;
             if (convention == Convention::Inout) {
-                auto& d = diag_.error(DiagCode::InvalidCapture, capture.use,
+                auto& d = error(DiagCode::InvalidCapture, capture.use,
                                       "a closure cannot capture 'inout' parameter '{}', which is only borrowed for the call", name);
                 d.notes.push_back({binding.name.span, "declared 'inout' here"});
             } else if (convention != Convention::Own && !copyable(types_.binding(capture.binding))) {
-                auto& d = diag_.error(DiagCode::InvalidCapture, capture.use,
+                auto& d = error(DiagCode::InvalidCapture, capture.use,
                                       "a closure cannot capture borrowed parameter '{}' of type '{}', which is not Copy; declare it 'own' to move it into the closure",
                                       name, type_name(types_.binding(capture.binding)));
                 d.notes.push_back({binding.name.span, "parameters are borrowed unless declared 'own'"});
             }
         }
         PendingClosure pending{&closure, self_, self_storage_, self_owner_};
+        // Created again when the loop is checked, or already where its cleanup was registered.
+        if (quiet_ || filter_ == Filter::OnlyMoves) return;
         if (self_storage_ != Storage::Unknown && self_owner_) {
             if (const auto use = uses_self(closure)) {
                 // `self` is a parameter too: borrowed, or `inout` in a `mut fun`.
                 const auto type = names_.str(self_owner_->name.sym);
                 if (self_.access == Access::Mutable) {
-                    diag_.error(DiagCode::InvalidCapture, *use,
+                    error(DiagCode::InvalidCapture, *use,
                                 "a closure cannot capture 'self' in a 'mut fun', where it is only borrowed for the call");
                 } else if (!copyable(*self_owner_)) {
-                    auto& d = diag_.error(DiagCode::InvalidCapture, *use,
+                    auto& d = error(DiagCode::InvalidCapture, *use,
                                           "a closure cannot capture 'self' of type '{}', which is borrowed and not Copy", type);
                     d.notes.push_back({self_owner_->name.span, "declared here"});
                 }
@@ -793,7 +1030,7 @@ private:
     std::string type_name(ScalarType type) const { return types_.type_name(type, resolution_, names_, 1024); }
 
     void immutable(const NameExpr& name, Span declared, std::string_view note) {
-        auto& d = diag_.error(DiagCode::ImmutableAssignment, name.span, "cannot assign to immutable '{}'",
+        auto& d = error(DiagCode::ImmutableAssignment, name.span, "cannot assign to immutable '{}'",
                               names_.str(name.name.sym));
         d.notes.push_back({declared, std::string(note)});
     }
@@ -806,7 +1043,7 @@ private:
         }
         const auto& binding = resolution_.binding(id);
         if (captured_.contains(id.value)) {
-            auto& d = diag_.error(DiagCode::ImmutableAssignment, name.span,
+            auto& d = error(DiagCode::ImmutableAssignment, name.span,
                                   "cannot assign to captured '{}'; a closure captures a read-only copy of it",
                                   names_.str(name.name.sym));
             d.notes.push_back({binding.name.span, "declared outside the closure here"});
@@ -816,13 +1053,15 @@ private:
             case BindingKind::Local: {
                 const auto* found = local(id);
                 if (!found) { immutable(name, binding.name.span, "bound here; only 'var' locals can be reassigned"); return; }
+                // Assigning a moved local gives it a value again.
+                unmove(found->movable, state);
                 const bool mutable_local = found->decl->binding == Binding::Var;
                 if (found->tracked == kUntracked) {
                     if (!mutable_local) immutable(name, found->declared, "declared with 'let' here");
                     return;
                 }
                 if (!mutable_local && state.live && state.maybe.test(found->tracked)) {
-                    auto& d = diag_.error(DiagCode::ImmutableAssignment, name.span,
+                    auto& d = error(DiagCode::ImmutableAssignment, name.span,
                                           "'{}' may already be initialized; a 'let' binding is assigned only once",
                                           names_.str(name.name.sym));
                     d.notes.push_back({found->declared, "declared with 'let' here"});
@@ -889,6 +1128,29 @@ private:
         return id.valid() && resolution_.binding(id).kind == BindingKind::BuiltinValue &&
                names_.str(resolution_.binding(id).name.sym) == "panic";
     }
+    // Whether a call can throw: by the callee's signature or function type, or
+    // for a constructor by its type's `init`s. An unknown callee may.
+    bool throws(const CallExpr& call) const {
+        const auto* checked = types_.call(&call);
+        if (!checked || checked->state != CallState::Resolved) return !panics(call);
+        switch (checked->kind) {
+            case CallKind::NumericConversion:
+            case CallKind::Builtin: return false;
+            case CallKind::IndirectFunction: {
+                const auto* function = types_.descriptor(types_.expression(call.callee));
+                return !function || function->throws;
+            }
+            default: break;
+        }
+        const Item* item = checked->target.valid() ? resolution_.binding(checked->target).item : nullptr;
+        if (const auto* fun = as<FunItem>(item)) return fun->sig.throws;
+        if (const auto* type = item ? as_type_decl(item) : nullptr) {
+            for (const Item* member : type->members)
+                if (const auto* init = as<InitItem>(member); init && init->throws) return true;
+            return false;
+        }
+        return !panics(call);
+    }
     bool diverges(const CallExpr& call) const {
         return types_.expression(&call) == ScalarType{ScalarType::Never} || panics(call);
     }
@@ -903,11 +1165,22 @@ private:
             stack.pop_back();
             if (!done) {
                 if (control(*expr)) { control_flow(*expr, state); continue; }
+                if (const auto* call = as<CallExpr>(expr)) consume_arguments(*call);
+                else if (const auto* tuple = as<TupleExpr>(expr)) for (const Expr* elem : tuple->elems) consume(elem);
+                else if (const auto* array = as<ArrayExpr>(expr)) for (const Expr* elem : array->elems) consume(elem);
+                if (const auto* unary = as<UnaryExpr>(expr); unary && unary->op == UnOp::Try && caught_.empty()) {
+                    // An error that `try` propagates leaves the callable from
+                    // the call that throws it, through every pending cleanup.
+                    caught_.push_back({dead(), 0});
+                    eval(unary->operand, state);
+                    caught_.pop_back();
+                    continue;
+                }
                 if (const auto* unary = as<UnaryExpr>(expr); unary && unary->op == UnOp::TryOpt) {
                     // A caught error resumes after the `try?` expression.
-                    caught_.push_back(dead());
+                    caught_.push_back({dead(), defers_.size()});
                     eval(unary->operand, state);
-                    merge(state, caught_.back());
+                    merge(state, caught_.back().state);
                     caught_.pop_back();
                     continue;
                 }
@@ -923,9 +1196,9 @@ private:
             else if (const auto* closure = as<ClosureExpr>(expr)) create(*closure, state);
             else if (const auto* call = as<CallExpr>(expr)) {
                 mutating_call(*call);
-                // Any call inside `try?` may throw after its operands have run;
-                // a panic aborts instead (3.7).
-                if (!caught_.empty() && !panics(*call)) merge(caught_.back(), state);
+                // A throwing call inside `try` or `try?` may leave after its
+                // operands have run; a panic aborts instead (3.7).
+                if (!caught_.empty() && throws(*call)) catch_error(state);
                 if (diverges(*call)) state = dead();
             } else if (conditional(*expr)) {
                 // The right operand runs on only some paths.
@@ -938,7 +1211,11 @@ private:
 
     void control_flow(const Expr& expr, State& state) {
         if (const auto* block = as<BlockExpr>(&expr)) {
+            scopes_.push_back(defers_.size());
             for (const Stmt* stmt : block->stmts) statement(*stmt, state);
+            cleanups(scopes_.back(), state);
+            defers_.resize(scopes_.back());
+            scopes_.pop_back();
         } else if (const auto* unsafe = as<UnsafeExpr>(&expr)) {
             control_flow(*unsafe->block, state);
         } else if (const auto* match = as<MatchExpr>(&expr)) {
@@ -983,42 +1260,145 @@ private:
         // entry's definite facts; any `let` assigned in the condition or body
         // may already be set when it runs again.
         state.maybe.unite(assigned_lets({cond ? cond->expr : nullptr, body}));
+        // A value moved in one iteration is moved when the next one starts.
+        // A quiet first pass finds those moves. Inside it, a nested loop's
+        // head is its entry plus what its iterations move from a clean start,
+        // which does not depend on the entry and is computed once per loop.
+        if (quiet_) {
+            state.moved.unite(iteration_moves(cond, body, state, exits_normally));
+            State back = dead();
+            state = iteration(cond, body, state, exits_normally, back);
+            return;
+        }
+        State back = dead();
+        {
+            State probe = state;
+            ++quiet_;
+            iteration(cond, body, probe, exits_normally, back);
+            --quiet_;
+        }
+        if (back.live) {
+            state.moved.unite(back.moved);
+            state.moved_all.intersect(back.moved_all);
+        }
+        state = iteration(cond, body, state, exits_normally, back);
+    }
+
+    // The bindings that may be moved when a loop returns to its head,
+    // starting from a head where nothing has moved. A reinitialization
+    // clears a move whatever came before it, so this set is the same for
+    // every entry state.
+    Bits iteration_moves(const Cond* cond, const BlockExpr* body, const State& entry, bool exits_normally) {
+        if (const auto it = iteration_moves_.find(body); it != iteration_moves_.end()) return it->second;
+        State clean = entry;
+        clean.moved = Bits(movables_, false);
+        clean.moved_all = Bits(movables_, false);
+        State back = dead();
+        iteration(cond, body, clean, exits_normally, back);
+        return iteration_moves_.emplace(body, back.live ? back.moved : Bits(movables_, false)).first->second;
+    }
+
+    // Runs the cleanups registered since `from`, last first, as a scope exit
+    // does. Only their moves reach the state after them, and one that
+    // diverges ends the exit. While a cleanup runs, only the cleanups
+    // registered before it are pending.
+    void cleanups(usize from, State& state) {
+        // Inside a cleanup's registration check, moves are not tracked.
+        if (!state.live || defers_.size() <= from || filter_ == Filter::NoMoves) return;
+        const auto filter = std::exchange(filter_, Filter::OnlyMoves);
+        auto caught = std::exchange(caught_, {});
+        const auto pending = defers_;
+        for (usize i = pending.size(); i-- > from;) {
+            defers_.resize(i);
+            State cleanup = state;
+            breaks_.push_back(dead());
+            continues_.push_back(dead());
+            control_flow(*pending[i]->body, cleanup);
+            breaks_.pop_back();
+            continues_.pop_back();
+            if (!cleanup.live) { state = dead(); break; }
+            state.moved = std::move(cleanup.moved);
+            state.moved_all = std::move(cleanup.moved_all);
+        }
+        defers_ = pending;
+        caught_ = std::move(caught);
+        filter_ = filter;
+    }
+
+    // An error resumes after the innermost `try?`, once the cleanups of the
+    // scopes it leaves inside that expression have run.
+    void catch_error(const State& state) {
+        State exit = state;
+        cleanups(caught_.back().defers, exit);
+        merge(caught_.back().state, exit);
+    }
+
+    // One pass over a loop from its head; back receives the states that
+    // return to the head, and the result is the state after the loop.
+    State iteration(const Cond* cond, const BlockExpr* body, State& state, bool exits_normally, State& back) {
         if (cond) eval(cond->expr, state);
         breaks_.push_back(dead());
+        continues_.push_back(dead());
+        loops_.push_back(defers_.size());
         State path = state;
         control_flow(*body, path);
+        loops_.pop_back();
+        back = std::move(continues_.back());
+        continues_.pop_back();
+        merge(back, path);
         State out = std::move(breaks_.back());
         breaks_.pop_back();
         if (exits_normally) merge(out, state);
-        state = std::move(out);
+        return out;
     }
 
     void statement(const Stmt& stmt, State& state) {
         switch (stmt.kind) {
             case StmtKind::Var: {
                 const auto& var = *cast<VarStmt>(&stmt);
+                consume(var.init);
                 eval(var.init, state);
                 if (const auto it = locals_.find(var.name.span.lo);
                     var.names.empty() && it != locals_.end() && it->second.tracked != kUntracked) {
                     state.assigned.set(it->second.tracked, false);
                     state.maybe.set(it->second.tracked, false);
                 }
+                // Each run of the declaration binds a new value.
+                if (var.names.empty()) {
+                    if (const auto it = locals_.find(var.name.span.lo); it != locals_.end()) unmove(it->second.movable, state);
+                }
+                for (const Name& name : var.names)
+                    if (const auto it = locals_.find(name.span.lo); it != locals_.end()) unmove(it->second.movable, state);
                 break;
             }
             case StmtKind::Return:
+                consume(cast<ReturnStmt>(&stmt)->value);
                 eval(cast<ReturnStmt>(&stmt)->value, state);
+                cleanups(0, state);
                 state = dead();
                 break;
             case StmtKind::Throw:
                 eval(cast<ThrowStmt>(&stmt)->value, state);
-                if (!caught_.empty()) merge(caught_.back(), state);
+                // A caught error unwinds only to its `try?`.
+                if (!caught_.empty()) catch_error(state);
+                else cleanups(0, state);
                 state = dead();
                 break;
             case StmtKind::Break:
-                if (!breaks_.empty()) merge(breaks_.back(), state);
+                // Leaving the loop body runs the cleanups registered inside it.
+                if (!breaks_.empty()) {
+                    if (!loops_.empty()) cleanups(loops_.back(), state);
+                    merge(breaks_.back(), state);
+                }
                 state = dead();
                 break;
-            case StmtKind::Continue: state = dead(); break;
+            case StmtKind::Continue:
+                if (!continues_.empty()) {
+                    if (!loops_.empty()) cleanups(loops_.back(), state);
+                    merge(continues_.back(), state);
+                }
+                state = dead();
+                break;
             case StmtKind::While: {
                 const auto& loop_stmt = *cast<WhileStmt>(&stmt);
                 loop(&loop_stmt.cond, loop_stmt.body, state, true);
@@ -1034,12 +1414,22 @@ private:
             case StmtKind::Defer: {
                 // Cleanup reads see the state at registration and never initialize the scope.
                 // Its errors are handled inside it, never by an enclosing `try?`.
-                State cleanup = state;
-                breaks_.push_back(dead());
-                auto caught = std::exchange(caught_, {});
-                control_flow(*cast<DeferStmt>(&stmt)->body, cleanup);
-                caught_ = std::move(caught);
-                breaks_.pop_back();
+                // Its moves happen at scope exit and are checked only there, so
+                // this check, done once per cleanup, skips them; a quiet pass or
+                // a cleanup's own exit run has nothing else to report.
+                if (!quiet_ && filter_ != Filter::OnlyMoves) {
+                    State cleanup = state;
+                    breaks_.push_back(dead());
+                    continues_.push_back(dead());
+                    auto caught = std::exchange(caught_, {});
+                    const auto filter = std::exchange(filter_, Filter::NoMoves);
+                    control_flow(*cast<DeferStmt>(&stmt)->body, cleanup);
+                    filter_ = filter;
+                    caught_ = std::move(caught);
+                    continues_.pop_back();
+                    breaks_.pop_back();
+                }
+                defers_.push_back(cast<DeferStmt>(&stmt));
                 // Its writes happen at scope exit, so a later write to the same
                 // `let`, or another cleanup's, would assign it twice.
                 state.maybe.unite(assigned_lets({cast<DeferStmt>(&stmt)->body}));
@@ -1051,6 +1441,7 @@ private:
                 const auto* name = as<NameExpr>(unparen(assign.target));
                 if (!name) eval(assign.target, state);
                 else if (assign.op != AssignOp::Assign) read(*name, state);
+                if (assign.op == AssignOp::Assign) consume(assign.value);
                 eval(assign.value, state);
                 if (name) write(*name, state);
                 else write_place(*assign.target);
@@ -1080,8 +1471,29 @@ private:
     FlatMap<u32, const ClosureParam*> closure_params_;  // name span.lo -> parameter of the current closure
     FlatSet<usize> captured_;                        // bindings the current closure captures
     std::vector<State> breaks_;
-    std::vector<State> caught_;  // error exits of enclosing `try?` expressions
+    std::vector<State> continues_;
+    struct Catch {
+        State state;  // where the error exits of a `try?` resume
+        usize defers; // defers_ size when the `try?` started
+    };
+    // Enclosing `try?` expressions, under the outermost `try` that propagates
+    // errors out of the callable (with defers 0 and a discarded state).
+    std::vector<Catch> caught_;
     usize tracked_ = 0;
+    FlatMap<u32, usize> owned_;      // name span.lo -> move bit of an `own` parameter
+    FlatSet<const VarItem*> instance_fields_;                       // checked with their type
+    FlatMap<const TypeDeclItem*, ParamMoves> primary_moves_;        // into the primary `init` body
+    FlatSet<const Expr*> consumed_;  // names whose value is moved where they are read
+    FlatMap<const BlockExpr*, Bits> iteration_moves_;  // per loop body, while quiet
+    std::vector<Span> move_sites_;   // where each movable binding last moved
+    FlatSet<u32> reported_moves_;          // E0504 spans, which cleanups can reach more than once
+    std::vector<const DeferStmt*> defers_;  // cleanups of the enclosing scopes, innermost last
+    std::vector<usize> scopes_;             // defers_ size where each enclosing block starts
+    std::vector<usize> loops_;              // defers_ size where each enclosing loop body starts
+    usize movables_ = 0;
+    usize quiet_ = 0;
+    Filter filter_ = Filter::All;
+    DiagEngine scratch_;
 };
 
 }  // namespace

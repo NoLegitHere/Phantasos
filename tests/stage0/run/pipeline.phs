@@ -1,0 +1,52 @@
+// Copyright 2026 The Phantasos Authors
+// SPDX-License-Identifier: Apache-2.0
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// Generic function values and closures: pipelines built from small generic
+// pieces, instantiated at Int, String and tuple types.
+
+struct Pair<A, B>(first: A, second: B) {
+    fun swap(): Pair<B, A> = Pair(first: second, second: first)
+    fun mapFirst<C>(f: fun(A) -> C): Pair<C, B> = Pair(first: f(first), second: second)
+}
+
+fun compose<A, B, C>(f: fun(A) -> B, g: fun(B) -> C): fun(A) -> C = { x -> g(f(x)) }
+
+fun twice<T>(f: fun(T) -> T): fun(T) -> T = compose(f, f)
+
+fun repeat<T>(f: fun(T) -> T, x: T, n: Int): T {
+    var value = x
+    var i = 0
+    while i < n {
+        value = f(value)
+        i += 1
+    }
+    return value
+}
+
+fun identity<T>(x: T): T = x
+
+fun greet(name: String): String = name.clone()
+
+fun main(): Int {
+    let addThree = { x: Int -> x + 3 }
+    let quadruple = twice({ x: Int -> x * 2 })
+    print(compose(addThree, quadruple)(1))
+    print(repeat(twice(addThree), 0, 5))
+    print(compose(greet, identity<String>)("pipeline"))
+    let p = Pair(first: 4, second: "four").mapFirst({ n -> n * n })
+    print(p.swap().first)
+    let rotated = repeat({ t: (Int, Int, Int) -> (t.1, t.2, t.0) }, (1, 2, 3), 4)
+    return p.first + rotated.0
+}

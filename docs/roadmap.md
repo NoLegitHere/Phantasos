@@ -100,7 +100,7 @@ foundation. Complete.
   spec 3.4 before destructors exist: no use after a move, no moving out of a
   borrow, and exclusive `inout` arguments.
   - [x] Use after move for locals and `own` parameters (E0504).
-  - [ ] A built-in `.clone()` for String and structurally clonable values.
+  - [x] A built-in `.clone()` for String and structurally clonable values.
   - [ ] Moving out of borrowed parameters, `self`, fields and captures (E0505).
   - [ ] Exclusive `inout` arguments (E0506).
   - [ ] Move samples and run tests.

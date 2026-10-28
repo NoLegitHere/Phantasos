@@ -820,7 +820,8 @@ private:
                     // indirect call, runs before the arguments; a `mut fun`
                     // receiver is a place, read at the call.
                     const CheckedCall* checked = types_.call(&call);
-                    const bool method = checked && checked->kind == CallKind::Method && !mutating_call(call);
+                    const bool method = checked && ((checked->kind == CallKind::Method && !mutating_call(call)) ||
+                                                    checked->kind == CallKind::Clone);
                     const usize first = method || indirect(call) ? 1 : 0;
                     if (stage < first) {
                         if (!method) tasks.push_back({call.callee});
@@ -1006,6 +1007,10 @@ private:
             // print: a diverging argument has already ended the block.
             if (args.front().valid()) emit({.op = Op::Print, .a = args.front()});
             return {};
+        }
+        if (checked.kind == CallKind::Clone) {
+            // Nothing owns heap memory yet, so a clone is the value itself (3.31).
+            return args.front();
         }
         if (checked.kind == CallKind::NominalConstructor) {
             // A diverging argument has already ended the block.

@@ -1135,7 +1135,8 @@ private:
         if (!checked || checked->state != CallState::Resolved) return !panics(call);
         switch (checked->kind) {
             case CallKind::NumericConversion:
-            case CallKind::Builtin: return false;
+            case CallKind::Builtin:
+            case CallKind::Clone: return false;
             case CallKind::IndirectFunction: {
                 const auto* function = types_.descriptor(types_.expression(call.callee));
                 return !function || function->throws;

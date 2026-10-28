@@ -2245,6 +2245,11 @@ private:
         }
         candidates = std::move(found.ids);
         if (candidates.empty()) {
+            // A built-in `x.clone()` is checked with its call (3.31).
+            if (!name_expr && !record.type_receiver && clone_callees_.contains(expr)) {
+                members_[expr] = std::move(record);
+                return std::nullopt;
+            }
             if (name_expr) diag_.error(DiagCode::UnknownValue, name.span, "unknown name '{}'", names_.str(name.sym));
             else diag_.error(DiagCode::UnknownMember, name.span, "type '{}' has no member '{}'",
                              scalar_type_name(record.receiver_type), names_.str(name.sym));
@@ -2528,6 +2533,9 @@ private:
             case ExprKind::Call: {
                 const auto& call = *cast<CallExpr>(&expr);
                 direct_callees_.insert(unparen(call.callee));
+                if (const auto* member = as<MemberExpr>(unparen(call.callee));
+                    member && call.args.empty() && names_.str(member->name.sym) == "clone")
+                    clone_callees_.insert(member);
                 child(index, call.callee, returns);
                 for (usize a = 0; a < call.args.size(); ++a) {
                     expect(call.args[a].value, {.kind = Expectation::Argument, .expr = &call, .argument = a});
@@ -3514,6 +3522,94 @@ private:
         return Value{kind == ConversionKind::Checked ? destination.optional() : destination};
     }
 
+    // `x.clone()` copies a value whose type has no `clone` member of its own:
+    // a String, a Copy value, or a struct or tuple whose parts all clone (3.31).
+    std::optional<Value> prepare_clone(const CallExpr& expr) {
+        const Expr* callee = expr.callee;
+        while (const auto* paren = as<ParenExpr>(callee)) callee = paren->inner;
+        const auto* member = as<MemberExpr>(callee);
+        if (!member || !expr.args.empty() || names_.str(member->name.sym) != "clone") return std::nullopt;
+        if (const auto type = entity(member->base); type.state == ExpansionState::Resolved && type.target.valid()) {
+            const auto kind = resolution_.binding(type.target).kind;
+            if (kind == BindingKind::Type || kind == BindingKind::TypeAlias || kind == BindingKind::BuiltinType) return std::nullopt;
+        }
+        Value base = value(member->base);
+        // A literal receiver takes its default type, as `let` would give it.
+        if (base.literal != Literal::None && known(default_type(base)))
+            base = materialize(expressions_.at(member->base), default_type(base));
+        if (unavailable(base) || base.type == Type::Never) return std::nullopt;
+        if (base.type.kind == Type::Nominal && !base.type.optional_depth) {
+            const auto found = lookup_member(types_.descriptor(base.type)->declaration, member->name.sym);
+            if (!found || found->state != ExpansionState::Resolved || !found->ids.empty()) return std::nullopt;
+        }
+        auto& record = calls_[&expr];
+        record.kind = CallKind::Clone;
+        record.receiver = member->base;
+        Type blocker;
+        switch (clonable(base.type, blocker)) {
+            case Expansion::Deferred: return Value{};
+            case Expansion::No: {
+                auto& d = diag_.error(DiagCode::UnknownMember, member->name.span, "type '{}' has no member 'clone'",
+                                      scalar_type_name(base.type));
+                if (blocker != base.type)
+                    d.notes.push_back({member->base->span, std::format("it contains a value of type '{}', which cannot be cloned",
+                                                                       scalar_type_name(blocker))});
+                record.state = CallState::Error;
+                return Value{Type::Error};
+            }
+            case Expansion::Yes: break;
+        }
+        record.state = CallState::Resolved;
+        return Value{base.type};
+    }
+    enum class Expansion : u8 { Yes, No, Deferred };
+    // Strings, Copy scalars, function values and payload-free enums clone, as
+    // do optionals, tuples and non-generic structs made of clonable parts.
+    // Generic parameters, arrays, classes and other references do not yet.
+    Expansion clonable(Type root, Type& blocker) {
+        std::vector<Type> work{root};
+        FlatSet<usize> seen;
+        while (!work.empty()) {
+            const Type type = work.back().scalar();
+            work.pop_back();
+            switch (type.kind) {
+                case Type::Deferred: return Expansion::Deferred;
+                case Type::Tuple:
+                    for (const auto element : types_.descriptor(type)->parameters) work.push_back(element);
+                    break;
+                case Type::Nominal: {
+                    const auto* descriptor = types_.descriptor(type);
+                    if (!seen.insert(descriptor->declaration.value)) break;
+                    const auto& binding = resolution_.binding(descriptor->declaration);
+                    const auto* decl = binding.item ? as_type_decl(binding.item) : nullptr;
+                    if (decl && decl->kind == ItemKind::Enum &&
+                        std::ranges::all_of(decl->members, [](const Item* m) { const auto* c = as<EnumCaseItem>(m); return !c || c->fields.empty(); }))
+                        break;
+                    if (!decl || decl->kind != ItemKind::Struct || !descriptor->arguments.empty() || !binding.members.valid()) {
+                        blocker = type;
+                        return Expansion::No;
+                    }
+                    for (const BindingId id : resolution_.scopes()[binding.members.value].bindings) {
+                        const auto& field = resolution_.binding(id);
+                        if (field.kind != BindingKind::Field || static_member(id)) continue;
+                        if (!known(nodes_[id.value].value.type)) {
+                            pending_dependencies_.push_back(id.value);
+                            return Expansion::Deferred;
+                        }
+                        work.push_back(nodes_[id.value].value.type);
+                    }
+                    break;
+                }
+                case Type::Array: case Type::Shared: case Type::Weak: case Type::Projection: case Type::TypeParameter:
+                case Type::Error:
+                    blocker = type;
+                    return Expansion::No;
+                default: break;
+            }
+        }
+        return Expansion::Yes;
+    }
+
     // print(value:) takes one String, Int, UInt or Bool, positionally or with
     // its label, and returns Unit (3.27). Integer literals select Int.
     std::optional<Value> prepare_builtin(const CallExpr& expr) {
@@ -3690,6 +3786,7 @@ private:
         calls_[&expr] = {}; // a deferred application may resume after pending dependencies
         if (auto conversion = prepare_conversion(expr)) return *conversion;
         if (auto builtin = prepare_builtin(expr)) return *builtin;
+        if (auto clone = prepare_clone(expr)) return *clone;
         if (auto constructor = prepare_constructor(expr)) return *constructor;
         auto& record = calls_[&expr];
         const Value callee = value(expr.callee);
@@ -4268,6 +4365,7 @@ private:
     bool probing_constraints_ = false;
     std::unordered_set<u32> reported_applications_;
     std::vector<Node> nodes_;
+    FlatSet<const Expr*> clone_callees_; // `x.clone` callees of calls without arguments
     std::vector<Declaration> node_declarations_{1};  // entry 0: no declaration
     std::vector<Dependency> dependencies_{1};  // edge 0: none
     NodeMap<const Expr*, usize> expressions_;

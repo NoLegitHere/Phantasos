@@ -13,9 +13,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Generic functions the gate accepts, and uses of them it does not yet:
-// generic methods, type arguments outside the subset or without a value, and
-// generic functions as values.
+// Generic functions and structs the gate accepts, and uses of them it does
+// not yet: type arguments outside the subset or without a value, structs
+// that hold themselves through type arguments, and generic functions as
+// values.
 
 fun identity<T>(x: T): T = x
 
@@ -23,8 +24,16 @@ fun pair<A, B>(a: A, b: B): (A, B) = (a, b)
 
 fun accepted(): (Int, (Bool, String)) = pair(identity(1), pair(true, "s"))
 
-struct Box(value: Int) {
-    fun same<T>(x: T): T = x
+struct Box<T>(value: T) {
+    fun same<U>(x: U): (T, U) = (value, x)
+}
+
+struct Looped<T>(inner: Box<Looped<T>>)
+
+fun boxes(): Int {
+    let b = Box(value: 1).same("s")
+    let unit = Box(value: ())
+    return b.0
 }
 
 fun stop(): Never {

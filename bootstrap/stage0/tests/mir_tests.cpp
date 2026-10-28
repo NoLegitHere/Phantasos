@@ -567,6 +567,48 @@ fun main(): Int {
 )") == 417);
 }
 
+void generic_structs() {
+    // A layout per struct instance and a function per method instance, named
+    // after the receiver's type; overloads keep their suffixes.
+    Frontend f;
+    const auto text = f.dump(R"(
+struct Box<T>(value: T) {
+    fun get(): T = value
+    fun get(x: T): T = x
+    fun pair<U>(u: U): (T, U) = (get(), u)
+}
+fun main(): Int = Box(value: 1).get() + Box(value: 2).get(3) + Box(value: true).pair(4).1
+)");
+    CHECK(text.contains("struct @Box<Int> { value: i64 +0 } size 8 align 8\n"));
+    CHECK(text.contains("struct @Box<Bool> { value: bool +0 } size 1 align 1\n"));
+    CHECK(text.contains("fun @Box<Int>.get(%0: @Box<Int>) -> i64 {"));
+    CHECK(text.contains("fun @Box<Int>.get.1(%0: @Box<Int>, %1: i64) -> i64 {"));
+    CHECK(text.contains("fun @Box<Bool>.pair<Int>(%0: @Box<Bool>, %1: i64) -> @(Bool, Int) {"));
+    CHECK(text.contains("fun @Box<Bool>.get(%0: @Box<Bool>) -> bool {"));
+    // Instances run like any other function, `mut fun` and closures included.
+    CHECK(result(R"(
+struct Counter<T>(var last: T, var count: Int) {
+    mut fun add(x: T) {
+        last = x
+        count += 1
+    }
+    fun reader(): fun() -> Int {
+        let n = count
+        return { -> n * 10 }
+    }
+}
+fun main(): Int {
+    var c = Counter(last: "a", count: 0)
+    c.add("b")
+    c.add("c")
+    var d = Counter(last: false, count: 5)
+    d.add(true)
+    if d.last { return c.reader()() + d.count }
+    return 0
+}
+)") == 26);
+}
+
 void rejected_files() {
     FrontendSession session;
     const auto id = session.sources().add("mir.phs", "fun main(): Float64 = 1.0\n");
@@ -608,6 +650,7 @@ int main() {
     function_values();
     closures();
     generic_functions();
+    generic_structs();
     rejected_files();
     long_trees();
     std::println("mir tests passed");

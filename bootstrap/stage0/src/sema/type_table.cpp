@@ -92,6 +92,13 @@ ScalarType ScalarTypes::substitute(ScalarType type, std::span<const TypeArgument
     return visit(type);
 }
 
+ScalarType ScalarTypes::declared(BindingId declaration, std::span<const BindingId> parameters) {
+    std::vector<ScalarType> arguments;
+    for (const BindingId parameter : parameters)
+        arguments.push_back(types_.intern({.kind = ScalarType::TypeParameter, .declaration = parameter}));
+    return types_.intern({.kind = ScalarType::Nominal, .declaration = declaration, .arguments = std::move(arguments)});
+}
+
 void TypeTable::grow() {
     // Rebuilds from the cached hashes; descriptors are never rehashed.
     std::vector<Slot> slots(slots_.empty() ? 64 : slots_.size() * 2);

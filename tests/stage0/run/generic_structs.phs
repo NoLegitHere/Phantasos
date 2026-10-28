@@ -1,0 +1,74 @@
+// Copyright 2026 The Phantasos Authors
+// SPDX-License-Identifier: Apache-2.0
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// Generic structs: a stack over any value type with a mutating method, a
+// generic method returning another generic struct, a generic method on a
+// plain struct, and nested instances.
+
+struct Stack<T>(var top: T, var below: T, var size: Int) {
+    fun peek(): T = top
+
+    mut fun push(x: T) {
+        below = top
+        top = x
+        size += 1
+    }
+
+    fun both(): (T, T) = (peek(), self.below)
+
+    fun later(): fun() -> T {
+        let value = peek()
+        return { -> value }
+    }
+
+    fun pairWith<U>(u: U): Pair<T, U> = Pair(first: top, second: u)
+
+    fun nested(): Pair<T, Pair<T, Int>> = pairWith(pairWith(size))
+}
+
+struct Pair<A, B>(first: A, second: B) {
+    fun swap(): Pair<B, A> = Pair(first: second, second: first)
+}
+
+struct Plain(n: Int) {
+    fun tagged<T>(x: T): Pair<Int, T> = Pair(first: n, second: x)
+}
+
+fun stackOf<T>(x: T): Stack<T> = Stack(top: x, below: x, size: 1)
+
+fun main(): Int {
+    var numbers = stackOf(10)
+    numbers.push(20)
+    numbers.push(30)
+    print(numbers.peek())
+    print(numbers.both().1)
+    print(numbers.later()())
+    let nested = numbers.nested()
+    print(nested.second.first)
+    print(nested.second.second)
+    var words = stackOf("first")
+    words.push("second")
+    print(words.both().0)
+    print(words.both().1)
+    let swapped = Pair(first: "left", second: false).swap()
+    print(swapped.first)
+    print(swapped.second)
+    let tagged = Plain(n: 7).tagged(true)
+    print(tagged.second)
+    let deep: Pair<Pair<Int, Bool>, String> = Pair(first: Pair(first: 1, second: false), second: "deep")
+    print(deep.first.first)
+    print(deep.second)
+    return numbers.size + tagged.first
+}

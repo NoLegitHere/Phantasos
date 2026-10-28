@@ -14,15 +14,13 @@
 // limitations under the License.
 
 // Methods outside the subset: static methods (which reject their struct),
-// generic methods and unsupported signatures, methods of rejected structs, and
-// method values.
+// unsupported signatures, methods of rejected structs, and method values.
 
 struct Factory(seed: Int) {
     static fun zero(): Factory = Factory(seed: 0)
 }
 
 struct Counter(var count: Int) {
-    fun scaled<T>(by: T): Int = count
     fun real(): Float64 = 1.0
     fun get(): Int = count
 }
@@ -35,5 +33,5 @@ fun main(): Int {
     var c = Counter(count: 1)
     let f = c.get
     let r = Rejected(x: 2.0).get()
-    return c.scaled(by: 2) + c.get()
+    return c.get()
 }

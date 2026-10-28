@@ -3602,8 +3602,9 @@ private:
                         // A field whose type failed was reported where it is declared.
                         if (node.value.type == Type::Error) return Expansion::Failed;
                         if (!known(node.value.type)) {
-                            // Only a field still being inferred can make progress.
-                            if (node.state != 2) pending_dependencies_.push_back(id.value);
+                            // Only a field not yet visited can make progress; an
+                            // active or finished one stays deferred.
+                            if (node.state == 0) pending_dependencies_.push_back(id.value);
                             return Expansion::Deferred;
                         }
                         work.push_back(nodes_[id.value].value.type);

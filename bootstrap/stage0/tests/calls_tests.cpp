@@ -316,6 +316,9 @@ let h = (1, "z").clone()
     Frontend failed;
     failed.check("struct S { let x = true + 1 }\nlet s = S()\nlet bad = s.clone()", {DiagCode::InvalidScalarOperand});
     CHECK(failed.call("bad").state == CallState::Error);
+    // A field whose own initializer clones its type stays deferred.
+    Frontend cycle;
+    cycle.check("struct S { let x = S().clone() }");
     // Shared tuple types are checked once each.
     std::string aliases = "type T0 = String\n";
     for (int i = 1; i < 64; ++i) aliases += std::format("type T{} = (T{}, T{})\n", i, i - 1, i - 1);

@@ -606,6 +606,14 @@ void moves() {
         {"fun f(c: Bool) { var a = \"a\"\nwhile c { look(a)\nwhile c { take(a)\nif c { a = \"exit\"\nbreak } } } }", {M, M}},
         {"fun f(c: Bool) { var a = \"a\"\nwhile c { look(a)\nwhile c { while c { take(a) }\na = \"b\" } } }", {M}},
         {"fun f(c: Bool) { var a = \"a\"\nwhile c { look(a)\nwhile c { a = \"b\"\nwhile c { take(a) } } } }", {M, M}},
+        // Cleanups move at the exits of their scope: the end, `break`, `continue` and `return`.
+        {"fun f(c: Bool) { let a = \"a\"\nif c { defer { take(a) } }\nlook(a) }", {M}},
+        {"fun f() { let a = \"a\"\ndefer { look(a) }\ntake(a) }", {M}},
+        {"fun f() { let a = \"a\"\ndefer { take(a) }\nlook(a) }", {}},
+        {"fun f(c: Bool) { let a = \"a\"\nwhile c { defer { take(a) }\nif c { break } } }", {M}},
+        {"fun f(c: Bool) { let a = \"a\"\nwhile c { if c { continue }\ndefer { look(a) } } }", {}},
+        {"fun f(c: Bool) { let a = \"a\"\ndefer { look(a) }\nif c { take(a)\nreturn }\nlook(a) }", {M}},
+        {"fun f() { let a = \"a\"\ndefer { let g = { -> look(a) } } }", {}},
         // A moved value is reported once until it moves again.
         {"fun f() { let a = \"a\"\ntake(a)\nlook(a)\nlook(a)\ntake(a)\nlook(a) }", {M, M}},
         // Unreachable code reports nothing.

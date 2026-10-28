@@ -260,8 +260,15 @@ private:
     }
 
     // Diagnostics go nowhere while a loop body is evaluated only to learn
-    // what an iteration moves.
-    DiagEngine& report() { return quiet_ ? scratch_ : diag_; }
+    // what an iteration moves. A cleanup is checked where it is registered,
+    // and for moves again at each exit of its scope (3.30).
+    enum class Filter : u8 { All, NoMoves, OnlyMoves };
+    template <typename... Args>
+    Diagnostic& error(DiagCode code, Span span, std::format_string<Args...> fmt, Args&&... args) {
+        const bool moves = code == DiagCode::UseAfterMove;
+        const bool hidden = quiet_ || (filter_ == Filter::NoMoves && moves) || (filter_ == Filter::OnlyMoves && !moves);
+        return (hidden ? scratch_ : diag_).error(code, span, fmt, std::forward<Args>(args)...);
+    }
 
     // How a place may be modified (3.3). Unknown places, including `self`
     // during construction, are not checked.
@@ -452,7 +459,7 @@ private:
         return access == Access::ReadOnly ? "read-only" : access == Access::Temporary ? "temporary" : "immutable";
     }
     void restricted(Span span, std::string message, const Place& place) {
-        auto& d = report().error(DiagCode::ImmutableAssignment, span, "{}", message);
+        auto& d = error(DiagCode::ImmutableAssignment, span, "{}", message);
         if (!place.note.empty()) d.notes.push_back({place.declared, place.note});
     }
 
@@ -564,7 +571,7 @@ private:
         eval(body, state);
         if (fun && !fun->expr_body && state.live && returns_value(*fun)) {
             const Span end{body->span.file, body->span.hi - 1, body->span.hi};
-            auto& d = report().error(DiagCode::MissingReturn, end, "function '{}' must return '{}' on every path",
+            auto& d = error(DiagCode::MissingReturn, end, "function '{}' must return '{}' on every path",
                                   names_.str(fun->name.sym), result_name(*fun));
             d.notes.push_back({fun->name.span, "the end of the body is reachable without a 'return'"});
         }
@@ -594,6 +601,8 @@ private:
         owned_.clear();
         consumed_.clear();
         iteration_moves_.clear();
+        reported_moves_.clear();
+        defers_.clear();
         tracked_ = 0;
         movables_ = 0;
         each_stmt(body, [&](const Stmt& stmt) {
@@ -637,7 +646,7 @@ private:
         const auto id = target(name);
         const auto* found = local(id);
         if (found && found->tracked != kUntracked && state.live && !state.assigned.test(found->tracked)) {
-            auto& d = report().error(DiagCode::UninitializedUse, name.span, "'{}' is used before it is initialized",
+            auto& d = error(DiagCode::UninitializedUse, name.span, "'{}' is used before it is initialized",
                                      names_.str(name.name.sym));
             d.notes.push_back({found->declared, "declared here without an initializer"});
         }
@@ -667,12 +676,13 @@ private:
     void use(BindingId id, Span span, bool moves, std::string_view verb, State& state) {
         const auto bit = movable(id);
         if (!bit || !state.live) return;
-        if (state.moved.test(*bit)) {
+        // A cleanup runs at every exit of its scope, but each use reports once.
+        if (state.moved.test(*bit) && (quiet_ || filter_ == Filter::NoMoves || reported_moves_.insert(span.lo))) {
             const auto& binding = resolution_.binding(id);
             const auto name = names_.str(binding.name.sym);
             auto& d = state.moved_all.test(*bit)
-                          ? report().error(DiagCode::UseAfterMove, span, "'{}' is {} after it was moved", name, verb)
-                          : report().error(DiagCode::UseAfterMove, span,
+                          ? error(DiagCode::UseAfterMove, span, "'{}' is {} after it was moved", name, verb)
+                          : error(DiagCode::UseAfterMove, span,
                                            "'{}' is {} after it may have been moved", name, verb);
             d.notes.push_back({move_sites_[*bit], "moved here"});
             d.notes.push_back({binding.name.span, std::format("declared here with type '{}', which is not Copy",
@@ -775,7 +785,7 @@ private:
             use(capture.binding, capture.use, true, "captured", state);
             if (const auto* found = local(capture.binding)) {
                 if (found->tracked != kUntracked && state.live && !state.assigned.test(found->tracked)) {
-                    auto& d = report().error(DiagCode::UninitializedUse, capture.use, "'{}' is captured before it is initialized", name);
+                    auto& d = error(DiagCode::UninitializedUse, capture.use, "'{}' is captured before it is initialized", name);
                     d.notes.push_back({found->declared, "declared here without an initializer"});
                 }
                 continue;
@@ -787,27 +797,28 @@ private:
             // as one: in defaults, field initializers and the primary `init`.
             if (const auto it = params_.find(binding.name.span.lo); it != params_.end()) convention = it->second->conv; else if (!closure_params_.contains(binding.name.span.lo)) continue;
             if (convention == Convention::Inout) {
-                auto& d = report().error(DiagCode::InvalidCapture, capture.use,
+                auto& d = error(DiagCode::InvalidCapture, capture.use,
                                       "a closure cannot capture 'inout' parameter '{}', which is only borrowed for the call", name);
                 d.notes.push_back({binding.name.span, "declared 'inout' here"});
             } else if (convention != Convention::Own && !copyable(types_.binding(capture.binding))) {
-                auto& d = report().error(DiagCode::InvalidCapture, capture.use,
+                auto& d = error(DiagCode::InvalidCapture, capture.use,
                                       "a closure cannot capture borrowed parameter '{}' of type '{}', which is not Copy; declare it 'own' to move it into the closure",
                                       name, type_name(types_.binding(capture.binding)));
                 d.notes.push_back({binding.name.span, "parameters are borrowed unless declared 'own'"});
             }
         }
         PendingClosure pending{&closure, self_, self_storage_, self_owner_};
-        if (quiet_) return;  // created again when the loop is checked
+        // Created again when the loop is checked, or already where its cleanup was registered.
+        if (quiet_ || filter_ == Filter::OnlyMoves) return;
         if (self_storage_ != Storage::Unknown && self_owner_) {
             if (const auto use = uses_self(closure)) {
                 // `self` is a parameter too: borrowed, or `inout` in a `mut fun`.
                 const auto type = names_.str(self_owner_->name.sym);
                 if (self_.access == Access::Mutable) {
-                    report().error(DiagCode::InvalidCapture, *use,
+                    error(DiagCode::InvalidCapture, *use,
                                 "a closure cannot capture 'self' in a 'mut fun', where it is only borrowed for the call");
                 } else if (!copyable(*self_owner_)) {
-                    auto& d = report().error(DiagCode::InvalidCapture, *use,
+                    auto& d = error(DiagCode::InvalidCapture, *use,
                                           "a closure cannot capture 'self' of type '{}', which is borrowed and not Copy", type);
                     d.notes.push_back({self_owner_->name.span, "declared here"});
                 }
@@ -948,7 +959,7 @@ private:
     std::string type_name(ScalarType type) const { return types_.type_name(type, resolution_, names_, 1024); }
 
     void immutable(const NameExpr& name, Span declared, std::string_view note) {
-        auto& d = report().error(DiagCode::ImmutableAssignment, name.span, "cannot assign to immutable '{}'",
+        auto& d = error(DiagCode::ImmutableAssignment, name.span, "cannot assign to immutable '{}'",
                               names_.str(name.name.sym));
         d.notes.push_back({declared, std::string(note)});
     }
@@ -961,7 +972,7 @@ private:
         }
         const auto& binding = resolution_.binding(id);
         if (captured_.contains(id.value)) {
-            auto& d = report().error(DiagCode::ImmutableAssignment, name.span,
+            auto& d = error(DiagCode::ImmutableAssignment, name.span,
                                   "cannot assign to captured '{}'; a closure captures a read-only copy of it",
                                   names_.str(name.name.sym));
             d.notes.push_back({binding.name.span, "declared outside the closure here"});
@@ -979,7 +990,7 @@ private:
                     return;
                 }
                 if (!mutable_local && state.live && state.maybe.test(found->tracked)) {
-                    auto& d = report().error(DiagCode::ImmutableAssignment, name.span,
+                    auto& d = error(DiagCode::ImmutableAssignment, name.span,
                                           "'{}' may already be initialized; a 'let' binding is assigned only once",
                                           names_.str(name.name.sym));
                     d.notes.push_back({found->declared, "declared with 'let' here"});
@@ -1098,7 +1109,11 @@ private:
 
     void control_flow(const Expr& expr, State& state) {
         if (const auto* block = as<BlockExpr>(&expr)) {
+            scopes_.push_back(defers_.size());
             for (const Stmt* stmt : block->stmts) statement(*stmt, state);
+            cleanups(scopes_.back(), state);
+            defers_.resize(scopes_.back());
+            scopes_.pop_back();
         } else if (const auto* unsafe = as<UnsafeExpr>(&expr)) {
             control_flow(*unsafe->block, state);
         } else if (const auto* match = as<MatchExpr>(&expr)) {
@@ -1181,14 +1196,37 @@ private:
         return iteration_moves_.emplace(body, back.live ? back.moved : Bits(movables_, false)).first->second;
     }
 
+    // Runs the cleanups registered since `from`, last first, as a scope exit
+    // does. Only their moves reach the state after them.
+    void cleanups(usize from, State& state) {
+        if (!state.live || defers_.size() <= from) return;
+        const auto filter = std::exchange(filter_, Filter::OnlyMoves);
+        auto caught = std::exchange(caught_, {});
+        for (usize i = defers_.size(); i-- > from;) {
+            State cleanup = state;
+            breaks_.push_back(dead());
+            continues_.push_back(dead());
+            control_flow(*defers_[i]->body, cleanup);
+            breaks_.pop_back();
+            continues_.pop_back();
+            if (!cleanup.live) continue;
+            state.moved = std::move(cleanup.moved);
+            state.moved_all = std::move(cleanup.moved_all);
+        }
+        caught_ = std::move(caught);
+        filter_ = filter;
+    }
+
     // One pass over a loop from its head; back receives the states that
     // return to the head, and the result is the state after the loop.
     State iteration(const Cond* cond, const BlockExpr* body, State& state, bool exits_normally, State& back) {
         if (cond) eval(cond->expr, state);
         breaks_.push_back(dead());
         continues_.push_back(dead());
+        loops_.push_back(defers_.size());
         State path = state;
         control_flow(*body, path);
+        loops_.pop_back();
         back = std::move(continues_.back());
         continues_.pop_back();
         merge(back, path);
@@ -1220,19 +1258,28 @@ private:
             case StmtKind::Return:
                 consume(cast<ReturnStmt>(&stmt)->value);
                 eval(cast<ReturnStmt>(&stmt)->value, state);
+                cleanups(0, state);
                 state = dead();
                 break;
             case StmtKind::Throw:
                 eval(cast<ThrowStmt>(&stmt)->value, state);
                 if (!caught_.empty()) merge(caught_.back(), state);
+                cleanups(0, state);
                 state = dead();
                 break;
             case StmtKind::Break:
-                if (!breaks_.empty()) merge(breaks_.back(), state);
+                // Leaving the loop body runs the cleanups registered inside it.
+                if (!breaks_.empty()) {
+                    if (!loops_.empty()) cleanups(loops_.back(), state);
+                    merge(breaks_.back(), state);
+                }
                 state = dead();
                 break;
             case StmtKind::Continue:
-                if (!continues_.empty()) merge(continues_.back(), state);
+                if (!continues_.empty()) {
+                    if (!loops_.empty()) cleanups(loops_.back(), state);
+                    merge(continues_.back(), state);
+                }
                 state = dead();
                 break;
             case StmtKind::While: {
@@ -1250,12 +1297,18 @@ private:
             case StmtKind::Defer: {
                 // Cleanup reads see the state at registration and never initialize the scope.
                 // Its errors are handled inside it, never by an enclosing `try?`.
+                // Its moves happen at scope exit, where they are checked again.
                 State cleanup = state;
                 breaks_.push_back(dead());
+                continues_.push_back(dead());
                 auto caught = std::exchange(caught_, {});
+                const auto filter = std::exchange(filter_, filter_ == Filter::All ? Filter::NoMoves : filter_);
                 control_flow(*cast<DeferStmt>(&stmt)->body, cleanup);
+                filter_ = filter;
                 caught_ = std::move(caught);
+                continues_.pop_back();
                 breaks_.pop_back();
+                defers_.push_back(cast<DeferStmt>(&stmt));
                 // Its writes happen at scope exit, so a later write to the same
                 // `let`, or another cleanup's, would assign it twice.
                 state.maybe.unite(assigned_lets({cast<DeferStmt>(&stmt)->body}));
@@ -1304,8 +1357,13 @@ private:
     FlatSet<const Expr*> consumed_;  // names whose value is moved where they are read
     FlatMap<const BlockExpr*, Bits> iteration_moves_;  // per loop body, while quiet
     std::vector<Span> move_sites_;   // where each movable binding last moved
+    FlatSet<u32> reported_moves_;          // E0504 spans, which cleanups can reach more than once
+    std::vector<const DeferStmt*> defers_;  // cleanups of the enclosing scopes, innermost last
+    std::vector<usize> scopes_;             // defers_ size where each enclosing block starts
+    std::vector<usize> loops_;              // defers_ size where each enclosing loop body starts
     usize movables_ = 0;
     usize quiet_ = 0;
+    Filter filter_ = Filter::All;
     DiagEngine scratch_;
 };
 

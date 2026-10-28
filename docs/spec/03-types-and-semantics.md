@@ -1299,7 +1299,10 @@ Moves are tracked for the callable's locals and its `own` parameters. Using
 one after it moved, including moving it again, is `E0504`: "was moved" when
 it moved on every path that reaches the use, and "may have been moved" when
 it moved on only some of them. A value that moves in a loop body has moved
-when the next iteration starts. Arguments run left to right, so
+when the next iteration starts. A `defer` cleanup runs at each exit of its
+scope (its end, `break`, `continue`, `return` and `throw`), so its moves
+happen there, and it cannot use a value that moved after it was registered.
+Arguments run left to right, so
 `Box(a, a == "x")` reads `a` after moving it. Assigning a `var`, or running
 a declaration again, gives the binding a new value. Each moved binding is
 reported once until it moves again, and unreachable code reports nothing.

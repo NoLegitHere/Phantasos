@@ -34,3 +34,9 @@ field_mutability_inout.phs:29:13: error[E0502]: cannot pass a temporary value to
 field_mutability_inout.phs:30:13: error[E0502]: cannot pass a temporary value to 'inout' parameter 's'
    30 |     swap(s: Slot(1, 2))
       |             ^^^^^^^^^^
+field_mutability_inout.phs:45:14: error[E0502]: the argument for 'inout' parameter 'x' must be mutable, but 'a' is immutable
+   45 |     c.add(x: a)
+      |              ^
+field_mutability_inout.phs:44:9: note: declared with 'let' here
+   44 |     let a = 1
+      |         ^

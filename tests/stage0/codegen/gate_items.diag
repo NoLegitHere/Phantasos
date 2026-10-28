@@ -25,7 +25,7 @@ gate_items.phs:33:5: error[E0600]: stage0 code generation does not support gener
 gate_items.phs:35:5: error[E0600]: stage0 code generation does not support throwing functions yet
    35 | fun throwing() throws {}
       |     ^^^^^^^^
-gate_items.phs:37:12: error[E0600]: stage0 code generation does not support parameter conventions yet
+gate_items.phs:37:12: error[E0600]: stage0 code generation does not support 'inout' parameters yet
    37 | fun inout_(x: inout Int) {}
       |            ^
 gate_items.phs:39:23: error[E0600]: stage0 code generation does not support parameter defaults yet

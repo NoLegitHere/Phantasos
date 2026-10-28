@@ -1,0 +1,9 @@
+gate_conventions.phs:20:14: error[E0600]: stage0 code generation does not support conventions on struct fields yet
+   20 | struct Owned(text: own String)
+      |              ^^^^
+gate_conventions.phs:22:12: error[E0600]: stage0 code generation does not support 'inout' parameters yet
+   22 | fun inout_(x: inout Int) {}
+      |            ^
+gate_conventions.phs:31:36: error[E0600]: stage0 code generation needs a known type here; this type is not inferred yet
+   31 |     let f: fun(String) -> String = take
+      |                                    ^^^^

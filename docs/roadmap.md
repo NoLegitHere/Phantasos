@@ -93,6 +93,8 @@ foundation. Complete.
   - [x] Closure syntax.
   - [x] Closure checking: parameter inference and captures.
   - [x] Closure code generation with a stage0 heap.
+  - [x] `own` and `borrow` parameters in code generation, so closures can
+    capture non-Copy parameters.
   - [ ] Closure samples and run tests.
 - [ ] Generic base substitution and built-in traits. Instantiate
   generic base/interface graphs, derive `Copy`/`Sendable`/`Error`, and complete

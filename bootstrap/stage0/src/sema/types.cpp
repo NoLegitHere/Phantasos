@@ -2883,15 +2883,22 @@ private:
         const auto named = callees(receiver);
         std::vector<BindingId> ids(named.begin(), named.end());
         // A primary constructor may be named through a type alias.
-        if (const auto constructed = entity(call.callee); constructed.state == ExpansionState::Resolved && constructed.target.valid() &&
-            !constructed.optional_depth && resolution_.binding(constructed.target).kind == BindingKind::Type)
-            ids = {constructed.target};
+        const auto constructed = entity(call.callee);
+        const bool constructor = constructed.state == ExpansionState::Resolved && constructed.target.valid() &&
+                                 !constructed.optional_depth && resolution_.binding(constructed.target).kind == BindingKind::Type;
+        if (constructor) ids = {constructed.target};
         if (ids.empty()) return {unavailable(callee) ? Expected::Pending : Expected::Missing};
         std::optional<std::vector<Type>> explicit_arguments;
         if (const auto* generic = as<GenericInstExpr>(receiver)) {
             explicit_arguments.emplace();
             for (auto* arg : generic->args) explicit_arguments->push_back(annotation(arg));
             receiver = unparen(generic->base);  // its context is the base's
+            // An alias's type arguments are not its target's: use the
+            // target's arguments from the expanded type.
+            if (constructor) {
+                if (constructed.scalar.kind != Type::Nominal) return {Expected::Pending};
+                explicit_arguments = types_.descriptor(constructed.scalar)->arguments;
+            }
         }
         // A closure whose parameters are all annotated infers its own type,
         // which in turn is evidence for the callee's type arguments.

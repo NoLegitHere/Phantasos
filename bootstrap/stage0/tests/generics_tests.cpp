@@ -357,7 +357,12 @@ struct Box<T>(value: T) {
 }
 let mapped = Box(value: 1).map<Bool>({ x: Int -> x > 0 })
 let mappedInferred = Box(value: 1).map<Int>({ x -> x + 1 })
+struct Pair<A, B>(f: fun(A) -> B)
+type Flip<A, B> = Pair<B, A>
+let flipped = Flip<Int, Bool>({ x: Bool -> 1 })
+let flippedInferred = Flip<Int, Bool>({ x -> 1 })
 )");
+    CHECK(own.name(own.value("flipped")) == "Pair<Bool, Int>" && own.name(own.value("flippedInferred")) == "Pair<Bool, Int>");
     CHECK(own.value("annotated") == Type::Int8 && own.value("inferred") == Type::Int8);
     CHECK(own.value("literal") == Type::Int8 && own.value("both") == Type::Int8);
     CHECK(own.value("mapped") == Type::Bool && own.value("mappedInferred") == Type::Int);

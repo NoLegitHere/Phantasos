@@ -123,7 +123,10 @@ public:
                 for (const Item* member : as_type_decl(item)->members)
                     if (const auto* method = as<FunItem>(member)) methods.push_back(method);
         functions_.insert(methods.begin(), methods.end());
-        owners_.insert(methods.begin(), methods.end());
+        for (const Item* item : file.items)
+            if (item->kind == ItemKind::Struct && structs_.contains(items_.at(item).value))
+                for (const Item* member : as_type_decl(item)->members)
+                    if (const auto* method = as<FunItem>(member)) owners_.emplace(method, as_type_decl(item));
         std::vector<const FunItem*> mains;
         for (const Item* item : file.items) {
             if (item->kind == ItemKind::Struct) continue;
@@ -165,8 +168,9 @@ private:
 
     // ------------------------------------------------------------ structs
 
-    // A struct is supported when it is a plain, non-generic value type whose
-    // fields all come from its primary constructor and have supported types.
+    // A struct is supported when it is a plain value type whose fields all
+    // come from its primary constructor and have supported types; a generic
+    // struct's fields may hold its type parameters.
     // Structs that contain themselves, directly or not, have no finite layout.
     void structs(const File& file) {
         std::vector<const TypeDeclItem*> candidates;
@@ -181,6 +185,8 @@ private:
             changed = false;
             for (const auto* type : candidates) {
                 if (!structs_.contains(items_.at(type).value)) continue;
+                generics_.clear();
+                for (const auto& param : type->generics) generics_.insert(values_.at(param.name.span.lo).value);
                 for (const auto& param : type->ctor_params) {
                     const auto field = types_.binding(values_.at(param.name.span.lo));
                     if (stored(param.type->span, field, "fields")) continue;
@@ -191,13 +197,13 @@ private:
                 }
             }
         }
+        generics_.clear();
     }
 
     bool plain(const TypeDeclItem& type) {
         const bool before = ok_;
         ok_ = true;
         if (!type.attrs.empty()) unsupported(type.attrs.front().span, "attributes");
-        if (!type.generics.empty()) unsupported(type.name.span, "generic structs");
         if (!type.supers.empty()) unsupported(type.supers.front().type->span, "structs that implement interfaces");
         if (type.ctor_params.empty()) unsupported(type.name.span, "structs without fields");
         for (const auto& param : type.ctor_params) {
@@ -234,7 +240,8 @@ private:
             std::vector<usize> out;
             for (const auto& param : type.ctor_params) {
                 // A field holds the structs inside its tuples too, and,
-                // conservatively, those its function types take or return.
+                // conservatively, those its function types take or return
+                // and those a generic struct's type arguments name.
                 // Composite types can share parts, so each is walked once.
                 std::vector<ScalarType> held{types_.binding(values_.at(param.name.span.lo))};
                 std::unordered_set<usize> seen;
@@ -242,15 +249,18 @@ private:
                     const auto field = held.back();
                     held.pop_back();
                     if (field.optional_depth) continue;
-                    if ((field.kind == ScalarType::Tuple || field.kind == ScalarType::Function) &&
+                    if ((field.kind == ScalarType::Tuple || field.kind == ScalarType::Function ||
+                         field.kind == ScalarType::Nominal) &&
                         !seen.insert(field.detail).second)
                         continue;
                     const auto* descriptor = types_.descriptor(field);
                     if (field.kind == ScalarType::Tuple || field.kind == ScalarType::Function)
                         held.insert(held.end(), descriptor->parameters.begin(), descriptor->parameters.end());
                     if (field.kind == ScalarType::Function) held.push_back(descriptor->result);
-                    else if (field.kind == ScalarType::Nominal && by_id.contains(descriptor->declaration.value))
-                        out.push_back(descriptor->declaration.value);
+                    else if (field.kind == ScalarType::Nominal) {
+                        held.insert(held.end(), descriptor->arguments.begin(), descriptor->arguments.end());
+                        if (by_id.contains(descriptor->declaration.value)) out.push_back(descriptor->declaration.value);
+                    }
                 }
             }
             return out;
@@ -311,8 +321,12 @@ private:
         if (type.kind == ScalarType::TypeParameter && !type.optional_depth)
             return generics_.contains(types_.descriptor(type)->declaration.value);
         if (type.kind != ScalarType::Nominal || type.optional_depth) return false;
+        // A generic struct's instance holds values of its arguments.
         const auto* descriptor = types_.descriptor(type);
-        return descriptor && descriptor->arguments.empty() && structs_.contains(descriptor->declaration.value);
+        return descriptor && structs_.contains(descriptor->declaration.value) &&
+               std::ranges::all_of(descriptor->arguments, [&](ScalarType argument) {
+                   return argument.kind != ScalarType::Unit && argument.kind != ScalarType::Never && supported_type(argument);
+               });
     }
 
     void unsupported(Span span, std::string_view what) {
@@ -360,13 +374,15 @@ private:
         ok_ = true;
         current_ = &fun;
         // A generic function's body is checked once, with values of its type
-        // parameters opaque; its instances are checked by instances().
+        // parameters, and those of a generic struct's methods, opaque; its
+        // instances are checked by instances().
         generics_.clear();
+        if (const auto owner = owners_.find(&fun); owner != owners_.end())
+            for (const auto& param : owner->second->generics) generics_.insert(values_.at(param.name.span.lo).value);
         for (const auto& param : fun.sig.generics) generics_.insert(values_.at(param.name.span.lo).value);
         if (!fun.attrs.empty()) unsupported(fun.attrs.front().span, "attributes");
         if (has_modifier(fun.mods, Modifier::Async)) unsupported(fun.name.span, "'async' functions");
         if (has_modifier(fun.mods, Modifier::Unsafe)) unsupported(fun.name.span, "'unsafe' functions");
-        if (!fun.sig.generics.empty() && owners_.contains(&fun)) unsupported(fun.name.span, "generic methods");
         if (fun.sig.throws) unsupported(fun.name.span, "throwing functions");
         if (!fun.body) unsupported(fun.name.span, "functions without a body");
         if (ok_) {
@@ -684,8 +700,7 @@ private:
         }
         if (checked && checked->kind == CallKind::NominalConstructor) {
             // Primary constructors of supported structs.
-            if (checked->state != CallState::Resolved || !checked->type_arguments.empty() ||
-                !supported_type(types_.expression(&call))) {
+            if (checked->state != CallState::Resolved || !supported_type(types_.expression(&call))) {
                 unsupported(call.callee->span, "constructors other than those of supported structs");
                 return;
             }
@@ -694,13 +709,16 @@ private:
         }
         if (checked && checked->kind == CallKind::Method) {
             // Instance methods of supported structs, on an explicit or implicit receiver.
-            const bool resolved = checked->state == CallState::Resolved && checked->target.valid() &&
-                                  checked->type_arguments.empty();
+            const bool resolved = checked->state == CallState::Resolved && checked->target.valid();
             const auto* fun = resolved ? as<FunItem>(resolution_.binding(checked->target).item) : nullptr;
-            if (!fun || !functions_.contains(fun)) {
+            if (!fun || !functions_.contains(fun) || checked->type_arguments.size() != fun->sig.generics.size() ||
+                (checked->receiver && !supported_type(types_.expression(checked->receiver)))) {
                 unsupported(call.callee->span, "calls to methods other than those of supported structs");
                 return;
             }
+            for (const ScalarType argument : checked->type_arguments)
+                if (!stored(call.callee->span, argument, "type arguments")) return;
+            if (!fun->sig.generics.empty() || !owners_.at(fun)->generics.empty()) generic_calls_[current_].push_back(&call);
             // A `mut fun` changes its receiver in place.
             if (has_modifier(fun->mods, Modifier::Mut) && checked->receiver && !place(checked->receiver)) {
                 unsupported(checked->receiver->span, "'mut fun' calls on anything but a local variable or its fields");
@@ -738,8 +756,15 @@ private:
         for (usize i = call.args.size(); i-- > 0;) work.push_back({call.args[i].value, true});
     }
 
+    // A struct's type as its own methods see it, such as `Box<T>`.
+    ScalarType declared(const TypeDeclItem& type) {
+        std::vector<BindingId> parameters;
+        for (const auto& param : type.generics) parameters.push_back(values_.at(param.name.span.lo));
+        return types_.declared(items_.at(&type), parameters);
+    }
+
     // The instances a program needs, from the generic calls of non-generic
-    // functions through those of each instance, with each instance's type
+    // functions and methods through those of each instance, with each instance's type
     // arguments substituted into its calls. Polymorphic recursion would
     // never end, so nesting and the number of instances are bounded (E0602).
     void instances(const File& file, const std::vector<const FunItem*>& methods) {
@@ -763,7 +788,18 @@ private:
             for (const CallExpr* call : it->second) {
                 const CheckedCall& checked = *types_.call(call);
                 const auto& callee = *as<FunItem>(resolution_.binding(checked.target).item);
+                // A method of a generic struct takes the receiver's type
+                // arguments first, then its own.
+                std::vector<BindingId> parameters;
                 std::vector<ScalarType> arguments;
+                if (const auto owner = owners_.find(&callee); owner != owners_.end() && !owner->second->generics.empty()) {
+                    const ScalarType receiver = types_.substitute(
+                        checked.receiver ? types_.expression(checked.receiver) : declared(*owners_.at(from.fun)), from.arguments);
+                    for (const auto& param : owner->second->generics) parameters.push_back(values_.at(param.name.span.lo));
+                    const auto owner_arguments = types_.descriptor(receiver)->arguments;
+                    arguments.insert(arguments.end(), owner_arguments.begin(), owner_arguments.end());
+                }
+                for (const auto& param : callee.sig.generics) parameters.push_back(values_.at(param.name.span.lo));
                 for (const ScalarType argument : checked.type_arguments)
                     arguments.push_back(types_.substitute(argument, from.arguments));
                 if (!seen.insert(key(&callee, arguments)).second) continue;
@@ -778,13 +814,14 @@ private:
                     return false;
                 }
                 Instance next{&callee, {}, from.depth + 1};
-                for (usize i = 0; i < arguments.size(); ++i)
-                    next.arguments.emplace_back(values_.at(callee.sig.generics[i].name.span.lo), arguments[i]);
+                for (usize i = 0; i < arguments.size(); ++i) next.arguments.emplace_back(parameters[i], arguments[i]);
                 work.push_back(std::move(next));
             }
             return true;
         };
-        std::vector<const FunItem*> roots(methods);
+        std::vector<const FunItem*> roots;
+        for (const FunItem* method : methods)
+            if (method->sig.generics.empty() && owners_.at(method)->generics.empty()) roots.push_back(method);
         for (const Item* item : file.items)
             if (const auto* fun = as<FunItem>(item); fun && fun->sig.generics.empty()) roots.push_back(fun);
         for (const FunItem* fun : roots)
@@ -836,7 +873,7 @@ private:
     std::unordered_map<const Item*, BindingId> items_;
     std::unordered_map<u32, BindingId> values_;  // locals, parameters and type parameters by declaration offset
     std::unordered_set<const FunItem*> functions_;
-    std::unordered_set<const FunItem*> owners_;  // methods
+    std::unordered_map<const FunItem*, const TypeDeclItem*> owners_;  // methods of supported structs
     const FunItem* current_ = nullptr;
     std::unordered_set<usize> generics_;  // the current function's type parameters
     std::unordered_map<const FunItem*, std::vector<const CallExpr*>> generic_calls_;

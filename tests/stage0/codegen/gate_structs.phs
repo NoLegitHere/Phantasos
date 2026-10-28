@@ -13,13 +13,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Structs outside the subset: only plain, non-generic structs whose fields all
-// come from the primary constructor and have supported types. A struct that
+// Structs outside the subset: only plain structs whose fields all come from
+// the primary constructor and have supported types. A struct that
 // holds a rejected struct is rejected too.
 
 struct Empty()
-
-struct Wrapper<T>(value: T)
 
 struct Node(value: Int, next: Link)
 struct Link(node: Node)

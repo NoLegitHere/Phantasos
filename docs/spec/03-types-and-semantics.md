@@ -978,36 +978,36 @@ stored-field initialization and global initialization order.
 
 This section describes an implementation limit of stage0, not a language rule.
 Stage0's first native backend lowers only a subset of scalars, plain
-structs and generic functions. The `gate` command
+structs and generic functions and structs. The `gate` command
 runs `check` first. If `check` succeeds, `gate` reports every construct outside
 the subset, so that nothing half-checked reaches code generation:
 
-- **Declarations.** Top-level functions with a body, generic ones included,
-  and plain structs with their methods. A method cannot be generic, and a
-  function or method cannot be `async`, `unsafe` or throwing, or carry
-  attributes. Its parameters have no defaults
+- **Declarations.** Top-level functions with a body, and plain structs with
+  their methods, generic ones included. A function or method cannot be
+  `async`, `unsafe` or throwing, or carry attributes. Its parameters have no defaults
   and are not `inout`; `borrow` and `own` parameters are passed like
   default ones, since stage0 values have no destructors yet. A function
   with an `own` parameter has no function value (3.18). A plain struct
   takes all its fields, at least one, from its primary constructor, without
   conventions or defaults.
-  It has no generic parameters, attributes or conformances, and its body
-  holds only instance methods, `fun` or `mut fun`: no static methods, body
-  fields, `init` or `deinit`. It cannot hold itself through its fields,
-  directly or through other structs.
+  It has no attributes or conformances, and its body holds only instance
+  methods, `fun` or `mut fun`: no static methods, body fields, `init` or
+  `deinit`. It cannot hold itself through its fields, directly, through
+  other structs or through their type arguments.
 - **Types.** `Bool`, `Int8` to `Int64`, `UInt8` to `UInt64`, `Int`, `UInt`,
   `String`, `Unit` and `Never`, without optional wrappers. Parameters and
   locals need one of the value types, so they cannot be `Unit` or `Never`.
   `String` values come from literals and are only passed around whole: as
   locals, arguments, results and fields. A plain struct whose fields all have
-  value types of the subset is a value type too; a struct with a field of
-  any other type is rejected along with the field. So is a non-optional
+  value types of the subset is a value type too, and so is an instance of a
+  generic one whose type arguments are value types of the subset; a struct
+  with a field of any other type is rejected along with the field. So is a non-optional
   tuple whose elements all have value types of the subset, and a
   non-optional, non-throwing function type whose parameters have value types
   of the subset and whose result is a type of the subset. A struct cannot
   take or return itself through a function type in its fields either.
-  Inside a generic function, its own type parameters are value types as
-  well, but not optional ones.
+  Inside a generic function or struct, its own type parameters are value
+  types as well, but not optional ones.
 - **Statements.** `let` and `var` locals, with or without an initializer;
   assignment and compound assignment to locals, to `self` in a `mut fun`,
   and to fields of either at any depth, tuple elements included; tuple
@@ -1038,11 +1038,15 @@ type is still deferred also reports `E0600` and needs an annotation. One
 reported again.
 
 A generic function's body is checked once, with values of its type
-parameters opaque. Code generation then makes one instance of it for each
+parameters opaque, and so are the methods of a generic struct. Code
+generation then makes one instance of such a function or method for each
 distinct list of type arguments that a call needs, starting from the calls
-in non-generic functions and methods and following the calls inside each
-instance with its arguments substituted. A generic function that no such
-chain reaches has no instance. Polymorphic recursion, where an instance calls
+in non-generic functions and in non-generic methods of non-generic structs
+and following the calls inside each instance with its arguments substituted.
+A method of a generic struct takes its receiver's type arguments, followed
+by its own when it is generic. A generic function or method that no such
+chain reaches has no instance, and a generic struct has a layout for each of
+its instance types that the program uses. Polymorphic recursion, where an instance calls
 the same function with bigger type arguments, would need instances without
 end, so stage0 reports `E0602` at the call where the instances nest more
 than 64 levels deep or where the program would need more than 10,000 of
@@ -1091,7 +1095,10 @@ of its own, named after the function, with its type arguments in angle
 brackets, so `identity` called with an `Int` is `identity<Int>` and `pair`
 called with `Int` and `(Bool, String)` is `pair<Int, (Bool, String)>`. An
 overload's suffix comes before them, as in `pick.1<Int>`, and a closure in an
-instance is named after the instance, as in `keep<Bool>$closure0`. A type
+instance is named after the instance, as in `keep<Bool>$closure0`. A method
+instance is named after its receiver's type, such as `Box<Int>.get`, with a
+generic method's own type arguments after its name, as in
+`Box<Int>.with<Bool>`. A type
 argument longer than 256 bytes is cut short with `...`, and when that gives
 two instances the same name, the later one gets a numeric suffix such as
 `.1` after the closing bracket.

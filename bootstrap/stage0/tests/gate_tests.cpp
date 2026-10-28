@@ -212,6 +212,39 @@ fun main(): Int = pair(identity(1), identity<Bool>(true)).0 + count("s", 2)
     body.gate("fun opt<T>(x: T): Int {\n    let y: Int? = 1\n    return 0\n}\nfun main() {}\n",
               {DiagCode::UnsupportedCodegen});
 }
+
+void generic_structs() {
+    // Generic structs and their methods, generic methods included, are
+    // accepted with supported type arguments.
+    Frontend f;
+    f.gate(R"(
+struct Box<T>(var value: T) {
+    fun get(): T = value
+    mut fun set(x: T) { value = x }
+    fun with<U>(u: U): Box<(T, U)> = Box(value: (get(), u))
+}
+struct Plain(n: Int) {
+    fun tag<T>(x: T): (Int, T) = (n, x)
+}
+fun unbox<T>(b: Box<T>): T = b.get()
+fun main(): Int {
+    var b = Box(value: 1)
+    b.set(2)
+    return unbox(b.with(true)).0 + Plain(n: 1).tag("s").0
+}
+)");
+    // A method instance that calls itself on a bigger receiver.
+    Frontend deep;
+    deep.gate("struct W<T>(x: T) {\n    fun grow(n: Int): Int {\n        if n == 0 { return 0 }\n"
+              "        return W(x: (x, x)).grow(n - 1)\n    }\n}\nfun main(): Int = W(x: 1).grow(3)\n",
+              {DiagCode::InstanceLimit});
+    // A struct that holds itself through another's type argument has no
+    // finite layout, and Unit is not a type argument of a value.
+    Frontend looped;
+    looped.gate("struct B<T>(x: T)\nstruct R<T>(b: B<R<T>>)\nfun main() {}\n", {DiagCode::UnsupportedCodegen});
+    Frontend unit;
+    unit.gate("struct B<T>(x: T)\nfun main() {\n    let b = B(x: ())\n}\n", {DiagCode::UnsupportedCodegen});
+}
 }  // namespace
 
 int main() {
@@ -223,5 +256,6 @@ int main() {
     gated_by_check_errors();
     long_trees();
     generic_functions();
+    generic_structs();
     std::println("gate tests passed");
 }

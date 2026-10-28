@@ -107,7 +107,7 @@ foundation. Complete.
 - [ ] **Generics codegen (M6).** Monomorphized code for generic functions,
   structs and methods, with interfaces as bounds through static dispatch.
   - [x] Generic functions, with a limit on instances (E0602).
-  - [ ] Generic structs and their methods.
+  - [x] Generic structs and their methods.
   - [ ] Values of generic functions, and generic closures.
   - [ ] Interfaces as bounds, through witnesses.
   - [ ] Generics samples and run tests.

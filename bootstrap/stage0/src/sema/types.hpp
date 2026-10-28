@@ -265,6 +265,9 @@ public:
     // before a call is not used after it.
     using TypeArgument = std::pair<BindingId, ScalarType>;
     ScalarType substitute(ScalarType type, std::span<const TypeArgument> arguments);
+    // A nominal type as its own declaration sees it, such as `Box<T>` inside
+    // `Box`: its type parameters, by binding, are its arguments.
+    ScalarType declared(BindingId declaration, std::span<const BindingId> parameters);
 
 private:
     friend class ScalarChecker;

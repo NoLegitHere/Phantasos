@@ -20,6 +20,7 @@
 #include <span>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <variant>
 #include <vector>
 
@@ -113,16 +114,19 @@ public:
     Program run(const File& file) {
         std::unordered_map<std::string, u32> seen;
         // Every struct in the file passed the gate; a struct's layout follows
-        // those of the structs it holds.
+        // those of the structs it holds. A generic struct has a layout per
+        // instance, built when a type first needs it.
         for (const Item* item : file.items)
-            if (item->kind == ItemKind::Struct) (void)structure(items_.at(item));
+            if (item->kind == ItemKind::Struct && as_type_decl(item)->generics.empty())
+                (void)structure(types_.declared(items_.at(item), {}));
         const auto add = [&](const FunItem& fun, std::string name) {
             // Overloads get a numeric suffix so that every name is unique.
             const u32 index = seen[name]++;
             if (index) name = std::format("{}.{}", name, index);
-            // A generic function is only a template; each instance a call
-            // needs is added when the call is lowered.
-            if (!fun.sig.generics.empty()) {
+            // A generic function, or a method of a generic struct, is only a
+            // template; each instance a call needs is added when the call is
+            // lowered.
+            if (generic(fun)) {
                 templates_.emplace(&fun, std::move(name));
                 return;
             }
@@ -138,7 +142,7 @@ public:
                 const auto& type = *as_type_decl(item);
                 for (const Item* member : type.members)
                     if (const auto* method = as<FunItem>(member)) {
-                        owners_.emplace(method, items_.at(item));
+                        owners_.emplace(method, &type);
                         add(*method, std::format("{}.{}", names_.str(type.name.sym), names_.str(method->name.sym)));
                     }
                 continue;
@@ -229,8 +233,7 @@ private:
         if (type.kind == ScalarType::Tuple) return tuple(type);
         if (type.kind == ScalarType::Function) return function_type(type);
         if (type.kind != ScalarType::Nominal) return scalar_type(type);
-        PHS_ASSERT(type.optional_depth == 0);
-        return structure(types_.descriptor(type)->declaration);
+        return structure(type);
     }
 
     // A tuple type's layout, built once per type; its fields are the elements.
@@ -273,22 +276,28 @@ private:
         return aggregate(index);
     }
 
-    // A struct's layout, built once; the gate rejects recursive structs.
-    Type structure(BindingId declaration) {
-        if (const auto it = layouts_.find(declaration.value); it != layouts_.end()) return aggregate(it->second);
-        const auto& item = *as_type_decl(resolution_.binding(declaration).item);
+    // A struct's layout, built once per instance; the gate rejects recursive
+    // structs. A generic struct's fields take its instance's type arguments.
+    Type structure(ScalarType type) {
+        PHS_ASSERT(type.optional_depth == 0);
+        if (const auto it = layouts_.find(type.detail); it != layouts_.end()) return aggregate(it->second);
+        const auto descriptor = *types_.descriptor(type);  // a copy, like function_type's
+        const auto& item = *as_type_decl(resolution_.binding(descriptor.declaration).item);
+        std::vector<ScalarTypes::TypeArgument> arguments;
+        for (usize i = 0; i < item.generics.size(); ++i)
+            arguments.emplace_back(values_.at(item.generics[i].name.span.lo), descriptor.arguments[i]);
         Layout layout;
-        layout.name = names_.str(item.name.sym);
+        layout.name = arguments.empty() ? std::string(names_.str(item.name.sym)) : types_.type_name(type, resolution_, names_);
         for (usize i = 0; i < item.ctor_params.size(); ++i) {
             const auto& param = item.ctor_params[i];
-            layout.fields.push_back(lower_type(binding_type(values_.at(param.name.span.lo))));
+            layout.fields.push_back(lower_type(types_.substitute(types_.binding(values_.at(param.name.span.lo)), arguments)));
             layout.names.emplace_back(names_.str(param.name.sym));
             fields_.emplace(param.name.span.lo, static_cast<u32>(i));
         }
         place_fields(program_, layout);
         const auto index = static_cast<u32>(program_.layouts.size());
         program_.layouts.push_back(std::move(layout));
-        layouts_.emplace(declaration.value, index);
+        layouts_.emplace(type.detail, index);
         return aggregate(index);
     }
     // The declaration index of the field a member expression reads.
@@ -319,6 +328,17 @@ private:
         return fields_.at(binding.name.span.lo);
     }
     static bool mutating(const FunItem& fun) { return has_modifier(fun.mods, Modifier::Mut); }
+    // Whether a function has instances: it is generic, or a method of a generic struct.
+    bool generic(const FunItem& fun) const {
+        const auto owner = owners_.find(&fun);
+        return !fun.sig.generics.empty() || (owner != owners_.end() && !owner->second->generics.empty());
+    }
+    // A struct's type as its own methods see it, such as `Box<T>`.
+    ScalarType declared(const TypeDeclItem& type) {
+        std::vector<BindingId> parameters;
+        for (const auto& param : type.generics) parameters.push_back(values_.at(param.name.span.lo));
+        return types_.declared(items_.at(&type), parameters);
+    }
     bool indirect(const CallExpr& call) const {
         const CheckedCall* checked = types_.call(&call);
         return checked && checked->kind == CallKind::IndirectFunction;
@@ -355,7 +375,7 @@ private:
         // A method's receiver is its hidden first parameter (abi.md A.6),
         // inout for a `mut fun`.
         if (const auto owner = owners_.find(&item); owner != owners_.end()) {
-            self_ = reg(structure(owner->second));
+            self_ = reg(lower_type(concrete(declared(*owner->second))));
             if (mutating(item)) fun_->inout = {true};
         }
         for (const auto& param : item.sig.params)
@@ -1082,7 +1102,15 @@ private:
             ordered.front() = owners.back();
         }
         const Reg dst = has_value(type) ? reg(type) : Reg{};
-        const u32 target = callee.sig.generics.empty() ? functions_.at(&callee) : instance(callee, checked.type_arguments);
+        u32 target;
+        if (!generic(callee)) target = functions_.at(&callee);
+        else if (!method || owners_.at(&callee)->generics.empty()) target = instance(callee, {}, checked.type_arguments);
+        else {
+            // A method of a generic struct takes the type arguments of its
+            // receiver; an implicit one is the current instance's.
+            const ScalarType self = checked.receiver ? scalar(checked.receiver) : concrete(declared(*owners_.at(&callee)));
+            target = instance(callee, self, checked.type_arguments);
+        }
         emit({.op = Op::Call, .dst = dst, .callee = target, .args = std::move(ordered)});
         if (type == Type::Never) end(Term::Unreachable);
         else if (inout) rebuild(receiver, owners);
@@ -1094,26 +1122,40 @@ private:
     // The function of a generic function's instance for a call's type
     // arguments, added the first time a call needs it. The gate has bounded
     // how many there are (E0602).
-    u32 instance(const FunItem& callee, std::span<const ScalarType> type_arguments) {
-        std::vector<ScalarType> arguments;
-        std::string key = std::to_string(reinterpret_cast<std::uintptr_t>(&callee));
-        for (const ScalarType argument : type_arguments) {
-            arguments.push_back(concrete(argument));
-            key += std::format(":{}.{}.{}", static_cast<int>(arguments.back().kind), arguments.back().optional_depth,
-                               arguments.back().detail);
-        }
-        if (const auto it = instances_.find(key); it != instances_.end()) return it->second;
-        std::string name = templates_.at(&callee) + "<";
+    // A method of a generic struct also takes the type arguments of `self`,
+    // its receiver's type, first, and is named after that type.
+    u32 instance(const FunItem& callee, ScalarType self, std::span<const ScalarType> type_arguments) {
         PendingFunction pending{&callee, static_cast<u32>(program_.functions.size()), {}};
-        for (usize i = 0; i < arguments.size(); ++i) {
-            if (i) name += ", ";
-            name += types_.type_name(arguments[i], resolution_, names_, kArgumentNameLimit);
-            pending.env.emplace_back(values_.at(callee.sig.generics[i].name.span.lo), arguments[i]);
+        std::string name = templates_.at(&callee);
+        if (self.kind == ScalarType::Nominal) {
+            const auto& owner = *owners_.at(&callee);
+            const auto owner_arguments = types_.descriptor(self)->arguments;
+            for (usize i = 0; i < owner.generics.size(); ++i)
+                pending.env.emplace_back(values_.at(owner.generics[i].name.span.lo), owner_arguments[i]);
+            name = types_.type_name(self, resolution_, names_, kArgumentNameLimit) +
+                   name.substr(names_.str(owner.name.sym).size());
         }
-        name += ">";
+        for (usize i = 0; i < type_arguments.size(); ++i)
+            pending.env.emplace_back(values_.at(callee.sig.generics[i].name.span.lo), concrete(type_arguments[i]));
+        std::string key = std::to_string(reinterpret_cast<std::uintptr_t>(&callee));
+        for (const auto& [parameter, argument] : pending.env)
+            key += std::format(":{}.{}.{}", static_cast<int>(argument.kind), argument.optional_depth, argument.detail);
+        if (const auto it = instances_.find(key); it != instances_.end()) return it->second;
+        if (!type_arguments.empty()) {
+            name += "<";
+            for (usize i = 0; i < type_arguments.size(); ++i) {
+                if (i) name += ", ";
+                name += types_.type_name(pending.env[pending.env.size() - type_arguments.size() + i].second, resolution_,
+                                         names_, kArgumentNameLimit);
+            }
+            name += ">";
+        }
         // Long arguments are elided, so distinct instances can share a name;
-        // later ones get a numeric suffix.
-        if (const u32 clash = instance_names_[name]++) name += std::format(".{}", clash);
+        // later ones get the first numeric suffix no other instance has.
+        // Every instance name holds a '<', so other functions never clash.
+        std::string unique = name;
+        for (u32 n = 1; !instance_names_.insert(unique).second; ++n) unique = std::format("{}.{}", name, n);
+        name = std::move(unique);
         const auto caller = static_cast<usize>(fun_ - program_.functions.data());
         auto& out = program_.functions.emplace_back();
         fun_ = &program_.functions[caller];
@@ -1130,17 +1172,17 @@ private:
     std::unordered_map<const Item*, BindingId> items_;
     std::unordered_map<u32, BindingId> values_;  // locals and parameters by declaration offset
     std::unordered_map<const FunItem*, u32> functions_;  // non-generic functions
-    std::unordered_map<const FunItem*, std::string> templates_;  // generic functions to their base names
+    std::unordered_map<const FunItem*, std::string> templates_;  // functions with instances to their base names
     std::unordered_map<std::string, u32> instances_;  // generic function and type arguments to its instance
-    std::unordered_map<std::string, u32> instance_names_;  // instances so far with each name
+    std::unordered_set<std::string> instance_names_;
     std::vector<PendingFunction> funs_;
     std::vector<ScalarTypes::TypeArgument> env_;  // the type arguments of the instance being lowered
     std::unordered_map<std::string, u64> strings_;  // literal bytes to their index in program_.strings
-    std::unordered_map<usize, u32> layouts_;  // struct declaration binding to its index in program_.layouts
+    std::unordered_map<usize, u32> layouts_;  // struct type descriptor to its index in program_.layouts
     std::unordered_map<usize, u32> tuples_;   // tuple type descriptor to its index in program_.layouts
     std::unordered_map<usize, u32> function_types_;  // function type descriptor to its index in program_.layouts
     std::unordered_map<u32, u32> fields_;     // field declaration offset to its declaration index
-    std::unordered_map<const FunItem*, BindingId> owners_;  // a method's struct
+    std::unordered_map<const FunItem*, const TypeDeclItem*> owners_;  // a method's struct
     Reg self_;  // the current method's receiver
     Program program_;
     Function* fun_ = nullptr;

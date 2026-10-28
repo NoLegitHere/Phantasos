@@ -1285,14 +1285,14 @@ An expression is consumed when it is:
 
 - the initializer of a `let` or `var`, or the value of a plain assignment;
 - the value of a `return`, the expression body of a function with a
-  result, or the last expression of a closure body;
+  result (declared or inferred), or the last expression of a closure body;
 - an argument for an `own` parameter, or for a stored field of a primary
   constructor;
 - an element of a tuple or array literal, or a value captured by a closure.
 
 Consuming an `if`, `match` or `unsafe` block consumes the result of each
-branch, and consuming `a ?? b`, `a!`, `shared a` or `a as T` consumes its
-operands. Every other read, such as an operand of an operator, a receiver or
+branch, and consuming `a ?? b`, `a!`, `shared a`, `a as T`, `try a` or
+`try? a` consumes its operands. Every other read, such as an operand of an operator, a receiver or
 an argument for a borrowed parameter, only borrows the value.
 
 Moves are tracked for the callable's locals and its `own` parameters. Using
@@ -1301,10 +1301,11 @@ it moved on every path that reaches the use, and "may have been moved" when
 it moved on only some of them. A value that moves in a loop body has moved
 when the next iteration starts. A `defer` cleanup runs at each exit of its
 scope (its end, `break`, `continue`, `return`, `throw`, and an error that
-`try` propagates or `try?` catches), so its moves
-happen there, and it cannot use a value that moved after it was registered.
-Arguments run left to right, so
-`Box(a, a == "x")` reads `a` after moving it. Assigning a `var`, or running
+`try` propagates or `try?` catches, which leaves from the call that throws
+it), so its moves happen there, and it cannot use a value that moved after
+it was registered. Arguments run left to right, so `Box(a, a == "x")` reads
+`a` after moving it. A default argument that moves an earlier `own`
+parameter may have moved it for the later defaults and the body. Assigning a `var`, or running
 a declaration again, gives the binding a new value. Each moved binding is
 reported once until it moves again, and unreachable code reports nothing.
 

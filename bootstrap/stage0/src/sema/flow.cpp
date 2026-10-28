@@ -208,17 +208,17 @@ public:
             const auto [item, owner] = work.back();
             work.pop_back();
             if (const auto* type = as_type_decl(item)) {
-                defaults(type->ctor_params);
+                const auto moved = defaults(type->ctor_params);
                 for (const auto& base : type->supers)
-                    for (const auto& arg : base.args) callable(type->ctor_params, arg.value, nullptr);
+                    for (const auto& arg : base.args) callable(type->ctor_params, arg.value, nullptr, moved);
                 for (const Item* member : type->members) work.push_back({member, type});
             } else if (const auto* ext = as<ExternItem>(item)) {
                 for (const Item* nested : ext->items) work.push_back({nested, owner});
             } else if (const auto* fun = as<FunItem>(item)) {
-                defaults(fun->sig.params);
+                const auto moved = defaults(fun->sig.params);
                 if (fun->body) {
                     receiver(owner, fun);
-                    callable(fun->sig.params, fun->body, fun);
+                    callable(fun->sig.params, fun->body, fun, moved);
                     receiver(nullptr, nullptr);
                 }
             } else if (const auto* var = as<VarItem>(item)) {
@@ -230,10 +230,11 @@ public:
                     receiver(nullptr, nullptr);
                 }
             } else if (const auto* init = as<InitItem>(item)) {
-                defaults(init->params);
+                const auto moved = defaults(init->params);
                 // Construction rules for `self` are separate, but closures still capture it.
                 capturing_receiver(owner);
-                if (init->body) callable(init->has_params || !owner ? init->params : owner->ctor_params, init->body, nullptr);
+                if (init->body && (init->has_params || !owner)) callable(init->params, init->body, nullptr, moved);
+                else if (init->body) callable(owner->ctor_params, init->body, nullptr);
                 receiver(nullptr, nullptr);
             } else if (const auto* deinit = as<DeinitItem>(item)) {
                 capturing_receiver(owner);
@@ -555,13 +556,23 @@ private:
     }
 
     // Defaults and initializers are separate roots with their own locals. Defaults keep the parameter
-    // list so that writes to earlier parameters are still checked.
-    void defaults(List<Param> params) {
-        for (const auto& param : params)
-            if (param.default_value) callable(params, param.default_value, nullptr);
+    // list so that writes to earlier parameters are still checked. An omitted argument's default runs
+    // before the later defaults and the body, so the `own` parameters it may move are passed on as
+    // possibly moved; the result has the move site of each, by parameter index.
+    using ParamMoves = std::vector<std::optional<Span>>;
+    ParamMoves defaults(List<Param> params) {
+        ParamMoves moved(params.size());
+        for (const auto& param : params) {
+            if (!param.default_value) continue;
+            const auto after = callable(params, param.default_value, nullptr, moved);
+            for (usize i = 0; i < moved.size(); ++i)
+                if (!moved[i]) moved[i] = after[i];
+        }
+        return moved;
     }
 
-    void callable(List<Param> params, const Expr* body, const FunItem* fun) {
+    // Returns where the body may move each `own` parameter, by index, on the paths that finish.
+    ParamMoves callable(List<Param> params, const Expr* body, const FunItem* fun, const ParamMoves& moved = {}) {
         start(body);
         for (const auto& param : params) {
             params_.emplace(param.name.span.lo, &param);
@@ -569,9 +580,20 @@ private:
         }
         move_sites_.assign(movables_, Span{});
         State state = live();
+        for (usize i = 0; i < moved.size(); ++i)
+            if (moved[i]) {
+                const usize bit = owned_.find(params[i].name.span.lo)->second;
+                state.moved.set(bit, true);
+                move_sites_[bit] = *moved[i];
+            }
         // An expression body's value moves out as the result (3.30).
-        if (fun && fun->expr_body && returns_value(*fun)) consume(body);
+        if (fun && fun->expr_body && result(*fun) != ScalarType{ScalarType::Unit}) consume(body);
         eval(body, state);
+        ParamMoves after(params.size());
+        if (state.live)
+            for (usize i = 0; i < params.size(); ++i)
+                if (const auto it = owned_.find(params[i].name.span.lo); it != owned_.end() && state.moved.test(it->second))
+                    after[i] = move_sites_[it->second];
         if (fun && !fun->expr_body && state.live && returns_value(*fun)) {
             const Span end{body->span.file, body->span.hi - 1, body->span.hi};
             auto& d = error(DiagCode::MissingReturn, end, "function '{}' must return '{}' on every path",
@@ -595,6 +617,7 @@ private:
             consume(next.closure->body);
             eval(next.closure->body, closure_state);
         }
+        return after;
     }
 
     // Resets the per-callable tables and registers the locals of body.
@@ -726,7 +749,8 @@ private:
                 case ExprKind::Array: for (const Expr* elem : cast<ArrayExpr>(expr)->elems) work.push_back(elem); break;
                 case ExprKind::Unwrap: work.push_back(cast<UnwrapExpr>(expr)->operand); break;
                 case ExprKind::Unary:
-                    if (cast<UnaryExpr>(expr)->op == UnOp::Share) work.push_back(cast<UnaryExpr>(expr)->operand);
+                    if (const auto op = cast<UnaryExpr>(expr)->op; op == UnOp::Share || op == UnOp::Try || op == UnOp::TryOpt)
+                        work.push_back(cast<UnaryExpr>(expr)->operand);
                     break;
                 case ExprKind::Cast:
                     if (cast<CastExpr>(expr)->op != CastOp::Is) work.push_back(cast<CastExpr>(expr)->operand);
@@ -1062,6 +1086,29 @@ private:
         return id.valid() && resolution_.binding(id).kind == BindingKind::BuiltinValue &&
                names_.str(resolution_.binding(id).name.sym) == "panic";
     }
+    // Whether a call can throw: by the callee's signature or function type, or
+    // for a constructor by its type's `init`s. An unknown callee may.
+    bool throws(const CallExpr& call) const {
+        const auto* checked = types_.call(&call);
+        if (!checked || checked->state != CallState::Resolved) return !panics(call);
+        switch (checked->kind) {
+            case CallKind::NumericConversion:
+            case CallKind::Builtin: return false;
+            case CallKind::IndirectFunction: {
+                const auto* function = types_.descriptor(types_.expression(call.callee));
+                return !function || function->throws;
+            }
+            default: break;
+        }
+        const Item* item = checked->target.valid() ? resolution_.binding(checked->target).item : nullptr;
+        if (const auto* fun = as<FunItem>(item)) return fun->sig.throws;
+        if (const auto* type = item ? as_type_decl(item) : nullptr) {
+            for (const Item* member : type->members)
+                if (const auto* init = as<InitItem>(member); init && init->throws) return true;
+            return false;
+        }
+        return !panics(call);
+    }
     bool diverges(const CallExpr& call) const {
         return types_.expression(&call) == ScalarType{ScalarType::Never} || panics(call);
     }
@@ -1080,11 +1127,11 @@ private:
                 else if (const auto* tuple = as<TupleExpr>(expr)) for (const Expr* elem : tuple->elems) consume(elem);
                 else if (const auto* array = as<ArrayExpr>(expr)) for (const Expr* elem : array->elems) consume(elem);
                 if (const auto* unary = as<UnaryExpr>(expr); unary && unary->op == UnOp::Try && caught_.empty()) {
-                    // An error that `try` propagates leaves the callable after
-                    // its operand runs, through every pending cleanup.
+                    // An error that `try` propagates leaves the callable from
+                    // the call that throws it, through every pending cleanup.
+                    caught_.push_back({dead(), 0});
                     eval(unary->operand, state);
-                    State exit = state;
-                    cleanups(0, exit);
+                    caught_.pop_back();
                     continue;
                 }
                 if (const auto* unary = as<UnaryExpr>(expr); unary && unary->op == UnOp::TryOpt) {
@@ -1107,9 +1154,9 @@ private:
             else if (const auto* closure = as<ClosureExpr>(expr)) create(*closure, state);
             else if (const auto* call = as<CallExpr>(expr)) {
                 mutating_call(*call);
-                // Any call inside `try?` may throw after its operands have run;
-                // a panic aborts instead (3.7).
-                if (!caught_.empty() && !panics(*call)) catch_error(state);
+                // A throwing call inside `try` or `try?` may leave after its
+                // operands have run; a panic aborts instead (3.7).
+                if (!caught_.empty() && throws(*call)) catch_error(state);
                 if (diverges(*call)) state = dead();
             } else if (conditional(*expr)) {
                 // The right operand runs on only some paths.
@@ -1387,7 +1434,9 @@ private:
         State state;  // where the error exits of a `try?` resume
         usize defers; // defers_ size when the `try?` started
     };
-    std::vector<Catch> caught_;  // enclosing `try?` expressions
+    // Enclosing `try?` expressions, under the outermost `try` that propagates
+    // errors out of the callable (with defers 0 and a discarded state).
+    std::vector<Catch> caught_;
     usize tracked_ = 0;
     FlatMap<u32, usize> owned_;      // name span.lo -> move bit of an `own` parameter
     FlatSet<const Expr*> consumed_;  // names whose value is moved where they are read

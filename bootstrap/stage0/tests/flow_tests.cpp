@@ -627,6 +627,22 @@ void moves() {
         {"fun g() throws {}\nfun f() throws { var a = \"a\"\ndefer { look(a) }\ntry g()\ntake(a)\na = \"restored\" }", {}},
         {"fun f() { let g = { -> let a = \"a\"\ndefer { look(a) }\na } }", {M}},
         {"fun f() { let g = { -> let a = \"a\"\nlook(a)\na } }", {}},
+        // Inferred expression-body results move too.
+        {"fun f() = unsafe { let a = \"a\"\ndefer { look(a) }\na }", {M}},
+        {"fun f() = unsafe { let a = \"a\"\ndefer { look(a) }\nlook(a) }", {}},
+        // `try` and `try?` pass their operand's result on.
+        {"fun f() { let a = \"a\"\nlet b = try? unsafe { a }\nlook(a) }", {M}},
+        {"fun f() throws { let a = \"a\"\nlet b = try unsafe { a }\nlook(a) }", {M}},
+        // A propagated error leaves from the call that throws it.
+        {"fun g() throws {}\nfun f() throws { var a = \"a\"\ndefer { look(a) }\ntake(a)\ntry unsafe { g()\na = \"restored\" } }", {M}},
+        {"fun g() throws {}\nfun f() throws { var a = \"a\"\ndefer { look(a) }\ntry unsafe { g()\ntake(a) }\na = \"x\" }", {}},
+        {"fun g() throws {}\nfun f() { var a = \"a\"\nlet x = try? unsafe { defer { look(a) }\ng()\ntake(a)\n1 }\na = \"x\" }", {M}},
+        {"fun g() throws {}\nfun f() { var a = \"a\"\nlet x = try? unsafe { g()\ntake(a)\na = \"b\"\n1 }\nlook(a) }", {}},
+        // A default runs before the later defaults and the body.
+        {"fun f(a: own String, b: Int = unsafe { take(a)\n0 }) { look(a) }", {M}},
+        {"fun f(a: own String, b: Int = unsafe { take(a)\n0 }, c: Int = unsafe { look(a)\n0 }) {}", {M}},
+        {"fun f(a: own String, b: Int = unsafe { look(a)\n0 }) { look(a) }", {}},
+        {"struct S(a: own String, b: Int = unsafe { take(a)\n0 }) { init(a: own String, b: Int = unsafe { take(a)\n0 }) { look(a) } }", {M}},
         // A moved value is reported once until it moves again.
         {"fun f() { let a = \"a\"\ntake(a)\nlook(a)\nlook(a)\ntake(a)\nlook(a) }", {M, M}},
         // Unreachable code reports nothing.

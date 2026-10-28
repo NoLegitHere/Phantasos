@@ -96,14 +96,14 @@ foundation. Complete.
   - [x] `own` and `borrow` parameters in code generation, so closures can
     capture non-Copy parameters.
   - [x] Closure samples and run tests.
-- [ ] **Next: ownership and moves (M5).** `check` enforces the move rules of
+- [x] **Ownership and moves (M5).** `check` enforces the move rules of
   spec 3.4 before destructors exist: no use after a move, no moving out of a
   borrow, and exclusive `inout` arguments.
   - [x] Use after move for locals and `own` parameters (E0504).
   - [x] A built-in `.clone()` for String and structurally clonable values.
   - [x] Moving out of borrowed parameters, `self`, fields and captures (E0505).
   - [x] Exclusive `inout` arguments (E0506).
-  - [ ] Move samples and run tests.
+  - [x] Move samples and run tests.
 - [ ] Generic base substitution and built-in traits. Instantiate
   generic base/interface graphs, derive `Copy`/`Sendable`/`Error`, and complete
   generic method contracts, associated defaults and receiver-dependent contexts.

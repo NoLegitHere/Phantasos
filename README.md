@@ -1,121 +1,60 @@
 # Phantasos
 
-Phantasos is an object-oriented programming language that compiles to native
-code. It combines:
+Phantasos is a programming language that compiles to native code. It is in
+early development: the language is specified in draft form, and the bootstrap
+compiler runs a growing subset of it on Linux x86_64.
 
-- **OOP that is safe by default**: immutable by default, deterministic
-  construction and destruction (`init`/`deinit`), single inheritance with
-  classes `final` by default, interfaces, sealed hierarchies, and no `null`.
-- **Memory safety without a garbage collector**: single ownership with moves,
-  opt-in `shared` (ARC) and `weak` references, and compile-time checked
-  borrows that need no lifetime annotations.
-- **Typed errors**: `throws(E)` is checked at compile time and compiled as
-  zero-cost return values, with no stack unwinding.
-- **Concurrency safety**: `async`/`await`, actors, and `Sendable` checking.
-- **A toolchain written from scratch**: our own x86 backend, our own PE/ELF
-  linker, and our own C11 frontend. It uses no LLVM and no libc
-  (glibc/musl/MSVC CRT).
+The design goals, from [ADR 0002](docs/adr/0002-foundational-decisions.md),
+are:
 
-Supported targets: **Windows x64**, **Linux x86_64**, **Linux i386**.
+- Object-oriented, immutable by default, with no `null`: single class
+  inheritance, `final` by default, interfaces with default methods and sealed
+  hierarchies.
+- Memory safety without a garbage collector: single ownership with moves,
+  borrows checked at compile time without lifetime annotations, opt-in
+  `shared` (reference counted) and `weak` references, and deterministic
+  `deinit`.
+- Typed errors with `throws(E)`, returned as values rather than unwound.
+- `async`/`await`, actors and `Sendable` checking.
+- A toolchain of its own: x86 backends, object writers and linkers for PE
+  and ELF, with no LLVM and no C library. Planned targets are Windows x64,
+  Linux x86_64 and Linux i386.
+
+Most of this is not implemented yet. The [roadmap](docs/roadmap.md) tracks
+what is.
 
 ## Status
 
-The project is in **bootstrap phase P1**. The C++23 stage0 compiler in
-[`bootstrap/stage0`](bootstrap/stage0) has these parts done and tested on
-Windows x64 and Linux x86_64:
+Bootstrap phase P1. The stage0 compiler in [`bootstrap/stage0`](bootstrap/stage0)
+is written in C++23 and builds and passes its tests on Windows x64 and Linux
+x86_64. It has:
 
-- [x] Lexer: significant newlines, nested comments, string interpolation,
-  and full literal support
-- [x] Parser for Phantasos-Core, which builds an AST with error recovery and
-  stable diagnostic codes
-- [x] Initial semantic validation: bindings, declarations and control flow
-- [x] File-local lexical name resolution with retained bindings and overload sets
-- [x] Initial scalar type checking, contextual literals and binding inference
-- [x] Scalar function signatures, return inference and direct call/overload checking
-- [x] Initial numeric conversions: widening, checked/truncating integers and optional result facts
-- [x] Non-generic alias expansion, cycle diagnostics and canonical type identities
-- [x] Initial composite/nominal identities, arrays, primary constructors and typed indirect calls
-- [x] Direct nominal field/method lookup, static/instance access and member call targets
-- [x] Initial inheritance graphs, inherited lookup, overrides, method conformance and nominal upcasts
-- [x] Initial explicit generic applications and alias/signature/member substitution
-- [x] Initial argument-based generic inference and concrete interface/where constraints
-- [x] Initial generic body checking, bound-based lookup, associated types/Self and dependent witnesses
-- [x] Flow checks: all-path returns, definite initialization, immutable bindings and fields, `mut fun` receivers and branch results
-- [x] Ownership: use after move, moving out of borrows, exclusive `inout` arguments and a built-in `.clone()`
-- [ ] Generic base substitution, built-in traits and remaining dependent contracts
-- [x] Native scalar slice: MIR, naive x86_64 code, and static Linux ELF executables with a stage0 runtime (`build`)
-- [x] Output: string literals and a prelude `print` for `String`, `Int`, `UInt` and `Bool`
-- [x] Structs and tuples: struct values, field assignment, methods including `mut fun`, and tuples
-- [x] Function values: named functions passed, returned, stored and called indirectly
-- [x] Closures: brace closures that capture by value, with a stage0 heap for their environments
-- [x] Generics: monomorphized generic functions, structs, methods and function values, with interfaces as bounds through static dispatch
-- [ ] Windows PE/COFF output, a general linker and runtime, and code generation for the rest of the language
-- [ ] Workspace-aware build driver
+- A lexer and parser for Phantasos-Core, with error recovery and stable
+  diagnostic codes.
+- `check`: name resolution, type checking (including generics, interfaces
+  and inheritance), flow checks (returns, initialization, mutability) and
+  ownership checks (use after move, moves out of borrows, exclusive `inout`).
+  Parts of the type system are still incomplete, so a program that passes
+  `check` is not yet guaranteed to be valid.
+- Native code for a subset of Core: integers, `Bool`, `String` literals,
+  structs, tuples, methods, function values, closures, and generic functions
+  and structs with interface bounds. `build` turns such a program into a
+  static Linux x86_64 executable with a small runtime of its own.
+
+Not done yet: Windows executables, arrays, optionals, classes, enums, error
+handling, destructors, a standard library, and package/workspace builds.
 
 The language is specified in [`docs/spec`](docs/spec), with a standalone
 [Core EBNF grammar](docs/spec/phantasos.ebnf).
-See the [bootstrap roadmap](docs/roadmap.md) for milestones and the next steps.
 
-`check <file.phs>` runs structural semantic validation, lexical name
-resolution and initial scalar type checking after a successful parse. It reports
-duplicate bindings, invalid declaration/control-flow contexts, unknown value/type names and conflicting
-declarations. It retains bindings for forward references, generic scopes,
-shadowing and overload sets. Scalar checks cover built-in annotations, literal
-ranges, variable inference, operators, Boolean conditions, parameter defaults,
-explicit returns and assignments, with retained type facts. File-level function
-calls check argument types, labels and defaults, select scalar overloads, and
-retain the target and parameter mapping. Expression-bodied returns infer scalar
-types, including forward calls. `parse` continues to report syntax only.
-Numeric conversions validate built-in identity, arity, operand types and widening
-ranges. Checked integer conversions return `T?`, with optional type facts retained
-through bindings, signatures and calls. Transparent non-generic aliases expand
-to built-ins, optional wrappers or nominal declaration identities. Expansion
-checks cycles before value typing and supports known direct alias-qualified
-type members and numeric conversion targets. Canonical descriptors represent
-fully known arrays, pointers, ownership wrappers, function signatures and
-non-generic nominal instances. Array literals/indexing, exact composite matches,
-primary constructor arguments and typed indirect calls are checked. Direct fields
-and methods on known nominal receivers retain declaration/overload identities;
-method calls check arguments and infer returns. Static/instance access is checked
-through types, aliases, ordinary instances and implicit receivers. Non-generic
-hierarchies validate base kinds, finality and cycles. Inherited member/type lookup,
-method overrides, supported interface/abstract method requirements and nominal
-upcasts retain hierarchy and conformance-witness records. Explicit concrete generic
-applications substitute transparent aliases, constructor/function signatures and
-direct fields/methods of owners without bases; nominal arguments are invariant.
-Supplied arguments infer type parameters for functions, methods and nominal
-primary constructors. Concrete interface bounds and `where` clauses require
-declared ancestry and compatible supported implementations. Generic bodies use
-symbolic parameters and declared bounds once; associated projections and `Self`
-substitute for concrete calls and supported witnesses. General inference/bound solving, generic inheritance,
-function-value inference, associated defaults, remaining numeric policies,
-remaining dependent/property contracts, optional/ownership-wrapper member access and ownership analysis remain
-pending, so passing `check` does not yet establish program validity. After typing succeeds, `check`
-also reports missing returns, reads of uninitialized locals, assignments to immutable bindings and fields,
-`mut fun` calls on immutable receivers,
-and checks used `if`/`match`/block results against their expected type. An `if` without `else`
-produces `none` where an optional is expected. Imports explicitly report that
-package loading is unavailable.
+## What runs today
 
-`gate <file.phs>` runs `check`, then reports every construct that stage0's
-first native backend cannot compile yet. That backend covers Bool, integer and
-String values, plain struct values with field reads, field assignment and
-methods, tuples, functions, function values, closures, generics with
-interface bounds, locals, loops, calls, integer
-arithmetic and
-`print`, and needs a `fun main()` that returns `Int` or nothing. See
-[spec 3.25](docs/spec/03-types-and-semantics.md) for the full subset.
-`mir <file.phs>` prints the typed MIR for a file that passes `gate`. The MIR
-has basic blocks, typed registers and checked arithmetic, and it lowers code
-strictly left to right (spec 3.26).
-`asm <file.phs>` prints the x86_64 code that stage0 generates from that MIR as
-an assembly listing, with checks that trap on overflow and division by zero.
-`build <file.phs> [-o <out>]` links that code with a small stage0 runtime into
-a static Linux x86_64 executable that needs no C library. The program's exit
-status is the value `main` returns, and an overflow or division by zero
-prints a panic message and exits with status 101 (spec 3.26). The prelude
-`print` writes a `String`, `Int`, `UInt` or `Bool` and a newline to standard
-output (spec 3.27).
+`build <file.phs> [-o <out>]` compiles a program to a Linux x86_64
+executable. Its exit status is the value `main` returns. Integer overflow and
+division by zero stop the program with a panic message and exit status 101.
+`print` writes a `String`, `Int`, `UInt` or `Bool` followed by a newline.
+Anything outside the supported subset gets an `E0600` diagnostic; spec
+[3.25](docs/spec/03-types-and-semantics.md) lists the subset.
 
 ```phantasos
 fun main() {
@@ -123,7 +62,7 @@ fun main() {
 }
 ```
 
-Structs, methods and tuples compile too
+Structs, methods and tuples
 ([`run/vectors.phs`](tests/stage0/run/vectors.phs),
 [`run/bank_account.phs`](tests/stage0/run/bank_account.phs),
 [`run/divmod.phs`](tests/stage0/run/divmod.phs)):
@@ -143,8 +82,8 @@ fun main(): Int {
 }
 ```
 
-Named functions are values too: they can be passed, returned, stored in
-fields and called through a variable
+Functions are values: they can be passed, returned, stored in fields and
+called through a variable
 ([`run/higher_order.phs`](tests/stage0/run/higher_order.phs),
 [`run/calculator.phs`](tests/stage0/run/calculator.phs),
 [`run/sorting.phs`](tests/stage0/run/sorting.phs)):
@@ -212,10 +151,8 @@ fun main(): Int {
 }
 ```
 
-Generic functions, structs and methods get one copy of their code for each
-list of type arguments the program uses. A call on a value whose type is
-bounded by an interface goes straight to the conforming struct's method, or
-to the interface's default method compiled for that struct
+Generic functions and structs are compiled once per set of type arguments
+used, and calls through an interface bound go directly to the struct's method
 ([`run/leaderboard.phs`](tests/stage0/run/leaderboard.phs),
 [`run/pipeline.phs`](tests/stage0/run/pipeline.phs),
 [`run/interfaces.phs`](tests/stage0/run/interfaces.phs)):
@@ -252,146 +189,63 @@ fun main(): Int {
 
 | Path | Purpose |
 |---|---|
+| `bootstrap/stage0/` | The C++23 bootstrap compiler (`phantasos-stage0`) and its C++ tests |
 | `docs/spec/` | Language and ABI specification |
 | `docs/adr/` | Architecture decision records |
-| `bootstrap/stage0/` | C++23 bootstrap compiler: lexer, parser, structural validation, lexical name resolution and scalar typing; full type checking, native code generation and build driver planned |
-| `compiler/` | Self-hosted compiler (a Phantasos workspace), planned |
-| `runtime/` | `rt`, the privileged runtime, planned |
-| `std/` | Standard library (privileged), planned |
-| `libc-compat/` | Optional C standard library for C sources, planned |
-| `platform/` | Our own C declarations of OS interfaces |
-| `tools/` | Developer tools (`license-check`, ...) |
-| `tests/` | Conformance and golden tests |
+| `docs/roadmap.md` | Bootstrap milestones |
+| `tests/` | Golden tests, fuzzers and stress tests |
+| `tools/` | Developer tools such as `license-check` |
 
 ## Building stage0
 
-Requirements: clang++ 18+, a compatible C++23 standard library, CMake 3.28+,
-and Ninja. CMake compiles and links a feature probe for `std::expected`,
-`std::print`, `std::format`, `std::ranges::to`, `std::views::join_with`, and
-floating-point `std::from_chars`; the Clang version alone is not sufficient.
+You need clang++ 18 or later with a C++23 standard library that passes the
+CMake feature probe, CMake 3.28 or later, and Ninja. CI uses Clang 19 with
+libstdc++ 14 on Linux and Clang with the MSVC STL on Windows.
 
-CI uses Clang 19 with libstdc++ 14 on Linux, and Clang with the MSVC STL on
-Windows. [Clang 19 enables libstdc++'s `std::expected`](https://releases.llvm.org/19.1.0/tools/clang/docs/ReleaseNotes.html#c-20-feature-support),
-and [libstdc++ 14 adds the required print and range facilities](https://gcc.gnu.org/onlinedocs/libstdc++/manual/status.html#status.iso.2023).
-On Ubuntu 24.04 x86_64, install and select the Linux pair explicitly:
+On Ubuntu 24.04:
 
 ```sh
 sudo apt-get install clang-19 g++-14 ninja-build
 cmake -S bootstrap/stage0 -B build/stage0 -G Ninja -DCMAKE_CXX_COMPILER=clang++-19 -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_FLAGS=--gcc-install-dir=/usr/lib/gcc/x86_64-linux-gnu/14
+cmake --build build/stage0
 ```
 
-For Windows, or an already configured compatible toolchain:
+On Windows, or with a compatible toolchain already set up:
 
 ```sh
 cmake -S bootstrap/stage0 -B build/stage0 -G Ninja -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_BUILD_TYPE=Debug
 cmake --build build/stage0
-ctest --test-dir build/stage0 --output-on-failure                    # focused C++ library tests
+```
+
+Run the tests:
+
+```sh
+ctest --test-dir build/stage0 --output-on-failure                    # C++ tests
 python tests/run_golden.py --stage0 build/stage0/phantasos-stage0      # golden tests
-python tests/test_frontend.py --stage0 build/stage0/phantasos-stage0   # input limits, nesting and parser state
-python tests/fuzz_frontend.py --stage0 build/stage0/phantasos-stage0   # crash/hang fuzzing
-python tests/fuzz_frontend.py --stage0 build/stage0/phantasos-stage0 --command check # semantic-path fuzzing
-python tests/fuzz_frontend.py --stage0 build/stage0/phantasos-stage0 --command gate  # code-generation-gate fuzzing
-python tests/fuzz_frontend.py --stage0 build/stage0/phantasos-stage0 --command mir   # MIR lowering fuzzing
-python tests/fuzz_frontend.py --stage0 build/stage0/phantasos-stage0 --command asm   # x86_64 code generation fuzzing
-python tests/fuzz_frontend.py --stage0 build/stage0/phantasos-stage0 --command build # executable linking fuzzing
+python tests/test_frontend.py --stage0 build/stage0/phantasos-stage0   # nesting and input limits
+python tests/fuzz_frontend.py --stage0 build/stage0/phantasos-stage0   # fuzzing; add --command check|gate|mir|asm|build
 python tools/license-check/license_check.py                            # license headers
 ```
 
-To time and profile `check` on large class hierarchies (deep chains, wide
-fan-out, trees and forests) or many generic declarations, build with `-DCMAKE_BUILD_TYPE=RelWithDebInfo
-"-DCMAKE_CXX_FLAGS=-fno-omit-frame-pointer"` and run:
+[`tests/stress/profile_hierarchy.py`](tests/stress/profile_hierarchy.py)
+times and profiles `check` on large generated class hierarchies; CI runs it
+with memory and growth budgets. See [CONTRIBUTING.md](CONTRIBUTING.md) for
+more on the tests.
+
+## Trying it
 
 ```sh
-python tests/stress/profile_hierarchy.py --stage0 build/prof/phantasos-stage0 --classes 10000,50000,200000
-python tests/stress/profile_hierarchy.py --stage0 build/prof/phantasos-stage0 --shapes chain --perf  # hottest functions (Linux perf)
-python tests/stress/profile_hierarchy.py --stage0 build/prof/phantasos-stage0 --classes 10000 --massif # peak heap by source line (valgrind)
-python tests/stress/profile_hierarchy.py --stage0 build/prof/phantasos-stage0 --shapes generic --classes 1000,8000 --max-growth 1.8
-python tests/stress/gen_hierarchy.py --shape tree --classes 200000 -o big.phs                        # just the input file
-```
-
-CI runs it at 5000 classes with `--max-kib-per-class`, which fails if peak
-memory per class grows past the budget, and on the generic shape at 1000 and
-8000 units with `--max-growth`, which fails if time grows well past linearly.
-
-The build separates the `phantasos-stage0` CLI from the `phantasos_frontend`
-static library (CMake alias `Phantasos::Frontend`). Link the library to reuse
-source management, diagnostics, lexing, parsing, AST dumps, structural
-validation, name resolution and scalar typing. Its target
-propagates the required C++23 and no-exception/no-RTTI settings. Focused C++
-tests are enabled by default; use `-DBUILD_TESTING=OFF` to omit them, following
-[CMake's CTest convention](https://cmake.org/cmake/help/v3.28/module/CTest.html).
-
-`FrontendSession` in `frontend/session.hpp` owns source files, keyword-seeded
-interning, diagnostics, AST storage and cached name-resolution/type results.
-Add or load a file through `session.sources()`, then call `session.parse(id)`
-or `session.check(id)`. Query `session.diagnostics().has_errors(id)` for that
-file's result. Errors in other files do not block checking, and repeated calls
-do not duplicate diagnostics. Returned AST and resolution pointers remain
-valid until the session is destroyed. `CheckResult::scalar_types` is non-null
-when scalar checking ran; query expression and binding facts through it.
-Its `signature(BindingId)` and `call(CallExpr*)` queries expose scalar parameter
-and return types, selected function IDs, and argument-to-parameter mappings.
-Selected calls retain explicit/inferred type arguments and substituted parameter
-types; member records retain their concrete receiver type. Declaration signatures
-remain shared and are never overwritten by an application's types.
-Generic signatures retain symbolic type parameters/projections. `body(BindingId)`
-reports the supported schema check as resolved, deferred or erroneous. Associated
-type/property witnesses retain their substituted type as well as the implementation.
-`constraints()` retains resolved, deferred or erroneous application contracts,
-including concrete type applications outside calls. Failed constraints report E0471.
-Function value bindings remain deferred; their return types live in signatures.
-`ScalarType` stores `kind`, `optional_depth` and a result-local descriptor ID.
-Use `descriptor(type)` for structural components and
-`type_name(type, resolution, names)` for an iterative complete rendering;
-`scalar_type_name` renders built-ins and fallback kind labels. `conversion(CallExpr*)` records
-conversion mode and source/destination types. Intrinsic conversion call targets
-refer to built-in type bindings, while ordinary call targets refer to functions.
-`alias(BindingId)` exposes an alias's expansion state, canonical target ID,
-type fact and optional depth. Nominal identity includes the canonical declaration
-and concrete generic arguments; dependent inheritance/conformance remains pending. Alias definition errors
-retain these records and skip value checking for that file.
-`ScalarType::Deferred` means the type needs a later pass, while `Error` marks a
-diagnosed type failure. Numeric defaults are `Int` and `Float64`; a scalar
-annotation or a typed operator operand can constrain literals. Stage0 currently
-uses 64-bit `Int`/`UInt` for its initial x86_64 targets. Files still resolve
-independently; this does not implement package or module loading.
-
-Source files are limited to **64 MiB of raw input** by default, before BOM and
-line-ending normalization. Oversized files are rejected before reading their
-contents; the CLI returns exit code 2 for source-loading failures. Library
-callers can configure `SourceLimits` (byte and file-count limits), and handle
-`SourceErrorKind` through the `std::expected` returned by both `load` and `add`.
-The hard byte ceiling is `UINT32_MAX - 1`, leaving room for EOF and 1-based
-locations. These are input limits, not a total compilation-memory budget.
-Source references and text views remain valid when more files are added.
-
-Stage0 limits recursive grammar nesting to 128 active guarded entries, shared
-across expressions, types, patterns, blocks, and declarations. Exceeding this
-implementation limit reports `E0112` and stops parsing that file. Flat operator
-and member chains are parsed iteratively; AST dumps also use explicit work
-stacks, including inline type and pattern rendering.
-
-Try it:
-
-```sh
+build/stage0/phantasos-stage0 help                                     # list the commands
 build/stage0/phantasos-stage0 parse tests/stage0/parser/showcase.phs   # print the syntax tree
-build/stage0/phantasos-stage0 lex   tests/stage0/lexer/literals.phs    # print the token stream
-build/stage0/phantasos-stage0 gate  tests/stage0/codegen/gate_fib.phs  # check a program for code generation
-build/stage0/phantasos-stage0 mir   tests/stage0/mir/fib.phs          # print its MIR
-build/stage0/phantasos-stage0 asm   tests/stage0/asm/fib.phs          # print its x86_64 code
-build/stage0/phantasos-stage0 build tests/stage0/run/fib.phs -o fib   # build a Linux executable
-./fib; echo $?                                                         # prints 42
+build/stage0/phantasos-stage0 check tests/stage0/run/inventory.phs     # type, flow and ownership checks
+build/stage0/phantasos-stage0 mir   tests/stage0/mir/fib.phs           # print the MIR
+build/stage0/phantasos-stage0 asm   tests/stage0/asm/fib.phs           # print the x86_64 code
 build/stage0/phantasos-stage0 build tests/stage0/run/hello.phs -o hello
 ./hello                                                                # prints Hello, world!
-build/stage0/phantasos-stage0 build tests/stage0/run/vectors.phs -o vectors
-./vectors                                                              # structs and methods
-build/stage0/phantasos-stage0 build tests/stage0/run/higher_order.phs -o higher_order
-./higher_order                                                         # function values
-build/stage0/phantasos-stage0 build tests/stage0/run/adders.phs -o adders
-./adders                                                               # closures
-build/stage0/phantasos-stage0 build tests/stage0/run/inventory.phs -o inventory
-./inventory                                                            # ownership and moves
 ```
+
+Every program in [`tests/stage0/run`](tests/stage0/run) builds the same way;
+its expected output and exit status sit next to it.
 
 ## License
 

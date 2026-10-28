@@ -17,44 +17,15 @@ foundation. Complete.
 
 ## P1: stage0 native compiler
 
-- [x] Lexer, parser, error recovery, syntax dumps and frontend library.
-- [x] Standalone [Core EBNF grammar](spec/phantasos.ebnf).
-- [x] Initial semantic validation: duplicate bindings, declaration contexts,
-  type alias forms, pattern binding consistency and control-flow placement.
-- [x] File-local name resolution: collect declarations and lexical scopes,
-  resolve value/type references, and retain bindings and overload sets.
-  Cover forward declarations, generic scopes and sequential local shadowing.
-- [x] Frontend session ownership, cached phase results and per-file diagnostics.
-- [x] Initial scalar typing: retained expression/binding types, built-in annotations,
-  contextual numeric literals and ranges, forward variable inference, scalar
-  operators, Boolean conditions, defaults, explicit returns and assignments.
-- [x] Initial callable signatures and direct file-level calls: scalar expression-body
-  return inference, arguments, labels, defaults, overload selection and retained targets.
-- [x] Initial numeric conversions: lossless integer and floating widening,
-  checked/truncating integers, diagnostics, retained conversion records and
-  optional wrappers on built-in type facts.
-- [x] Initial alias expansion: non-generic chains, cycles, optional wrappers,
-  canonical built-in/nominal targets, direct qualified types and numeric aliases.
-- [x] Initial composite/nominal checking: canonical arrays, pointers, ownership
-  wrappers, function types and non-generic nominal instances; array literals and
-  indexing, exact type matching, primary constructors and typed indirect calls.
-- [x] Initial receiver-dependent members: direct fields and methods on known
-  non-generic nominal receivers, static/instance access, aliases and retained targets.
-- [x] Initial inheritance/conformance: non-generic base graphs, cycles, inherited
-  member/type/overload lookup, overrides, method requirements and nominal upcasts.
-- [x] Initial generic instantiation/substitution: concrete nominal and transparent
-  alias applications, explicit function/method arguments, substituted constructor
-  and direct member signatures, and canonical invariant instance identities.
-- [x] Initial generic argument inference and concrete constraints: supplied
-  argument anchors, literal context, nominal constructors, interface bounds,
-  `where` clauses and retained constraint states.
-- [x] Initial generic bodies/dependent conformance: symbolic declaration types,
-  bound-based lookup, associated projections, inferred generic returns, `Self`
-  substitution, associated-type and stored-property witnesses, and generic
-  conformers to known non-generic interfaces.
-- [x] Initial flow checks: all-path returns, definite initialization of locals,
-  `let`/parameter immutability, field and `mut fun` receiver mutability, and
-  contextual branch results, including `T?` for an `if` without `else`.
+- [x] Lexer, parser with error recovery, syntax dumps and the frontend
+  library, with a standalone [Core EBNF grammar](spec/phantasos.ebnf).
+- [x] Structural validation and file-local name resolution.
+- [x] Type checking: scalars, numeric conversions, aliases, composite and
+  nominal types, members, inheritance and interface conformance, generic
+  instantiation, argument inference, bounds and `where` clauses, and generic
+  bodies checked once.
+- [x] Flow checks: all-path returns, definite initialization, mutability of
+  bindings, fields and `mut fun` receivers, and branch result types.
 - [x] **Native scalar vertical slice (M1).** Compile a scalar Core subset
   (functions, locals, loops, calls, checked integer arithmetic) through a typed
   IR and naive x86_64 code to a static Linux x86_64 executable that returns its
@@ -111,33 +82,17 @@ foundation. Complete.
   - [x] Values of generic functions, and generic closures.
   - [x] Interfaces as bounds, through witnesses.
   - [x] Generics samples and run tests.
-- [ ] Generic base substitution and built-in traits. Instantiate
-  generic base/interface graphs, derive `Copy`/`Sendable`/`Error`, and complete
-  generic method contracts, associated defaults and receiver-dependent contexts.
-- [ ] Complete type checking: generic aliases, generics, optionals,
-  generic calls, function-value inference, remaining numeric policies, receiver-dependent members,
-  inheritance, visibility, and typed errors.
-- [ ] Field/receiver initialization, moves, borrows and destructor checks.
-- [ ] Typed intermediate representation and lowering.
-- [ ] x86_64 code generation and COFF/ELF object writers. Stage0 has naive
-  x86_64 code for the scalar subset and writes ELF executables directly; COFF
-  and relocatable ELF objects remain.
-- [ ] Native PE/ELF linker, minimal runtime and entry points. Stage0 links
-  static Linux executables with its own `_start` and panic stub; PE, the
-  Windows entry point and a general runtime remain.
-- [ ] Native hello-world executables on Windows x64 and Linux x86_64.
-
-`check` performs syntax, structural semantic validation, file-local lexical
-name resolution, initial scalar typing and direct scalar function calls.
-Unsupported type facts, including dependent generic calls, function-value inference, remaining numeric policies and
-block/branch results, are explicitly deferred. Direct nominal field and method
-lookup runs after receiver inference, including known inherited members and
-type aliases. Supported method requirements are checked with retained witnesses.
-General inference/bound solving, captured owners, remaining dependent/property contracts, visibility,
-optional/ownership-wrapper members and bound method values remain pending. A successful
-check does **not** yet imply that all members exist, types match, ownership is valid,
-or executable code can be generated. Imports receive an explicit unsupported
-diagnostic until P2 package loading exists. `parse` remains syntax-only.
+- [ ] Generic base substitution and built-in traits: generic base and
+  interface graphs, derived `Copy`/`Sendable`/`Error`, associated defaults and
+  the remaining generic method contracts.
+- [ ] The rest of type checking: optionals, generic aliases, visibility,
+  typed errors and the remaining numeric rules.
+- [ ] Field and receiver initialization, borrows and destructors.
+- [ ] Code generation for the rest of Core: arrays, optionals, classes,
+  enums, `match`, errors and cleanup.
+- [ ] COFF and relocatable ELF objects, and a PE/ELF linker. Stage0 writes
+  static Linux executables directly today.
+- [ ] Windows x64 executables, with their entry point and runtime.
 
 Exit criterion: stage0 can compile, link and run Core programs natively on
 both initial targets. In progress.

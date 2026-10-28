@@ -35,6 +35,7 @@ using namespace ast;
 // One bit per tracked local or parameter of the current callable.
 class Bits {
 public:
+    Bits() = default;
     Bits(usize size, bool value) : words_((size + 63) / 64, value ? ~u64{0} : u64{0}) {}
     bool test(usize i) const { return (words_[i / 64] >> (i % 64)) & 1; }
     void set(usize i, bool value) {
@@ -592,6 +593,7 @@ private:
         locals_.clear();
         owned_.clear();
         consumed_.clear();
+        iteration_moves_.clear();
         tracked_ = 0;
         movables_ = 0;
         each_stmt(body, [&](const Stmt& stmt) {
@@ -675,9 +677,9 @@ private:
             d.notes.push_back({move_sites_[*bit], "moved here"});
             d.notes.push_back({binding.name.span, std::format("declared here with type '{}', which is not Copy",
                                                               type_name(types_.binding(id)))});
-            // Report a moved value once, until it moves again.
-            state.moved.set(*bit, false);
-            state.moved_all.set(*bit, false);
+            // Report a moved value once, until it moves again. A quiet pass
+            // keeps the move, since it only learns what reaches a back edge.
+            if (!quiet_) unmove(*bit, state);
         }
         if (!moves) return;
         state.moved.set(*bit, true);
@@ -1142,13 +1144,13 @@ private:
         // may already be set when it runs again.
         state.maybe.unite(assigned_lets({cond ? cond->expr : nullptr, body}));
         // A value moved in one iteration is moved when the next one starts.
-        // A quiet first pass finds those moves; inside it, nested loops take
-        // one pass and add their own back edge to what follows them.
+        // A quiet first pass finds those moves. Inside it, a nested loop's
+        // head is its entry plus what its iterations move from a clean start,
+        // which does not depend on the entry and is computed once per loop.
         if (quiet_) {
+            state.moved.unite(iteration_moves(cond, body, state, exits_normally));
             State back = dead();
-            State out = iteration(cond, body, state, exits_normally, back);
-            if (back.live) out.moved.unite(back.moved);
-            state = std::move(out);
+            state = iteration(cond, body, state, exits_normally, back);
             return;
         }
         State back = dead();
@@ -1163,6 +1165,20 @@ private:
             state.moved_all.intersect(back.moved_all);
         }
         state = iteration(cond, body, state, exits_normally, back);
+    }
+
+    // The bindings that may be moved when a loop returns to its head,
+    // starting from a head where nothing has moved. A reinitialization
+    // clears a move whatever came before it, so this set is the same for
+    // every entry state.
+    Bits iteration_moves(const Cond* cond, const BlockExpr* body, const State& entry, bool exits_normally) {
+        if (const auto it = iteration_moves_.find(body); it != iteration_moves_.end()) return it->second;
+        State clean = entry;
+        clean.moved = Bits(movables_, false);
+        clean.moved_all = Bits(movables_, false);
+        State back = dead();
+        iteration(cond, body, clean, exits_normally, back);
+        return iteration_moves_.emplace(body, back.live ? back.moved : Bits(movables_, false)).first->second;
     }
 
     // One pass over a loop from its head; back receives the states that
@@ -1286,6 +1302,7 @@ private:
     usize tracked_ = 0;
     FlatMap<u32, usize> owned_;      // name span.lo -> move bit of an `own` parameter
     FlatSet<const Expr*> consumed_;  // names whose value is moved where they are read
+    FlatMap<const BlockExpr*, Bits> iteration_moves_;  // per loop body, while quiet
     std::vector<Span> move_sites_;   // where each movable binding last moved
     usize movables_ = 0;
     usize quiet_ = 0;

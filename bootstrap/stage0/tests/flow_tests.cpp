@@ -601,6 +601,11 @@ void moves() {
         {"fun f(c: Bool) { let a = \"a\"\nloop { if c { take(a)\nbreak } } }", {}},
         {"fun f(c: Bool) { let a = \"a\"\nloop { take(a)\nif c { break } }\n}", {M}},
         {"fun f(c: Bool) { let a = \"a\"\nwhile c { let f = { -> look(a) } } }", {M}},
+        // An inner loop that gives the value back on every exit leaves it usable.
+        {"fun f(c: Bool) { var a = \"a\"\nwhile c { look(a)\nloop { a = \"new\"\ntake(a)\nif c { a = \"exit\"\nbreak } } } }", {}},
+        {"fun f(c: Bool) { var a = \"a\"\nwhile c { look(a)\nwhile c { take(a)\nif c { a = \"exit\"\nbreak } } } }", {M, M}},
+        {"fun f(c: Bool) { var a = \"a\"\nwhile c { look(a)\nwhile c { while c { take(a) }\na = \"b\" } } }", {M}},
+        {"fun f(c: Bool) { var a = \"a\"\nwhile c { look(a)\nwhile c { a = \"b\"\nwhile c { take(a) } } } }", {M, M}},
         // A moved value is reported once until it moves again.
         {"fun f() { let a = \"a\"\ntake(a)\nlook(a)\nlook(a)\ntake(a)\nlook(a) }", {M, M}},
         // Unreachable code reports nothing.

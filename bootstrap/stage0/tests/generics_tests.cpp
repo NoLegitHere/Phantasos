@@ -361,7 +361,14 @@ struct Pair<A, B>(f: fun(A) -> B)
 type Flip<A, B> = Pair<B, A>
 let flipped = Flip<Int, Bool>({ x: Bool -> 1 })
 let flippedInferred = Flip<Int, Bool>({ x -> 1 })
+fun make<T, U>(x: T, f: fun(T) -> fun(Int) -> U): fun(Int) -> U = f(x)
+let nested = make(3, { x -> { y -> x > y } })
+fun pick<T>(x: T): T = x
+fun pick<T>(x: T, y: T) = use(pick)
+fun use(h: fun(Int) -> Int): Int = h(1)
+let picked = use(pick)
 )");
+    CHECK(own.name(own.value("nested")) == "fun(Int) -> Bool" && own.value("picked") == Type::Int);
     CHECK(own.name(own.value("flipped")) == "Pair<Bool, Int>" && own.name(own.value("flippedInferred")) == "Pair<Bool, Int>");
     CHECK(own.value("annotated") == Type::Int8 && own.value("inferred") == Type::Int8);
     CHECK(own.value("literal") == Type::Int8 && own.value("both") == Type::Int8);

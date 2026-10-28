@@ -2639,13 +2639,17 @@ private:
     // The type arguments that give generic function `id` exactly the function
     // type `wanted`, matching its declared parameter and result types part by
     // part; nothing when they do not match or its result is still unknown.
-    std::optional<std::vector<Type>> generic_match(BindingId id, const TypeDescriptor& wanted) const {
+    // With `parameters_only`, its result is left out and the arguments may be
+    // incomplete: nothing then means it can never have that type.
+    std::optional<std::vector<Type>> generic_match(BindingId id, const TypeDescriptor& wanted, bool parameters_only = false) const {
         const auto& signature = signatures_.at(id.value);
         const auto result = nodes_[function_nodes_.at(id.value)].value.type;
-        if (!known(result) || wanted.throws || signature.parameters.size() != wanted.parameters.size()) return std::nullopt;
+        if ((!parameters_only && !known(result)) || wanted.throws || signature.parameters.size() != wanted.parameters.size())
+            return std::nullopt;
         const auto generics = generic_parameters(id);
         std::vector<Type> arguments(generics.size());
-        std::vector<std::pair<Type, Type>> work{{result, wanted.result}};
+        std::vector<std::pair<Type, Type>> work;
+        if (!parameters_only) work.push_back({result, wanted.result});
         for (usize p = 0; p < wanted.parameters.size(); ++p) work.push_back({signature.parameters[p], wanted.parameters[p]});
         // Shared parts of type graphs are matched once. Equal composite
         // types still go through their parts, since a type parameter in
@@ -2657,7 +2661,10 @@ private:
             work.pop_back();
             if (pattern == actual && !types_.descriptor(pattern)) continue;
             if (!seen.emplace(pattern, actual).second) continue;
-            if (!known(pattern) || !known(actual)) return std::nullopt;
+            if (!known(pattern) || !known(actual)) {
+                if (parameters_only) continue;
+                return std::nullopt;
+            }
             if (pattern.kind == Type::TypeParameter) {
                 const auto declaration = types_.descriptor(pattern)->declaration;
                 const auto position = std::ranges::find_if(generics, [&](const GenericParam& param) {
@@ -2685,8 +2692,13 @@ private:
             for (usize i = 0; i < x->parameters.size(); ++i) work.push_back({x->parameters[i], y->parameters[i]});
             for (usize i = 0; i < x->arguments.size(); ++i) work.push_back({x->arguments[i], y->arguments[i]});
         }
-        if (!std::ranges::all_of(arguments, known)) return std::nullopt;
+        if (!parameters_only && !std::ranges::all_of(arguments, known)) return std::nullopt;
         return arguments;
+    }
+    // Whether generic function `id` may still have the function type
+    // `wanted` once its result is inferred.
+    bool may_match_generic(BindingId id, const TypeDescriptor& wanted) const {
+        return !known(nodes_[function_nodes_.at(id.value)].value.type) && generic_match(id, wanted, true).has_value();
     }
     // A generic function's type for explicit type arguments, or nothing while
     // they or its result are not settled.
@@ -2758,7 +2770,7 @@ private:
                 if (auto matched = generic_match(id, *types_.descriptor(expected.scalar()))) {
                     found.push_back(id);
                     arguments = std::move(*matched);
-                } else pending |= !known(nodes_[function_nodes_.at(id.value)].value.type);
+                } else pending |= may_match_generic(id, *types_.descriptor(expected.scalar()));
                 continue;
             }
             const auto type = function_value(id);
@@ -2839,7 +2851,39 @@ private:
         // A function type whose result names type parameters of a generic
         // callee that only the closure's own result can infer.
         bool open_result = false;
+        std::vector<usize> open;  // those type parameters, by binding
     };
+    // Whether `root` names one of the type parameters `open`, visiting
+    // shared parts of type graphs once.
+    bool mentions(Type root, std::span<const usize> open) const {
+        std::unordered_set<usize> seen;
+        std::vector<Type> work{root};
+        while (!work.empty()) {
+            const Type t = work.back();
+            work.pop_back();
+            const auto* descriptor = types_.descriptor(t);
+            if (!descriptor || !seen.insert(t.detail).second) continue;
+            if (t.kind == Type::TypeParameter) {
+                if (std::ranges::contains(open, descriptor->declaration.value)) return true;
+                continue;
+            }
+            work.insert(work.end(), descriptor->parameters.begin(), descriptor->parameters.end());
+            work.insert(work.end(), descriptor->arguments.begin(), descriptor->arguments.end());
+            for (const Type inner : {descriptor->element, descriptor->result, descriptor->error})
+                if (known(inner)) work.push_back(inner);
+        }
+        return false;
+    }
+    // The function type `type` with its result still open, for a closure
+    // that infers that result itself; nothing when its parameters are open
+    // too.
+    std::optional<Expected> open_function(Type type, std::vector<usize> open) const {
+        if (type.kind != Type::Function || type.optional_depth) return std::nullopt;
+        const auto& function = *types_.descriptor(type);
+        if (function.throws || std::ranges::any_of(function.parameters, [&](Type p) { return mentions(p, open); }))
+            return std::nullopt;
+        return Expected{Expected::Known, type, true, std::move(open)};
+    }
     // A generic callee, what the other arguments of a call infer for it, and
     // the parameter a closure argument meets.
     struct GenericArgument { BindingId id; usize context; Inference inference; const Param* param; };
@@ -2861,8 +2905,15 @@ private:
                 // Closures nest no deeper than the parser allows.
                 const auto outer = expected_type(expectation.closure);
                 if (outer.state != Expected::Known || outer.type == Type::Error) return outer;
-                if (outer.type.kind != Type::Function || outer.open_result) return {};
-                return {Expected::Known, types_.descriptor(outer.type)->result};
+                if (outer.type.kind != Type::Function) return {};
+                const Type result = types_.descriptor(outer.type)->result;
+                // An open result can still give a closure its parameter types.
+                if (outer.open_result) {
+                    if (!mentions(result, outer.open)) return {Expected::Known, result};
+                    if (auto open = open_function(result, outer.open)) return *open;
+                    return {};
+                }
+                return {Expected::Known, result};
             }
         }
         unreachable();
@@ -2967,11 +3018,11 @@ private:
     std::optional<Expected> inferred_parameter(const GenericArgument& candidate, Span span) {
         const auto generics = generic_parameters(candidate.id);
         std::vector<Type> arguments = candidate.inference.arguments;
-        std::unordered_set<usize> open;
+        std::vector<usize> open;
         for (usize p = 0; p < generics.size(); ++p) {
             if (known(arguments[p])) continue;
             const auto binding = generic_bindings_.at(generics[p].name.span.lo);
-            open.insert(binding.value);
+            open.push_back(binding.value);
             arguments[p] = types_.intern({.kind = Type::TypeParameter, .declaration = binding});
         }
         const auto applied = application(candidate.id, std::move(arguments), candidate.context, span);
@@ -2979,32 +3030,8 @@ private:
         const Type type = annotation(candidate.param->type, applied.context);
         if (type == Type::Error) return Expected{Expected::Known, type};
         if (!known(type)) return std::nullopt;
-        // Shared parts of type graphs are visited once.
-        std::unordered_set<usize> seen;
-        const auto mentions = [&](Type root) {
-            seen.clear();
-            std::vector<Type> work{root};
-            while (!work.empty()) {
-                const Type t = work.back();
-                work.pop_back();
-                const auto* descriptor = types_.descriptor(t);
-                if (!descriptor || !seen.insert(t.detail).second) continue;
-                if (t.kind == Type::TypeParameter) {
-                    if (open.contains(descriptor->declaration.value)) return true;
-                    continue;
-                }
-                work.insert(work.end(), descriptor->parameters.begin(), descriptor->parameters.end());
-                work.insert(work.end(), descriptor->arguments.begin(), descriptor->arguments.end());
-                for (const Type inner : {descriptor->element, descriptor->result, descriptor->error})
-                    if (known(inner)) work.push_back(inner);
-            }
-            return false;
-        };
-        if (open.empty() || !mentions(type)) return Expected{Expected::Known, type};
-        if (type.kind != Type::Function || type.optional_depth) return std::nullopt;
-        const auto& function = *types_.descriptor(type);
-        if (function.throws || std::ranges::any_of(function.parameters, mentions)) return std::nullopt;
-        return Expected{Expected::Known, type, true};
+        if (open.empty() || !mentions(type, open)) return Expected{Expected::Known, type};
+        return open_function(type, std::move(open));
     }
 
     // The function type a closure meets, or nothing when its expected type
@@ -3539,7 +3566,7 @@ private:
                     if (generic_function(id)) {
                         const auto node = function_nodes_.at(id.value);
                         if (known(nodes_[node].value.type)) found |= generic_match(id, wanted).has_value();
-                        else {
+                        else if (may_match_generic(id, wanted)) {
                             pending = true;
                             if (nodes_[node].state == 0) pending_dependencies_.push_back(node);
                         }

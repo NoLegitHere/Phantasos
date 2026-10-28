@@ -541,6 +541,136 @@ private:
         }
     }
 
+    // A place an argument names, as its root (a binding, `self` or a static
+    // field) and the projections applied to it. Two places overlap when one
+    // path is a prefix of the other; any two indexes may be the same element.
+    struct Path {
+        u64 root = 0;
+        SmallVec<u64, 4> steps;  // field binding << 2, element << 2 | 1, index 2, unwrap 3
+    };
+    static constexpr u64 kSelfRoot = 1;
+    static u64 root_key(BindingId id) { return (u64{id.value} + 1) << 1; }
+    std::optional<Path> path(const Expr* expr) const {
+        ExprList chain;
+        expr = unparen(expr);
+        while (const Expr* base = projected(*expr)) {
+            chain.push_back(expr);
+            expr = unparen(base);
+        }
+        Path result;
+        if (expr->kind == ExprKind::SelfValue || expr->kind == ExprKind::Super) {
+            result.root = kSelfRoot;
+        } else if (const auto* name = as<NameExpr>(expr)) {
+            BindingId id = target(*name);
+            if (!id.valid()) id = implicit_binding(*name);
+            if (!id.valid()) return std::nullopt;
+            const auto& binding = resolution_.binding(id);
+            if (binding.kind == BindingKind::Field && !is_static(binding)) {
+                result.root = kSelfRoot;
+                result.steps.push_back(u64{id.value} << 2);
+            } else {
+                result.root = root_key(id);
+            }
+        } else {
+            return std::nullopt;
+        }
+        for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
+            if (const auto* member = as<MemberExpr>(*it)) {
+                const auto* record = types_.member(member);
+                if (!record || record->state != ResolutionState::Resolved || record->candidates.size() != 1 ||
+                    resolution_.binding(record->candidates.front()).kind != BindingKind::Field)
+                    return std::nullopt;
+                if (record->type_receiver) {
+                    // A static field is its own storage, whatever names its type.
+                    result = Path{root_key(record->candidates.front()), {}};
+                    continue;
+                }
+                result.steps.push_back(u64{record->candidates.front().value} << 2);
+            } else if (const auto* element = as<TupleFieldExpr>(*it)) {
+                result.steps.push_back(u64{element->index} << 2 | 1);
+            } else {
+                result.steps.push_back((*it)->kind == ExprKind::Index ? 2 : 3);
+            }
+        }
+        return result;
+    }
+    enum class Overlap : u8 { No, Maybe, Yes };
+    static Overlap overlap(const Path& a, const Path& b) {
+        if (a.root != b.root) return Overlap::No;
+        auto result = Overlap::Yes;
+        for (usize i = 0; i < a.steps.size() && i < b.steps.size(); ++i) {
+            if (a.steps[i] != b.steps[i]) return Overlap::No;
+            if (a.steps[i] == 2) result = Overlap::Maybe;
+        }
+        return result;
+    }
+
+    // While a call runs, an `inout` argument or the receiver of a `mut fun`
+    // has exclusive access to its place, so no other argument of the call,
+    // nor the receiver, may name an overlapping place (E0506, 3.32).
+    void exclusive_arguments(const CallExpr& call, const CheckedCall& checked, const FunItem& fun) {
+        struct Use {
+            Span span;
+            Path path;
+            std::string who;      // what needs exclusive access, when it does
+            std::string spelled;  // the place as written, or 'self' for an implicit receiver
+            bool receiver = false;
+        };
+        const bool mut_receiver = checked.kind == CallKind::Method && has_modifier(fun.mods, Modifier::Mut);
+        if (!mut_receiver && std::ranges::none_of(fun.sig.params, [](const Param& param) {
+                return param.conv == Convention::Inout;
+            }))
+            return;
+        std::vector<Use> accesses;
+        const auto text = [&](Span span) {
+            const auto& file = diag_.sources().file(span.file);
+            return std::string_view(file.text).substr(span.lo, span.hi - span.lo);
+        };
+        if (checked.kind == CallKind::Method && !has_modifier(fun.mods, Modifier::Static)) {
+            const bool mut = has_modifier(fun.mods, Modifier::Mut);
+            std::string who = mut ? std::format("'mut fun {}'", names_.str(fun.name.sym)) : std::string{};
+            const Expr* callee = unparen(call.callee);
+            if (const auto* generic = as<GenericInstExpr>(callee)) callee = unparen(generic->base);
+            if (checked.receiver) {
+                if (auto found = path(checked.receiver))
+                    accesses.push_back({checked.receiver->span, std::move(*found), who,
+                                        std::string(text(checked.receiver->span)), true});
+            } else if (callee->kind == ExprKind::Name && self_.access != Access::Unknown) {
+                accesses.push_back({callee->span, Path{kSelfRoot, {}}, who, "self", true});
+            }
+        }
+        for (usize i = 0; i < checked.parameters.size() && i < call.args.size(); ++i) {
+            const usize index = checked.parameters[i];
+            if (index >= fun.sig.params.size()) continue;
+            const auto& param = fun.sig.params[index];
+            auto found = path(call.args[i].value);
+            if (!found) continue;
+            std::string who = param.conv == Convention::Inout
+                                  ? std::format("'inout' parameter '{}'", names_.str(param.name.sym))
+                                  : std::string{};
+            accesses.push_back({call.args[i].value->span, std::move(*found), std::move(who),
+                                std::string(text(call.args[i].value->span)), false});
+        }
+        for (usize b = 1; b < accesses.size(); ++b)
+            for (usize a = 0; a < b; ++a) {
+                const auto& first = accesses[a];
+                const auto& second = accesses[b];
+                const auto found = overlap(first.path, second.path);
+                if ((first.who.empty() && second.who.empty()) || found == Overlap::No) continue;
+                if (shown(DiagCode::ExclusiveAccess) && !reported_exclusive_.insert(second.span.lo)) break;
+                const auto& who = second.who.empty() ? first.who : second.who;
+                auto& d = first.spelled == second.spelled
+                              ? error(DiagCode::ExclusiveAccess, second.span,
+                                      "'{}' is used twice in one call, but {} needs exclusive access to it", second.spelled, who)
+                              : error(DiagCode::ExclusiveAccess, second.span,
+                                      "'{}' {} '{}', but {} needs exclusive access to it for the whole call", second.spelled,
+                                      found == Overlap::Maybe ? "may overlap" : "overlaps", first.spelled, who);
+                d.notes.push_back({first.span, first.receiver ? std::format("'{}' is the receiver here", first.spelled)
+                                                              : std::format("'{}' is also passed here", first.spelled)});
+                break;
+            }
+    }
+
     // A `mut fun` needs a mutable receiver: a mutable place for value types,
     // and anything but a borrow for class instances.
     void mutating_call(const CallExpr& call) {
@@ -551,6 +681,7 @@ private:
         const auto* fun = as<FunItem>(resolution_.binding(checked->target).item);
         if (!fun) return;
         inout_arguments(call, *checked, *fun);
+        exclusive_arguments(call, *checked, *fun);
         if (checked->kind != CallKind::Method || !has_modifier(fun->mods, Modifier::Mut) ||
             has_modifier(fun->mods, Modifier::Static))
             return;
@@ -676,6 +807,7 @@ private:
         iteration_moves_.clear();
         reported_moves_.clear();
         reported_borrows_.clear();
+        reported_exclusive_.clear();
         defers_.clear();
         tracked_ = 0;
         movables_ = 0;
@@ -1595,6 +1727,7 @@ private:
     const ClosureExpr* closure_ = nullptr;  // the closure whose body is being checked
     FlatSet<usize> invalid_captures_;      // bindings a closure of this callable cannot capture (E0503)
     FlatSet<u32> reported_borrows_;        // E0505 spans, which loops and cleanups can reach more than once
+    FlatSet<u32> reported_exclusive_;      // E0506 spans, likewise
     std::vector<const DeferStmt*> defers_;  // cleanups of the enclosing scopes, innermost last
     std::vector<usize> scopes_;             // defers_ size where each enclosing block starts
     std::vector<usize> loops_;              // defers_ size where each enclosing loop body starts

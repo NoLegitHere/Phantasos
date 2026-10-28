@@ -1,0 +1,53 @@
+// Copyright 2026 The Phantasos Authors
+// SPDX-License-Identifier: Apache-2.0
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// Exclusive access (E0506): while a call runs, an `inout` argument and the
+// receiver of a `mut fun` are the only way to reach their place, so no other
+// argument or receiver of the same call may name an overlapping place.
+
+struct Point(var x: Int, var y: Int) {
+    mut fun shift(by: Int) { x += by }
+    fun copyTo(n: inout Int) { n = x }
+    mut fun again() { shift(x) }
+}
+
+fun swap(a: inout Int, b: inout Int) {
+    let t = a
+    a = b
+    b = t
+}
+fun store(p: inout Point, value: Int) { p.x = value }
+
+fun separate() {
+    var a = 1
+    var b = 2
+    swap(a, b)
+    var p = Point(x: 1, y: 2)
+    swap(p.x, p.y)
+    p.shift(a)
+    let x = p.x
+    p.shift(x)
+}
+fun overlapping(list: inout [Int]) {
+    var a = 1
+    swap(a, a)
+    var p = Point(x: 1, y: 2)
+    store(p, p.x)
+    p.shift(p.y)
+    p.copyTo(p.x)
+    var t = (1, 2)
+    swap(t.0, t.0)
+    swap(list[0], list[1])
+}

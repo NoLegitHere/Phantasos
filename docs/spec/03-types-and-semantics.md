@@ -100,7 +100,7 @@ There are **no implicit numeric conversions**. Widening is written
     parameter or a local is moved into the closure when its type is not
     `Copy`.
   - While an `inout` borrow is active, its source cannot be accessed any
-    other way (the law of exclusivity).
+    other way (the law of exclusivity, 3.32).
 - **Sharing.**
   - `shared T` is a reference-counted handle; `shared expr` converts an owned
     value into a shared one.
@@ -1362,3 +1362,30 @@ usable, and the result is a new value that moves like any other. A literal
 receiver takes its default type first, so `7.clone()` is an `Int`. In
 stage0's generated code a clone copies the value's words, because nothing
 owns heap memory yet (3.30).
+
+## 3.32 Exclusive access [Core]
+
+An `inout` argument, and the receiver of a `mut fun`, has exclusive access
+to its place for the whole call (3.4). No other argument of the same call,
+and no receiver, may name an overlapping place, whatever its convention.
+Doing so is `E0506`, reported at the later of the two:
+
+```phantasos
+swap(a, a)          // error: 'a' is used twice in one call
+store(p, p.x)       // error: 'p.x' overlaps 'p'
+p.shift(p.y)        // error: 'mut fun shift' needs 'p' exclusively
+swap(p.x, p.y)      // fine: separate fields
+```
+
+A place is a local, a parameter, a global, `self` or a static field,
+followed by fields, tuple elements, indexes and `!`. Two places overlap when
+they have the same root and one path continues the other, so `p` overlaps
+`p.x` but `p.x` and `p.y` do not. Any two indexes of the same array may be
+the same element, so `swap(a[i], a[j])` is reported as a possible overlap.
+Inside a method, `self`, `super` and bare field names all start at the
+receiver, and an implicit call to a `mut fun` passes `self`. A static field
+is its own place, named bare or through its type. An argument that is not a
+place, such as `a + 1` or `p.x.clone()`, is a temporary and never overlaps;
+copying a value into a local first is the usual fix. Stage0 compares places
+by how they are written, so two class references to the same instance are
+not reported.

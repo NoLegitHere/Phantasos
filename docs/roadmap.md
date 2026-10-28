@@ -102,7 +102,7 @@ foundation. Complete.
   - [x] Use after move for locals and `own` parameters (E0504).
   - [x] A built-in `.clone()` for String and structurally clonable values.
   - [x] Moving out of borrowed parameters, `self`, fields and captures (E0505).
-  - [ ] Exclusive `inout` arguments (E0506).
+  - [x] Exclusive `inout` arguments (E0506).
   - [ ] Move samples and run tests.
 - [ ] Generic base substitution and built-in traits. Instantiate
   generic base/interface graphs, derive `Copy`/`Sendable`/`Error`, and complete

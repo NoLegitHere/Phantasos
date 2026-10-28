@@ -710,6 +710,39 @@ void moves() {
     }
 }
 
+void exclusive_access() {
+    constexpr std::string_view prelude =
+        "fun swap(a: inout Int, b: inout Int) {}\nfun set(a: inout Int, b: Int) {}\n"
+        "struct P(var x: Int, var y: Int) {\nmut fun bump(by: Int) { x += by }\nfun read(n: inout Int) { n = x }\n"
+        "mut fun apart(n: inout Int) { bump(n) } }\n";
+    const auto E = DiagCode::ExclusiveAccess;
+    for (const auto& [source, expected] : std::vector<std::pair<std::string_view, std::vector<DiagCode>>>{
+        // Separate places, and reads that are not places, are fine.
+        {"fun f() { var a = 1\nvar b = 2\nswap(a, b)\nset(a, b)\nset(a, a + 1)\nvar p = P(x: 1, y: 2)\nswap(p.x, p.y)\np.bump(a)\np.read(a) }", {}},
+        {"fun f() { var t = (1, 2)\nswap(t.0, t.1)\nvar p = P(x: 1, y: 2)\nvar q = p\nswap(p.x, q.x) }", {}},
+        // An `inout` argument overlaps any other argument naming the same place.
+        {"fun f() { var a = 1\nswap(a, a)\nset(a, a) }", {E, E}},
+        {"fun f() { var p = P(x: 1, y: 2)\nswap(p.x, p.x) }", {E}},
+        {"fun g(p: inout P, n: Int) {}\nfun f() { var p = P(x: 1, y: 2)\ng(p, p.x) }", {E}},
+        {"fun g(t: inout (Int, Int), n: Int) {}\nfun f() { var t = (1, 2)\ng(t, t.0) }", {E}},
+        {"fun f(a: inout [Int]) { swap(a[0], a[1]) }", {E}},
+        // So does the receiver of a `mut fun`, and any receiver of a call with an `inout` argument.
+        {"fun f() { var p = P(x: 1, y: 2)\np.bump(p.x) }", {E}},
+        {"fun f() { var p = P(x: 1, y: 2)\np.read(p.y) }", {E}},
+        // Inside a method, `self`, `super` and bare fields are the same receiver.
+        {"struct R(var x: Int) { mut fun bump(by: Int) {}\nmut fun twice() { bump(x) } }", {E}},
+        {"struct Q(var n: Int) { mut fun g(other: Q) {}\nmut fun h() { g(self)\nself.g(self) } }", {E, E}},
+        // A static field is its own place, bare or through its type.
+        {"class S { static var n: Int = 1\nstatic fun g() { swap(n, S.n) } }", {E}},
+        // A loop or cleanup reports each argument once.
+        {"fun f(c: Bool) { var a = 1\nwhile c { swap(a, a) }\ndefer { swap(a, a) } }", {E, E}},
+    }) {
+        Frontend f;
+        const std::string program = std::string(prelude) + std::string(source);
+        f.check(program, expected, false);
+    }
+}
+
 int main() {
     accepted_paths();
     missing_returns();
@@ -721,4 +754,5 @@ int main() {
     caught_errors_guards_and_conditions();
     long_trees();
     moves();
+    exclusive_access();
 }

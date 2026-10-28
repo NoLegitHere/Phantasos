@@ -1201,22 +1201,27 @@ private:
     }
 
     // Runs the cleanups registered since `from`, last first, as a scope exit
-    // does. Only their moves reach the state after them.
+    // does. Only their moves reach the state after them, and one that
+    // diverges ends the exit. While a cleanup runs, only the cleanups
+    // registered before it are pending.
     void cleanups(usize from, State& state) {
         if (!state.live || defers_.size() <= from) return;
         const auto filter = std::exchange(filter_, Filter::OnlyMoves);
         auto caught = std::exchange(caught_, {});
-        for (usize i = defers_.size(); i-- > from;) {
+        const auto pending = defers_;
+        for (usize i = pending.size(); i-- > from;) {
+            defers_.resize(i);
             State cleanup = state;
             breaks_.push_back(dead());
             continues_.push_back(dead());
-            control_flow(*defers_[i]->body, cleanup);
+            control_flow(*pending[i]->body, cleanup);
             breaks_.pop_back();
             continues_.pop_back();
-            if (!cleanup.live) continue;
+            if (!cleanup.live) { state = dead(); break; }
             state.moved = std::move(cleanup.moved);
             state.moved_all = std::move(cleanup.moved_all);
         }
+        defers_ = pending;
         caught_ = std::move(caught);
         filter_ = filter;
     }
@@ -1275,8 +1280,9 @@ private:
                 break;
             case StmtKind::Throw:
                 eval(cast<ThrowStmt>(&stmt)->value, state);
+                // A caught error unwinds only to its `try?`.
                 if (!caught_.empty()) catch_error(state);
-                cleanups(0, state);
+                else cleanups(0, state);
                 state = dead();
                 break;
             case StmtKind::Break:

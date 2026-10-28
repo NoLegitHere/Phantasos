@@ -624,10 +624,9 @@ private:
             if (binding.kind != BindingKind::Parameter) continue;
             // Parameters of an enclosing callable were checked where that callable's closures captured them.
             Convention convention = Convention::Default;
-            if (const auto it = params_.find(binding.name.span.lo); it != params_.end()) {
-                if (it->second->binding != Binding::None) continue;  // a promoted constructor parameter names a field
-                convention = it->second->conv;
-            } else if (!closure_params_.contains(binding.name.span.lo)) continue;
+            // A promoted constructor parameter is still the parameter wherever it resolves
+            // as one: in defaults, field initializers and the primary `init`.
+            if (const auto it = params_.find(binding.name.span.lo); it != params_.end()) convention = it->second->conv; else if (!closure_params_.contains(binding.name.span.lo)) continue;
             if (convention == Convention::Inout) {
                 auto& d = diag_.error(DiagCode::InvalidCapture, capture.use,
                                       "a closure cannot capture 'inout' parameter '{}', which is only borrowed for the call", name);
@@ -656,6 +655,9 @@ private:
                     // Nested closures do not report it again.
                     pending.self = {};
                     pending.storage = Storage::Unknown;
+                } else if (pending.self.access == Access::Unknown) {
+                    // In an `init` or `deinit` too, the closure holds a read-only copy.
+                    pending.self = {Access::Immutable, "the captured 'self'", {}, {}};
                 }
             }
         }

@@ -206,6 +206,10 @@ void errors() {
         // Constructors and destructors capture `self` under the same rules.
         {"class C(var n: Int) {\ndeinit { let f = { -> self } }\n}", {DiagCode::InvalidCapture}},
         {"struct S(var n: Int) {\ninit(m: Int) { n = m\nlet f = { -> n } }\n}", {}},
+        {"struct S(var n: Int) {\ninit(m: Int) { n = m\nlet f: fun() -> Unit = { -> self.n = 2 } }\n}", {DiagCode::ImmutableAssignment}},
+        // Promoted constructor parameters are parameters in defaults and field initializers.
+        {"class C(let text: String, let read: fun() -> String = { -> text })", {DiagCode::InvalidCapture}},
+        {"class C(let count: Int, let read: fun() -> Int = { -> count })", {}},
         // References inside match arms are captures too.
         {"fun main(n: inout Int) { let g = { -> match 0 { _ -> n } } }", {DiagCode::InvalidCapture}},
         {"fun main() { let n: Int\nlet g = { -> match 0 { _ -> n } }\nn = 1 }", {DiagCode::UninitializedUse}},
